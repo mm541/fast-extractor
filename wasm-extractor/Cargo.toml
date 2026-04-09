@@ -1,0 +1,28 @@
+[package]
+name = "wasm-extractor"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# cdylib is required to compile to WebAssembly
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2.95"
+js-sys = "0.3.72"
+console_error_panic_hook = "0.1.7"
+
+# web-sys for basic logging if needed during debugging
+[dependencies.web-sys]
+version = "0.3.69"
+features = ["console"]
+
+# Symphonia for blazing fast, zero-allocation demuxing
+[dependencies.symphonia]
+version = "0.5.3"
+default-features = false
+features = [
+    "isomp4", # MP4/M4A container support
+    "mkv",     # Matroska (MKV) container support
+    "aac"      # AAC audio format support
+]

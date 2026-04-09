@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/GridMaskPicker.tsx","./src/extractor.ts","./src/fast-extractor.ts","./src/main.tsx","./src/worker.ts","./src/types/mp4box.d.ts","./src/wasm/wasm_extractor.d.ts","./src/wasm/wasm_extractor_bg.wasm.d.ts"],"version":"5.9.3"}
