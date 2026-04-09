@@ -431,7 +431,7 @@ export class SlideExtractor {
             if (pendingResolve) { const r = pendingResolve; pendingResolve = null; r(); }
           }
         });
-          decoder.configure({ ...config as VideoDecoderConfig, optimizeForLatency: true, hardwareAcceleration: 'prefer-software' });
+        decoder.configure({ ...config as VideoDecoderConfig, optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' });
 
         try {
           const reader = demuxer.read('video', chunkStart, chunkEnd).getReader();
