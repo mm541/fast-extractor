@@ -334,7 +334,7 @@ export class SlideExtractor {
           if (frameResolve) { const r = frameResolve; frameResolve = null; r(null); }
         }
       });
-      decoder.configure({ ...config as VideoDecoderConfig, optimizeForLatency: true });
+        decoder.configure({ ...config as VideoDecoderConfig, optimizeForLatency: true, hardwareAcceleration: 'prefer-software' });
 
 
       try {
@@ -431,7 +431,7 @@ export class SlideExtractor {
             if (pendingResolve) { const r = pendingResolve; pendingResolve = null; r(); }
           }
         });
-        decoder.configure({ ...config as VideoDecoderConfig, optimizeForLatency: true });
+          decoder.configure({ ...config as VideoDecoderConfig, optimizeForLatency: true, hardwareAcceleration: 'prefer-software' });
 
         try {
           const reader = demuxer.read('video', chunkStart, chunkEnd).getReader();
