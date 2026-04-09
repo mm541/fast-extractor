@@ -223,7 +223,7 @@ await FastExtractor.cleanupStorage();
 | Chrome 102+ (Desktop) | ✅ Full support | Recommended |
 | Chrome 102+ (Android) | ✅ Works | Auto Turbo mode on ≤4GB RAM |
 | Edge 102+ | ✅ Works | Chromium-based |
-| Firefox | ❌ No WebCodecs | |
+| Firefox 130+ | ✅ Works | WebCodecs now enabled by default |
 | Safari | ❌ No OPFS sync | |
 | iOS Safari | ❌ No WebCodecs | |
 

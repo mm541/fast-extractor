@@ -20,7 +20,7 @@ To run the extraction engine, the browser MUST support:
 | **Brave / Vivaldi** | Desktop, Android | ✅ Fully Supported | Same as Chrome. |
 | **Safari** | macOS | ❌ Unsupported | Apple has not implemented OPFS `FileSystemSyncAccessHandle` for synchronous reading. |
 | **Safari / WebKit** | iOS, iPadOS | ❌ Unsupported | iOS does not support WebCodecs or OPFS synchronous access. |
-| **Firefox** | Windows, Mac, Linux | ❌ Unsupported | No WebCodecs support enabled by default. Even when flagged on, WebCodecs implementation is incomplete. |
+| **Firefox** | Windows, Mac, Linux | ✅ Fully Supported | Firefox 130+ enabled WebCodecs by default. Requires OPFS support. |
 
 ### 🔍 Feature Detection
 You should always use the built-in checker before initializing the library:
