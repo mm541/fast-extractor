@@ -156,13 +156,11 @@ pub fn copy_rgba_to_gray(is_target_b: bool) {
         let arena = ARENA.as_mut().unwrap();
         let target = if is_target_b { &mut arena.raw_b } else { &mut arena.raw_a };
 
-        for i in 0..ARENA_SIZE {
-            let ri = i * 4;
-            let r = arena.rgba_buf[ri] as u32;
-            let g = arena.rgba_buf[ri + 1] as u32;
-            let b = arena.rgba_buf[ri + 2] as u32;
-            // Standard integer grayscale weights
-            target[i] = ((77 * r + 150 * g + 29 * b) >> 8) as u8;
+        let src = &arena.rgba_buf[..ARENA_SIZE * 4];
+        let dst = &mut target[..ARENA_SIZE];
+
+        for (d, s) in dst.iter_mut().zip(src.chunks_exact(4)) {
+            *d = ((77 * s[0] as u32 + 150 * s[1] as u32 + 29 * s[2] as u32) >> 8) as u8;
         }
     }
 }
@@ -177,15 +175,17 @@ fn compute_edge_map_into(pixels: &[u8], width: usize, height: usize, edge_thresh
     let len = width * height;
     if out.len() < len { out.resize(len, 0); }
 
-    for y in 0..height {
+    // Interior pixels: no bounds checks needed (stop 1 early on each axis)
+    for y in 0..height - 1 {
         let row_offset = y * width;
-        for x in 0..width {
+        for x in 0..width - 1 {
             let idx = row_offset + x;
             let current = pixels[idx] as i16;
-            let mut diff = 0;
-            if x + 1 < width { diff += (current - pixels[idx + 1] as i16).abs(); }
-            if y + 1 < height { diff += (current - pixels[idx + width] as i16).abs(); }
-            out[idx] = if diff > edge_threshold { 1 } else { 0 };
+            let right = pixels[idx + 1] as i16;
+            let bottom = pixels[idx + width] as i16;
+            let diff = (current - right).abs() + (current - bottom).abs();
+            // Branchless: true → 1, false → 0. Single cmov instruction.
+            out[idx] = (diff > edge_threshold) as u8;
         }
     }
 }
