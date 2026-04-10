@@ -356,11 +356,14 @@ export class SlideExtractor {
 
             const framePromise = new Promise<VideoFrame | null>(resolve => { frameResolve = resolve; });
             try {
+              if (decoder.state === 'closed') {
+                // Decoder was killed by a previous error — reconfigure
+                decoder.configure({ ...config as VideoDecoderConfig, optimizeForLatency: true, hardwareAcceleration: 'prefer-software' });
+              }
               decoder.decode(value);
               await decoder.flush();
             } catch (e: any) {
-              console.warn('Turbo decode error:', e);
-              // Skip malformed keyframe
+              console.warn('Turbo decode error (skipping keyframe):', e);
               continue;
             }
 
@@ -392,7 +395,7 @@ export class SlideExtractor {
             lastReport = ts;
           }
         }
-        await decoder.flush();
+        if (decoder.state !== 'closed') await decoder.flush();
       } finally {
         if (decoder.state !== 'closed') decoder.close();
       }
@@ -462,9 +465,11 @@ export class SlideExtractor {
 
             packetCount++;
             try {
+              if (decoder.state === 'closed') break; // decoder died — skip rest of chunk
               decoder.decode(value);
             } catch (e: any) {
-              console.warn('Accurate mode decode error:', e);
+              console.warn('Sequential decode error:', e);
+              if (decoder.state === 'closed') break; // fatal decode error closed the codec
               if (e?.message && e.message.includes('key frame is required')) {
                 seenKeyframe = false;
               }
@@ -482,7 +487,7 @@ export class SlideExtractor {
             }
           }
 
-          await decoder.flush();
+          if (decoder.state !== 'closed') await decoder.flush();
         } finally {
           if (decoder.state !== 'closed') decoder.close();
         }

@@ -576,7 +576,7 @@ const App: React.FC = () => {
                     </div>
                 </div>
 
-                {metrics && (
+                {metrics && metrics.startTime && metrics.endTime && (
                     <div className="metrics-dashboard slide-up">
                         <div className="metric-card">
                             <span className="label">Total Time</span>
@@ -584,7 +584,7 @@ const App: React.FC = () => {
                         </div>
                         <div className="metric-card">
                             <span className="label">Efficiency</span>
-                            <span className="value">{(metrics.totalFrames / ((metrics.endTime - metrics.startTime) / 1000)).toFixed(1)} FPS</span>
+                            <span className="value">{metrics.totalFrames ? (metrics.totalFrames / ((metrics.endTime - metrics.startTime) / 1000)).toFixed(1) : '0'} FPS</span>
                         </div>
                         <div className="metric-card">
                             <span className="label">Peak RAM</span>
@@ -592,11 +592,11 @@ const App: React.FC = () => {
                         </div>
                         <div className="metric-card">
                             <span className="label">Avg Process</span>
-                            <span className="value">{metrics.avgFrameProcessTimeMs.toFixed(1)}ms</span>
+                            <span className="value">{metrics.avgFrameProcessTimeMs?.toFixed(1) ?? 'N/A'}ms</span>
                         </div>
                         <div className="metric-card">
                             <span className="label">Detection</span>
-                            <span className="value">{metrics.totalSlides} Slides</span>
+                            <span className="value">{metrics.totalSlides ?? 0} Slides</span>
                         </div>
                     </div>
                 )}
