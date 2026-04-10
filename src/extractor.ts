@@ -465,11 +465,22 @@ export class SlideExtractor {
 
             packetCount++;
             try {
-              if (decoder.state === 'closed') break; // decoder died — skip rest of chunk
+              if (decoder.state === 'closed') {
+                // Decoder died from corrupted data — reconfigure and wait for next keyframe
+                console.warn('Sequential: decoder closed unexpectedly, reconfiguring...');
+                decoder.configure({ ...config as VideoDecoderConfig, optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' });
+                seenKeyframe = false;
+                continue;
+              }
               decoder.decode(value);
             } catch (e: any) {
               console.warn('Sequential decode error:', e);
-              if (decoder.state === 'closed') break; // fatal decode error closed the codec
+              if (decoder.state === 'closed') {
+                // decode() itself caused a fatal close — reconfigure
+                decoder.configure({ ...config as VideoDecoderConfig, optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' });
+                seenKeyframe = false;
+                continue;
+              }
               if (e?.message && e.message.includes('key frame is required')) {
                 seenKeyframe = false;
               }
