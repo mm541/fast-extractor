@@ -413,39 +413,40 @@ export class SlideExtractor {
       // Chunked: 60s segments with decoder recycling to bound RAM.
       const CHUNK_SIZE = 300;
       let nextCaptureTime = 0;
+      let pendingResolve: (() => void) | null = null;
+      const seqDecoderConfig = { ...config as VideoDecoderConfig, optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' as const };
+
+      const makeSeqDecoder = () => {
+        const d = new VideoDecoder({
+          output: (frame) => {
+            const ts = frame.timestamp / 1e6;
+            decodedCount++;
+
+            if (ts >= nextCaptureTime) {
+              const t0 = performance.now();
+              this.processFrameSync(frame, ts);
+              this.metrics.avgFrameProcessTimeMs =
+                (this.metrics.avgFrameProcessTimeMs * (this.metrics.totalFrames - 1) + (performance.now() - t0))
+                / this.metrics.totalFrames;
+              nextCaptureTime = ts + interval;
+            } else {
+              frame.close();
+            }
+
+            if (pendingResolve) { const r = pendingResolve; pendingResolve = null; r(); }
+          },
+          error: (e) => {
+            console.warn('Sequential decode error callback:', e);
+            if (pendingResolve) { const r = pendingResolve; pendingResolve = null; r(); }
+          }
+        });
+        d.configure(seqDecoderConfig);
+        return d;
+      };
 
       for (let chunkStart = 0; chunkStart < duration; chunkStart += CHUNK_SIZE) {
         const chunkEnd = Math.min(chunkStart + CHUNK_SIZE, duration);
-        let pendingResolve: (() => void) | null = null;
-        const seqDecoderConfig = { ...config as VideoDecoderConfig, optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' as const };
-
-        const makeSeqDecoder = () => {
-          const d = new VideoDecoder({
-            output: (frame) => {
-              const ts = frame.timestamp / 1e6;
-              decodedCount++;
-
-              if (ts >= nextCaptureTime) {
-                const t0 = performance.now();
-                this.processFrameSync(frame, ts);
-                this.metrics.avgFrameProcessTimeMs =
-                  (this.metrics.avgFrameProcessTimeMs * (this.metrics.totalFrames - 1) + (performance.now() - t0))
-                  / this.metrics.totalFrames;
-                nextCaptureTime = ts + interval;
-              } else {
-                frame.close();
-              }
-
-              if (pendingResolve) { const r = pendingResolve; pendingResolve = null; r(); }
-            },
-            error: (e) => {
-              console.warn('Sequential decode error callback:', e);
-              if (pendingResolve) { const r = pendingResolve; pendingResolve = null; r(); }
-            }
-          });
-          d.configure(seqDecoderConfig);
-          return d;
-        };
+        pendingResolve = null;
 
         let decoder = makeSeqDecoder();
 
