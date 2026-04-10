@@ -324,7 +324,16 @@ export class SlideExtractor {
       // Keyframes are IDR (self-contained), flush() between each is safe.
       // Catches ~95% of slide transitions. Backfill closes the remaining ~5%.
       let frameResolve: ((frame: VideoFrame | null) => void) | null = null;
-      const turboDecoderConfig = { ...config as VideoDecoderConfig, optimizeForLatency: true, hardwareAcceleration: 'prefer-software' as const };
+      const baseConfig = { ...config as VideoDecoderConfig, optimizeForLatency: true };
+      // prefer-software prevents older GPUs from silently dropping isolated keyframes.
+      // But some browsers don't support the hardwareAcceleration option at all,
+      // so we probe first and fall back to the default (let-browser-decide).
+      let turboDecoderConfig: VideoDecoderConfig = baseConfig;
+      try {
+        const swConfig = { ...baseConfig, hardwareAcceleration: 'prefer-software' as const };
+        const supported = await VideoDecoder.isConfigSupported(swConfig);
+        if (supported.supported) turboDecoderConfig = swConfig;
+      } catch { /* browser doesn't support isConfigSupported — use default */ }
 
       const makeTurboDecoder = () => {
         const d = new VideoDecoder({
@@ -414,7 +423,9 @@ export class SlideExtractor {
       const CHUNK_SIZE = 300;
       let nextCaptureTime = 0;
       let pendingResolve: (() => void) | null = null;
-      const seqDecoderConfig = { ...config as VideoDecoderConfig, optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' as const };
+      // Don't specify hardwareAcceleration — let the browser pick the best strategy.
+      // Forcing 'prefer-hardware' breaks on browsers that don't support this option.
+      const seqDecoderConfig = { ...config as VideoDecoderConfig, optimizeForLatency: true };
 
       const makeSeqDecoder = () => {
         const d = new VideoDecoder({
