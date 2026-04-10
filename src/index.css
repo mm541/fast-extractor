@@ -787,3 +787,81 @@ input[type="file"] {
     padding: 4px 10px;
     border-radius: 8px;
 }
+
+/* ==========================================================================
+   Responsive Design & Mobile Constraints
+   ========================================================================== */
+
+@media (max-width: 768px) {
+    /* Compress outer spacing */
+    header {
+        padding: 16px 20px;
+    }
+
+    main {
+        padding: 30px 16px;
+    }
+
+    /* Scale down giant fonts */
+    h1 {
+        font-size: 2.2rem;
+        letter-spacing: -1px;
+    }
+
+    .hero p {
+        font-size: 1rem;
+    }
+
+    /* Squeeze internal paddings */
+    .glass-panel {
+        padding: 24px;
+        border-radius: 16px;
+    }
+
+    .file-label {
+        padding: 24px 16px;
+    }
+
+    .btn-extract {
+        padding: 16px;
+        font-size: 1rem;
+    }
+
+    /* Settings section constraints */
+    .config-panel {
+        padding: 16px;
+    }
+
+    /* Stack buttons that were side-by-side */
+    .res-options {
+        flex-direction: column;
+    }
+
+    /* Force metrics onto a reliable grid on super small screens */
+    .metrics-dashboard {
+        grid-template-columns: 1fr;
+        gap: 1rem;
+        padding: 16px;
+    }
+
+    /* Make lightbox controls usable on touch screens */
+    .lightbox-close {
+        top: 10px;
+        right: 10px;
+    }
+
+    .lightbox-nav {
+        padding: 10px;
+        font-size: 30px;
+        background: rgba(0, 0, 0, 0.4);
+        border-radius: 50%;
+    }
+
+    .lightbox-nav.prev {
+        left: 10px;
+    }
+
+    .lightbox-nav.next {
+        right: 10px;
+    }
+}
