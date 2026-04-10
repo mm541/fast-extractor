@@ -324,18 +324,24 @@ export class SlideExtractor {
       // Keyframes are IDR (self-contained), flush() between each is safe.
       // Catches ~95% of slide transitions. Backfill closes the remaining ~5%.
       let frameResolve: ((frame: VideoFrame | null) => void) | null = null;
-      const decoder = new VideoDecoder({
-        output: (frame) => {
-          if (frameResolve) { const r = frameResolve; frameResolve = null; r(frame); }
-          else frame.close();
-        },
-        error: (e) => {
-          console.warn('Decode error:', e);
-          if (frameResolve) { const r = frameResolve; frameResolve = null; r(null); }
-        }
-      });
-        decoder.configure({ ...config as VideoDecoderConfig, optimizeForLatency: true, hardwareAcceleration: 'prefer-software' });
+      const turboDecoderConfig = { ...config as VideoDecoderConfig, optimizeForLatency: true, hardwareAcceleration: 'prefer-software' as const };
 
+      const makeTurboDecoder = () => {
+        const d = new VideoDecoder({
+          output: (frame) => {
+            if (frameResolve) { const r = frameResolve; frameResolve = null; r(frame); }
+            else frame.close();
+          },
+          error: (e) => {
+            console.warn('Turbo decode error callback:', e);
+            if (frameResolve) { const r = frameResolve; frameResolve = null; r(null); }
+          }
+        });
+        d.configure(turboDecoderConfig);
+        return d;
+      };
+
+      let decoder = makeTurboDecoder();
 
       try {
         const endTime = duration > 0 ? duration * 2 : 999999;
@@ -354,12 +360,13 @@ export class SlideExtractor {
             if (ts === lastKeyframeTs) continue;
             lastKeyframeTs = ts;
 
+            // If previous error killed the decoder, spin up a fresh one
+            if (decoder.state === 'closed') {
+              decoder = makeTurboDecoder();
+            }
+
             const framePromise = new Promise<VideoFrame | null>(resolve => { frameResolve = resolve; });
             try {
-              if (decoder.state === 'closed') {
-                // Decoder was killed by a previous error — reconfigure
-                decoder.configure({ ...config as VideoDecoderConfig, optimizeForLatency: true, hardwareAcceleration: 'prefer-software' });
-              }
               decoder.decode(value);
               await decoder.flush();
             } catch (e: any) {
@@ -410,31 +417,37 @@ export class SlideExtractor {
       for (let chunkStart = 0; chunkStart < duration; chunkStart += CHUNK_SIZE) {
         const chunkEnd = Math.min(chunkStart + CHUNK_SIZE, duration);
         let pendingResolve: (() => void) | null = null;
+        const seqDecoderConfig = { ...config as VideoDecoderConfig, optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' as const };
 
-        const decoder = new VideoDecoder({
-          output: (frame) => {
-            const ts = frame.timestamp / 1e6;
-            decodedCount++;
+        const makeSeqDecoder = () => {
+          const d = new VideoDecoder({
+            output: (frame) => {
+              const ts = frame.timestamp / 1e6;
+              decodedCount++;
 
-            if (ts >= nextCaptureTime) {
-              const t0 = performance.now();
-              this.processFrameSync(frame, ts);
-              this.metrics.avgFrameProcessTimeMs =
-                (this.metrics.avgFrameProcessTimeMs * (this.metrics.totalFrames - 1) + (performance.now() - t0))
-                / this.metrics.totalFrames;
-              nextCaptureTime = ts + interval;
-            } else {
-              frame.close();
+              if (ts >= nextCaptureTime) {
+                const t0 = performance.now();
+                this.processFrameSync(frame, ts);
+                this.metrics.avgFrameProcessTimeMs =
+                  (this.metrics.avgFrameProcessTimeMs * (this.metrics.totalFrames - 1) + (performance.now() - t0))
+                  / this.metrics.totalFrames;
+                nextCaptureTime = ts + interval;
+              } else {
+                frame.close();
+              }
+
+              if (pendingResolve) { const r = pendingResolve; pendingResolve = null; r(); }
+            },
+            error: (e) => {
+              console.warn('Sequential decode error callback:', e);
+              if (pendingResolve) { const r = pendingResolve; pendingResolve = null; r(); }
             }
+          });
+          d.configure(seqDecoderConfig);
+          return d;
+        };
 
-            if (pendingResolve) { const r = pendingResolve; pendingResolve = null; r(); }
-          },
-          error: (e) => {
-            console.warn('Decode error:', e);
-            if (pendingResolve) { const r = pendingResolve; pendingResolve = null; r(); }
-          }
-        });
-        decoder.configure({ ...config as VideoDecoderConfig, optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' });
+        let decoder = makeSeqDecoder();
 
         try {
           const reader = demuxer.read('video', chunkStart, chunkEnd).getReader();
@@ -446,12 +459,11 @@ export class SlideExtractor {
             // Race against a 5s timeout — if the hardware decoder silently drops
             // a frame (common on mobile), the output callback never fires and
             // pendingResolve hangs forever. The timeout breaks the deadlock.
-            while (decoder.decodeQueueSize >= 3) {
+            while (decoder.state !== 'closed' && decoder.decodeQueueSize >= 3) {
               await Promise.race([
                 new Promise<void>(r => { pendingResolve = r; }),
                 new Promise<void>(r => setTimeout(r, 5000))
               ]);
-              // After timeout or callback, re-check queue size in the while condition
             }
 
             const { done, value } = await reader.read();
@@ -465,10 +477,10 @@ export class SlideExtractor {
 
             packetCount++;
             try {
+              // If decoder died, spawn a fresh one and wait for next keyframe
               if (decoder.state === 'closed') {
-                // Decoder died from corrupted data — reconfigure and wait for next keyframe
-                console.warn('Sequential: decoder closed unexpectedly, reconfiguring...');
-                decoder.configure({ ...config as VideoDecoderConfig, optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' });
+                console.warn('Sequential: decoder died, spawning fresh instance...');
+                decoder = makeSeqDecoder();
                 seenKeyframe = false;
                 continue;
               }
@@ -476,8 +488,7 @@ export class SlideExtractor {
             } catch (e: any) {
               console.warn('Sequential decode error:', e);
               if (decoder.state === 'closed') {
-                // decode() itself caused a fatal close — reconfigure
-                decoder.configure({ ...config as VideoDecoderConfig, optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' });
+                decoder = makeSeqDecoder();
                 seenKeyframe = false;
                 continue;
               }
@@ -491,7 +502,7 @@ export class SlideExtractor {
               this.updateMetrics();
               this.options.onProgress(
                 Math.min((ts / duration) * 100, 99.9),
-                `Accurate: ${Math.floor(ts)}s / ${Math.floor(duration)}s`,
+                `Sequential: ${Math.floor(ts)}s / ${Math.floor(duration)}s`,
                 this.metrics
               );
               lastReport = ts;
