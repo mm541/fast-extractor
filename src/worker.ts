@@ -343,6 +343,14 @@ async function processMedia(fileName: string, options: any = {}) {
         memLog('1-START');
 
         self.postMessage({ type: 'STATUS', status: 'Initializing WASM...' });
+        
+        // Wait up to 30 seconds for the background WASM fetch to arrive if we ingested extremely fast
+        let retries = 0;
+        while (!wasmInitialized && !wasmBuffer && retries < 300) {
+            await new Promise(r => setTimeout(r, 100));
+            retries++;
+        }
+        
         await ensureWasm(wasmBuffer);
         memLog('2-WASM-INIT');
 

@@ -301,20 +301,10 @@ export class FastExtractor {
     const stream = new ReadableStream<ExtractorEvent>({
       start: async (controller) => {
         try {
-          // 1. Fetch the WASM binary (use consumer URL or Vite default)
-          const resolvedWasmUrl = this.options.wasmUrl
-            ?? new URL(defaultWasmUrl, self.location?.origin ?? 'https://localhost').href;
-          const wasmResponse = await fetch(resolvedWasmUrl);
-          if (!wasmResponse.ok) {
-            controller.error(new Error(`Failed to fetch WASM engine: HTTP ${wasmResponse.status}`));
-            return;
-          }
-          const wasmBuffer = await wasmResponse.arrayBuffer();
-
-          // 2. Create worker (use consumer-provided Worker or Vite default)
+          // 1. Create worker instantly
           worker = this.options.worker ?? new MediaWorker();
 
-          // 3. Handle abort signal
+          // 2. Handle abort signal
           if (signal) {
             signal.addEventListener('abort', () => {
               worker?.terminate();
@@ -348,8 +338,7 @@ export class FastExtractor {
             try {
               switch (type) {
                 case 'INIT_COMPLETE':
-                  // Handshake: worker is ready, start ingestion
-                  worker!.postMessage({ type: 'START_INGEST', fileName: file.name, file });
+                  // Handshake acknowledged.
                   break;
 
                 case 'AUDIO_CHUNK':
@@ -435,8 +424,26 @@ export class FastExtractor {
             worker = null;
           };
 
-          // 6. Start the handshake: INIT → (INIT_COMPLETE) → START_INGEST
-          worker.postMessage({ type: 'INIT', wasmBuffer }, [wasmBuffer]);
+          // 5. Send START_INGEST immediately so Android SAF permission doesn't expire
+          worker.postMessage({ type: 'START_INGEST', fileName: file.name, file });
+
+          // 6. Fetch WASM asynchronously in the background and send INIT when ready
+          const resolvedWasmUrl = this.options.wasmUrl
+            ?? new URL(defaultWasmUrl, self.location?.origin ?? 'https://localhost').href;
+          fetch(resolvedWasmUrl)
+            .then(res => {
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+              return res.arrayBuffer();
+            })
+            .then(wasmBuffer => {
+              worker?.postMessage({ type: 'INIT', wasmBuffer }, [wasmBuffer]);
+            })
+            .catch(err => {
+              // If file ingestion succeeds but WASM fails, cleanly crash
+              try { controller.error(new Error(`Failed to fetch WASM engine: ${err.message}`)); } catch {}
+              worker?.terminate();
+              worker = null;
+            });
 
         } catch (err) {
           controller.error(err);
