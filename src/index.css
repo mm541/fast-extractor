@@ -839,7 +839,7 @@ input[type="file"] {
 
     /* Force metrics onto a reliable grid on super small screens */
     .metrics-dashboard {
-        grid-template-columns: 1fr;
+        grid-template-columns: repeat(2, 1fr);
         gap: 1rem;
         padding: 16px;
     }

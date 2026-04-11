@@ -384,7 +384,7 @@ const App: React.FC = () => {
                                     🎭 {showMaskEditor ? 'Hide' : 'Show'} Region Mask {ignoreMask > 0n ? '(Active)' : ''}
                                 </button>
                                 {showMaskEditor && (
-                                    <div style={{ marginTop: '10px', display: 'flex', justifyContent: 'center' }}>
+                                    <div style={{ marginTop: '10px', display: 'flex', justifyContent: 'center', boxSizing: 'border-box', width: '100%', padding: '0 8px' }}>
                                         <GridMaskPicker
                                             file={file}
                                             mask={ignoreMask}

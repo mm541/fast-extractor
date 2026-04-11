@@ -147,8 +147,8 @@ const GridMaskPicker: React.FC<GridMaskPickerProps> = ({ file, onMaskChange, mas
   };
 
   return (
-    <div className="grid-mask-picker" style={{ opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto' }}>
-      <div className="grid-mask-preview" style={{ position: 'relative', width: PREVIEW_WIDTH, maxWidth: '100%', aspectRatio: `${PREVIEW_WIDTH}/${PREVIEW_HEIGHT}` }}>
+    <div className="grid-mask-picker" style={{ opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+      <div className="grid-mask-preview" style={{ position: 'relative', width: '100%', maxWidth: PREVIEW_WIDTH, aspectRatio: `${PREVIEW_WIDTH}/${PREVIEW_HEIGHT}` }}>
         {/* Hidden video element for frame extraction */}
         <video
           ref={videoRef}
@@ -208,7 +208,7 @@ const GridMaskPicker: React.FC<GridMaskPickerProps> = ({ file, onMaskChange, mas
       </div>
 
       {/* Time scrubber */}
-      <div className="grid-mask-controls" style={{ marginTop: '8px', width: PREVIEW_WIDTH, maxWidth: '100%' }}>
+      <div className="grid-mask-controls" style={{ marginTop: '8px', width: '100%', maxWidth: PREVIEW_WIDTH }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <span style={{ fontSize: '12px', opacity: 0.7, minWidth: '40px' }}>{formatTime(currentTime)}</span>
           <input
