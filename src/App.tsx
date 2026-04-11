@@ -596,7 +596,7 @@ const App: React.FC = () => {
                             <span className="value">{metrics.peakRamMb > 0 ? `${Math.round(metrics.peakRamMb)}MB` : 'N/A'}</span>
                         </div>
                         <div className="metric-card">
-                            <span className="label">Avg Process</span>
+                            <span className="label">Frame Analysis Time</span>
                             <span className="value">{metrics.avgFrameProcessTimeMs?.toFixed(1) ?? 'N/A'}ms</span>
                         </div>
                         <div className="metric-card">
