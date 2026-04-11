@@ -864,4 +864,23 @@ input[type="file"] {
     .lightbox-nav.next {
         right: 10px;
     }
+
+    /* Unclutter settings on mobile */
+    .settings-grid {
+        grid-template-columns: 1fr;
+        gap: 16px;
+        padding: 16px;
+    }
+
+    .extract-toggles {
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    .extract-toggle-btn {
+        width: 100%;
+        padding: 12px;
+        font-size: 1rem;
+    }
 }
+
