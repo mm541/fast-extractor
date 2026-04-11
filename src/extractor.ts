@@ -277,7 +277,22 @@ export class SlideExtractor {
     this.staticCount = 0;
 
     this.options.onProgress(0, "Initializing Demuxer...");
-    const demuxer = new WebDemuxer({ wasmFilePath: demuxerWasmUrl });
+
+    // Pre-fetch the WASM binary in OUR worker context (which has a real origin)
+    // and create a blob: URL. web-demuxer spawns a nested blob: worker internally
+    // whose origin is 'null', causing all network fetches to be cross-origin CORS
+    // requests. By giving it a blob: URL, no network fetch is needed at all.
+    let wasmBlobUrl: string | undefined;
+    try {
+      const resp = await fetch(demuxerWasmUrl);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const wasmBytes = await resp.arrayBuffer();
+      wasmBlobUrl = URL.createObjectURL(new Blob([wasmBytes], { type: 'application/wasm' }));
+    } catch (e: any) {
+      throw new Error(`Failed to fetch demuxer WASM (${demuxerWasmUrl}): ${e.message}`);
+    }
+
+    const demuxer = new WebDemuxer({ wasmFilePath: wasmBlobUrl });
     try {
       await demuxer.load(file);
       const mediaInfo = await demuxer.getMediaInfo();
@@ -302,6 +317,7 @@ export class SlideExtractor {
       this.options.onProgress(100, "Done", this.metrics);
     } finally {
       demuxer.destroy();
+      if (wasmBlobUrl) URL.revokeObjectURL(wasmBlobUrl);
     }
   }
 
