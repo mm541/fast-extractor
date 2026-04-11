@@ -254,6 +254,8 @@ export class SlideExtractor {
     startTime: 0, totalFrames: 0, totalSlides: 0, peakRamMb: 0, avgFrameProcessTimeMs: 0
   };
 
+  // Placeholder dimensions to prevent NaN logic crashes during startup.
+  // These are immediately overwritten with exact dimensions when demuxer loads.
   private videoWidth = 1920;
   private videoHeight = 1080;
 
