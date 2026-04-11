@@ -254,6 +254,9 @@ export class SlideExtractor {
     startTime: 0, totalFrames: 0, totalSlides: 0, peakRamMb: 0, avgFrameProcessTimeMs: 0
   };
 
+  private videoWidth = 1920;
+  private videoHeight = 1080;
+
   constructor(wasm: WasmModule, options?: Partial<SlideExtractorOptions>) {
     this.wasm = wasm;
     this.options = { ...DEFAULT_OPTIONS, ...options };
@@ -336,6 +339,9 @@ export class SlideExtractor {
    */
   private async extractKeyframes(demuxer: WebDemuxer, duration: number, interval: number) {
     const config = await demuxer.getDecoderConfig('video');
+    this.videoWidth = config.codedWidth || 1920;
+    this.videoHeight = config.codedHeight || 1080;
+    
     let packetCount = 0;
     let decodedCount = 0;
     let lastReport = 0;
@@ -869,9 +875,9 @@ export class SlideExtractor {
 
     // 2. Decoder buffers & WebCodecs queue
     // Each frame in WebCodecs queue holds raw GPU pixels. Worst case: RGBA.
-    // 1920x1080x4 bytes = ~8.3MB per frame. 
+    // Use exact dimensions from the video demuxer to prevent false readings.
+    const frameSizeMb = (this.videoWidth * this.videoHeight * 4) / 1e6;
     // FFmpeg/Demuxer baseline overhead is roughly ~30MB.
-    const frameSizeMb = (1920 * 1080 * 4) / 1e6; // ~8.3MB
     const decoderOverheadMb = 30 + (decoderQueueSize * frameSizeMb);
 
     // 3. Fallback to performance.memory if available for V8 JS Heap
