@@ -79,7 +79,8 @@ import { SlideExtractor } from './extractor';
 import type { SlideExtractorOptions } from './extractor';
 
 // Default URL for web-demuxer's FFmpeg WASM — overridable via CONFIG message
-let webDemuxerWasmUrl = new URL('/wasm-files/web-demuxer.wasm', self.location.origin).href;
+// Added cache buster to bypass aggressive browser caching of failed COEP requests
+let webDemuxerWasmUrl = new URL(`/wasm-files/web-demuxer.wasm?v=${Date.now()}`, self.location.origin).href;
 
 // ─── WORKER STATE ───
 // These are module-scoped because the worker lives for the entire extraction session.
