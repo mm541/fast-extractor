@@ -293,9 +293,18 @@ export class FastExtractor {
           // 1. Fetch the WASM binary (use consumer URL or Vite default)
           const resolvedWasmUrl = this.options.wasmUrl
             ?? new URL(defaultWasmUrl, self.location?.origin ?? 'https://localhost').href;
-          const wasmResponse = await fetch(resolvedWasmUrl);
+          let wasmResponse: Response;
+          try {
+            wasmResponse = await fetch(resolvedWasmUrl);
+          } catch (fetchErr: any) {
+            controller.error(new Error(`Failed to fetch core WASM Engine (${resolvedWasmUrl}): ${fetchErr.message}`));
+            worker?.terminate();
+            worker = null;
+            return;
+          }
+
           if (!wasmResponse.ok) {
-            controller.error(new Error(`Failed to fetch WASM engine: HTTP ${wasmResponse.status}`));
+            controller.error(new Error(`Failed to fetch WASM engine: HTTP ${wasmResponse.status} (${resolvedWasmUrl})`));
             return;
           }
           const wasmBuffer = await wasmResponse.arrayBuffer();

@@ -403,16 +403,20 @@ async function processMedia(fileName: string, options: any = {}) {
         // Get a fresh File reference from OPFS (mobile DOM File permissions expire)
         const tempFileName = (self as any).currentTempFile;
         let file: File;
-        if (tempFileName) {
+        if (tempFileName && originalFile) {
             try {
                 const opfsHandle = await root.getFileHandle(tempFileName);
-                file = await opfsHandle.getFile();
-                console.log("Using OPFS copy for demuxer (mobile-safe)");
+                const opfsFile = await opfsHandle.getFile();
+                if (opfsFile.size > 0 && opfsFile.size === originalFile.size) {
+                    file = opfsFile;
+                    console.log("Using validated OPFS copy for demuxer (mobile-safe)");
+                } else {
+                    file = originalFile;
+                    console.warn("OPFS copy is empty or incomplete, falling back to original DOM File");
+                }
             } catch {
-                // Fallback to original file if OPFS read fails
-                if (!originalFile) throw new Error("No file available for video extraction");
                 file = originalFile;
-                console.warn("OPFS read failed, falling back to original file");
+                console.warn("OPFS read failed, falling back to original DOM File");
             }
         } else {
             if (!originalFile) throw new Error("Original file handle missing in worker.");
@@ -502,7 +506,7 @@ async function processMedia(fileName: string, options: any = {}) {
         }
     } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        postMessage({ type: 'ERROR', error: 'Extraction Error: ' + message });
+        postMessage({ type: 'ERROR', error: `Video Engine Crash (${webDemuxerWasmUrl}): ${message}` });
     } finally {
         if (syncHandle) {
             try { syncHandle.close(); } catch (e) {}
