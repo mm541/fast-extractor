@@ -278,21 +278,27 @@ export class SlideExtractor {
 
     this.options.onProgress(0, "Initializing Demuxer...");
 
-    // Pre-fetch the WASM binary in OUR worker context (which has a real origin)
-    // and create a blob: URL. web-demuxer spawns a nested blob: worker internally
-    // whose origin is 'null', causing all network fetches to be cross-origin CORS
-    // requests. By giving it a blob: URL, no network fetch is needed at all.
-    let wasmBlobUrl: string | undefined;
+    // Pre-fetch the WASM binary in OUR worker (correct origin) and convert to
+    // a data: URL. web-demuxer spawns a nested blob: worker that can't access
+    // blob: URLs or make same-origin fetches. A data: URL embeds the binary
+    // inline, so no network request or blob store lookup is needed.
+    let wasmDataUrl: string;
     try {
       const resp = await fetch(demuxerWasmUrl);
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const wasmBytes = await resp.arrayBuffer();
-      wasmBlobUrl = URL.createObjectURL(new Blob([wasmBytes], { type: 'application/wasm' }));
+      const wasmBytes = new Uint8Array(await resp.arrayBuffer());
+      // Convert to base64 in chunks to avoid call stack overflow
+      let binary = '';
+      const chunkSize = 32768;
+      for (let i = 0; i < wasmBytes.length; i += chunkSize) {
+        binary += String.fromCharCode.apply(null, wasmBytes.subarray(i, i + chunkSize) as any);
+      }
+      wasmDataUrl = 'data:application/wasm;base64,' + btoa(binary);
     } catch (e: any) {
       throw new Error(`Failed to fetch demuxer WASM (${demuxerWasmUrl}): ${e.message}`);
     }
 
-    const demuxer = new WebDemuxer({ wasmFilePath: wasmBlobUrl });
+    const demuxer = new WebDemuxer({ wasmFilePath: wasmDataUrl });
     try {
       await demuxer.load(file);
       const mediaInfo = await demuxer.getMediaInfo();
@@ -317,7 +323,6 @@ export class SlideExtractor {
       this.options.onProgress(100, "Done", this.metrics);
     } finally {
       demuxer.destroy();
-      if (wasmBlobUrl) URL.revokeObjectURL(wasmBlobUrl);
     }
   }
 
