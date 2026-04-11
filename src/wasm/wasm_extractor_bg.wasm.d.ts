@@ -1,0 +1,27 @@
+/* tslint:disable */
+/* eslint-disable */
+export const memory: WebAssembly.Memory;
+export const __wbg_audioextractor_free: (a: number, b: number) => void;
+export const audioextractor_get_progress: (a: number) => number;
+export const audioextractor_new: (a: any) => [number, number, number];
+export const audioextractor_pull_chunk: (a: number, b: number) => any;
+export const check_stability: (a: bigint) => number;
+export const compare_frames: (a: number, b: number, c: bigint) => number;
+export const compare_prev_current: (a: number, b: number, c: bigint) => number;
+export const compute_dhash: (a: number) => bigint;
+export const copy_rgba_to_gray: (a: number) => void;
+export const get_avg_brightness: () => number;
+export const get_buffer_a_ptr: () => number;
+export const get_buffer_b_ptr: () => number;
+export const get_buffer_prev_ptr: () => number;
+export const get_rgba_buffer_ptr: () => number;
+export const init_arena: () => void;
+export const shift_current_to_prev: () => void;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __wbindgen_exn_store: (a: number) => void;
+export const __externref_table_alloc: () => number;
+export const __wbindgen_externrefs: WebAssembly.Table;
+export const __wbindgen_malloc: (a: number, b: number) => number;
+export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+export const __externref_table_dealloc: (a: number) => void;
+export const __wbindgen_start: () => void;
