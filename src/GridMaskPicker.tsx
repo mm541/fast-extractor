@@ -155,7 +155,7 @@ const GridMaskPicker: React.FC<GridMaskPickerProps> = ({ file, onMaskChange, mas
           src={blobUrl || undefined}
           onLoadedMetadata={onLoadedMetadata}
           onSeeked={onSeeked}
-          style={{ display: 'none' }}
+          style={{ position: 'absolute', opacity: 0, width: '1px', pointerEvents: 'none' }}
           muted
           playsInline
           preload="metadata"
