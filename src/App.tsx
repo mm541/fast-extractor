@@ -84,6 +84,7 @@ const App: React.FC = () => {
     const [fileName, setFileName] = useState<string>('');
     const [slides, setSlides] = useState<Slide[]>([]);
     const [progress, setProgress] = useState<number>(0);
+    const [jobMetrics, setJobMetrics] = useState<{ start: number; end: number | null }>({ start: 0, end: null });
 //
     const [mode, setMode] = useState<'accurate' | 'turbo'>('accurate');
     
@@ -205,6 +206,7 @@ const App: React.FC = () => {
         setSlides([]);
         setProgress(0);
         setMetrics(null);
+        setJobMetrics({ start: performance.now(), end: null });
 
         const controller = new AbortController();
         abortRef.current = controller;
@@ -281,6 +283,7 @@ const App: React.FC = () => {
 
             // Stream closed — normal completion
             // (status is already 'Extraction Complete' from the final progress event)
+            setJobMetrics(prev => ({ ...prev, end: performance.now() }));
             setIsExtracting(false);
         } catch (err: any) {
             // Fatal (non-recoverable) error
@@ -579,11 +582,13 @@ const App: React.FC = () => {
                 {metrics && metrics.startTime && metrics.endTime && (
                     <div className="metrics-dashboard slide-up">
                         <div className="metric-card">
-                            <span className="label">Total Time</span>
-                            <span className="value">{((metrics.endTime - metrics.startTime) / 1000).toFixed(1)}s</span>
+                            <span className="label">Total Job Time</span>
+                            <span className="value">
+                                {jobMetrics.end ? ((jobMetrics.end - jobMetrics.start) / 1000).toFixed(1) : ((metrics.endTime - metrics.startTime) / 1000).toFixed(1)}s
+                            </span>
                         </div>
                         <div className="metric-card">
-                            <span className="label">Efficiency</span>
+                            <span className="label">Slide Efficiency</span>
                             <span className="value">{metrics.totalFrames ? (metrics.totalFrames / ((metrics.endTime - metrics.startTime) / 1000)).toFixed(1) : '0'} FPS</span>
                         </div>
                         <div className="metric-card">
