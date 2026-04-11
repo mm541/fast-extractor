@@ -79,8 +79,7 @@ import { SlideExtractor } from './extractor';
 import type { SlideExtractorOptions } from './extractor';
 
 // Default URL for web-demuxer's FFmpeg WASM — overridable via CONFIG message
-// Added cache buster to bypass aggressive browser caching of failed COEP requests
-let webDemuxerWasmUrl = new URL(`/wasm-files/web-demuxer.wasm?v=${Date.now()}`, self.location.origin).href;
+let webDemuxerWasmUrl = new URL('/wasm-files/web-demuxer.wasm', self.location.origin).href;
 
 // ─── WORKER STATE ───
 // These are module-scoped because the worker lives for the entire extraction session.
@@ -506,7 +505,7 @@ async function processMedia(fileName: string, options: any = {}) {
         }
     } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        postMessage({ type: 'ERROR', error: `Video Engine Crash (${webDemuxerWasmUrl}): ${message}` });
+        postMessage({ type: 'ERROR', error: 'Extraction Error: ' + message });
     } finally {
         if (syncHandle) {
             try { syncHandle.close(); } catch (e) {}
@@ -525,7 +524,7 @@ async function processMedia(fileName: string, options: any = {}) {
     }
 }
 
-// Removed extractSlides implementation here as it is now in SlideExtractor class.
+
 
 function formatTime(seconds: number): string {
     const h = Math.floor(seconds / 3600);
