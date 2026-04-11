@@ -38,6 +38,17 @@
  *   3. This file must have ZERO React dependencies.
  *      It is framework-agnostic — usable in React, Vue, Svelte, or vanilla JS.
  *   4. Do NOT add state or caching here. Each extract() call is independent.
+ *
+ *   5. WASM INJECTION STRATEGY (CORS/COEP BYPASS):
+ *      The dependency `web-demuxer` spawns a nested `blob:` worker internally.
+ *      That nested worker has an opaque (`null`) origin. If it attempts to
+ *      fetch its WASM file from a URL, it triggers a strict CORS block (Failed to fetch)
+ *      unless the host server explicitly sets `Access-Control-Allow-Origin: *`.
+ *      To make this library "zero-config" for consumers, we bypass this entirely:
+ *      Our worker (which has a valid origin) fetches the WASM, converts it to
+ *      a base64 `data:` URL, and gives THAT string to web-demuxer.
+ *      No network request = no CORS policies triggered. Do NOT revert this to
+ *      a standard URL or a blob URL.
  */
 
 // Vite-specific imports — used as defaults when consumer doesn't provide URLs.
