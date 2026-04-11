@@ -579,18 +579,18 @@ const App: React.FC = () => {
                     </div>
                 </div>
 
-                {metrics && metrics.startTime && metrics.endTime && (
+                {metrics && metrics.startTime && (
                     <div className="metrics-dashboard slide-up">
                         <div className="metric-card">
                             <span className="label">Total Job Time</span>
                             <span className="value">
-                                {jobMetrics.end ? ((jobMetrics.end - jobMetrics.start) / 1000).toFixed(1) : ((metrics.endTime - metrics.startTime) / 1000).toFixed(1)}s
+                                {jobMetrics.end ? ((jobMetrics.end - jobMetrics.start) / 1000).toFixed(1) : ((performance.now() - jobMetrics.start) / 1000).toFixed(1)}s
                             </span>
                         </div>
                         <div className="metric-card">
                             <span className="label">Decode Speed</span>
                             <span className="value">
-                                {metrics.totalFrames ? (metrics.totalFrames / ((metrics.endTime - metrics.startTime) / 1000)).toFixed(1) : '0'} 
+                                {metrics.totalFrames ? (metrics.totalFrames / (((metrics.endTime || performance.now()) - metrics.startTime) / 1000)).toFixed(1) : '0'} 
                                 {mode === 'turbo' ? ' Keyframes/s' : ' FPS'}
                             </span>
                         </div>
