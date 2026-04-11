@@ -21,6 +21,11 @@ jobs:
         with:
           node-version: 20
 
+      - name: Install Rust & WASM-Pack
+        run: |
+          curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+          cd wasm-extractor && wasm-pack build --target web --out-dir ../src/wasm
+
       - name: Install dependencies
         run: npm install
 
