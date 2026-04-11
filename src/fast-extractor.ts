@@ -424,6 +424,16 @@ export class FastExtractor {
             worker = null;
           };
 
+          // =========================================================================================
+          // ⚠️ CRITICAL ANDROID SAF WARNING ⚠️
+          // DO NOT REORDER THE INITIALIZATION HANDSHAKE!
+          // On Android (ColorOS/OxygenOS), Storage Access Framework (SAF) permissions expire
+          // within ~2 seconds of the user picking the DOM `File` if it is not immediately read.
+          // We MUST NOT perform any slow asynchronous operations (like `await fetch(wasm)`) 
+          // before sending 'START_INGEST'. The file MUST be ingested instantly.
+          // WASM fetching must occur in the background concurrently.
+          // =========================================================================================
+
           // 5. Send START_INGEST immediately so Android SAF permission doesn't expire
           worker.postMessage({ type: 'START_INGEST', fileName: file.name, file });
 
