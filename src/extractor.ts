@@ -423,7 +423,7 @@ export class SlideExtractor {
           }
 
           if (ts >= lastReport + 1) {
-            this.updateMetrics();
+            this.updateMetrics(decoder.decodeQueueSize);
             this.options.onProgress(
               Math.min((ts / duration) * 100, 99.9),
               `Turbo: ${Math.floor(ts)}s / ${Math.floor(duration)}s`,
@@ -532,7 +532,7 @@ export class SlideExtractor {
 
             const ts = Number(value.timestamp) / 1e6;
             if (ts >= lastReport + 1) {
-              this.updateMetrics();
+              this.updateMetrics(decoder.decodeQueueSize);
               this.options.onProgress(
                 Math.min((ts / duration) * 100, 99.9),
                 `Sequential: ${Math.floor(ts)}s / ${Math.floor(duration)}s`,
@@ -863,9 +863,25 @@ export class SlideExtractor {
       <= this.options.dhashDuplicateThreshold;
   }
 
-  private updateMetrics() {
-    if ((performance as any).memory)
-      this.metrics.peakRamMb = Math.max(this.metrics.peakRamMb, (performance as any).memory.usedJSHeapSize / 1e6);
+  private updateMetrics(decoderQueueSize: number = 0) {
+    // 1. WASM Linear Memory (exact byte length of our ArrayBuffer)
+    const wasmRamMb = this.wasm.memory.buffer.byteLength / 1e6;
+
+    // 2. Decoder buffers & WebCodecs queue
+    // Each frame in WebCodecs queue holds raw GPU pixels. Worst case: RGBA.
+    // 1920x1080x4 bytes = ~8.3MB per frame. 
+    // FFmpeg/Demuxer baseline overhead is roughly ~30MB.
+    const frameSizeMb = (1920 * 1080 * 4) / 1e6; // ~8.3MB
+    const decoderOverheadMb = 30 + (decoderQueueSize * frameSizeMb);
+
+    // 3. Fallback to performance.memory if available for V8 JS Heap
+    const jsHeapMb = (performance as any).memory?.usedJSHeapSize 
+      ? (performance as any).memory.usedJSHeapSize / 1e6 
+      : 15; // default 15MB assumption if OS security policy blocks API
+
+    const totalEstimatedMb = wasmRamMb + decoderOverheadMb + jsHeapMb;
+
+    this.metrics.peakRamMb = Math.max(this.metrics.peakRamMb, Math.round(totalEstimatedMb));
   }
 }
 
