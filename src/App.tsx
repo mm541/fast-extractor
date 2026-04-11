@@ -588,8 +588,11 @@ const App: React.FC = () => {
                             </span>
                         </div>
                         <div className="metric-card">
-                            <span className="label">Slide Efficiency</span>
-                            <span className="value">{metrics.totalFrames ? (metrics.totalFrames / ((metrics.endTime - metrics.startTime) / 1000)).toFixed(1) : '0'} FPS</span>
+                            <span className="label">Decode Speed</span>
+                            <span className="value">
+                                {metrics.totalFrames ? (metrics.totalFrames / ((metrics.endTime - metrics.startTime) / 1000)).toFixed(1) : '0'} 
+                                {mode === 'turbo' ? ' Keyframes/s' : ' FPS'}
+                            </span>
                         </div>
                         <div className="metric-card">
                             <span className="label">Peak RAM</span>
