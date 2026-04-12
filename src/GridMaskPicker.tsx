@@ -73,8 +73,14 @@ const GridMaskPicker: React.FC<GridMaskPickerProps> = ({ file, onMaskChange, mas
     video.currentTime = Math.min(1, video.duration);
   }, []);
 
-  // Handle seek complete
+  // Handle seek complete — draw frame to canvas
   const onSeeked = useCallback(() => {
+    drawFrame();
+  }, [drawFrame]);
+
+  // Fallback: on mobile, some browsers fire 'loadeddata' but not 'seeked' on first load.
+  // This ensures the canvas gets painted even if the seek to 1s resolves without a seeked event.
+  const onLoadedData = useCallback(() => {
     drawFrame();
   }, [drawFrame]);
 
@@ -150,15 +156,22 @@ const GridMaskPicker: React.FC<GridMaskPickerProps> = ({ file, onMaskChange, mas
     <div className="grid-mask-picker" style={{ opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       <div className="grid-mask-preview" style={{ position: 'relative', width: '100%', maxWidth: PREVIEW_WIDTH, aspectRatio: `${PREVIEW_WIDTH}/${PREVIEW_HEIGHT}` }}>
         {/* Hidden video element for frame extraction */}
+        {/* ⚠️ MOBILE VIDEO PREVIEW: preload MUST be 'auto', NOT 'metadata'.
+            Mobile browsers (Android Chrome, iOS Safari) with preload='metadata'
+            only download the file header — they never decode actual pixel data.
+            This means readyState never reaches HAVE_CURRENT_DATA (2), and
+            canvas.drawImage() paints a blank black rectangle.
+            preload='auto' forces the browser to buffer enough data to render frames. */}
         <video
           ref={videoRef}
           src={blobUrl || undefined}
           onLoadedMetadata={onLoadedMetadata}
           onSeeked={onSeeked}
-          style={{ position: 'absolute', opacity: 0, width: '1px', pointerEvents: 'none' }}
+          onLoadedData={onLoadedData}
+          style={{ position: 'absolute', opacity: 0, width: '1px', height: '1px', pointerEvents: 'none' }}
           muted
           playsInline
-          preload="metadata"
+          preload="auto"
         />
 
         {/* Canvas showing the current video frame */}
