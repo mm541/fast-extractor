@@ -383,9 +383,17 @@ async function processMedia(fileName: string, options: any = {}) {
                 memLog('4-AUDIO-DONE');
             } catch (e: any) {
                 // Audio extraction failed (e.g. no AAC track in WebM/Opus, unsupported codec).
-                // This is non-fatal — warn and proceed to slide extraction.
-                console.warn('[Worker] Audio extraction failed, continuing with slides:', e?.message);
-                postMessage({ type: 'STATUS', status: `⚠️ Audio unavailable: ${e?.message ?? 'unsupported format'}. Extracting slides only...` });
+                const reason = e?.message ?? 'unsupported format';
+                console.warn('[Worker] Audio extraction failed:', reason);
+
+                if (shouldExtractSlides) {
+                    // Non-fatal — warn and proceed to slide extraction.
+                    postMessage({ type: 'STATUS', status: `⚠️ Audio unavailable: ${reason}. Extracting slides only...` });
+                } else {
+                    // Fatal — audio was the ONLY thing requested and it failed.
+                    postMessage({ type: 'ERROR', error: `Audio extraction failed: ${reason}. This file does not contain an AAC audio track (common with WebM/Opus). Try an MP4 file instead.` });
+                    return;
+                }
             } finally {
                 if (audioExtractor) try { audioExtractor.free(); } catch(_) {}
                 memLog('5-AUDIO-FREED');
