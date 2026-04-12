@@ -362,10 +362,11 @@ async function processMedia(fileName: string, options: any = {}) {
         // This eliminates the second OPFS temp file and its createSyncAccessHandle
         // call (which was a potential deadlock point on mobile).
         if (shouldExtractAudio) {
-            const audioExtractor = new AudioExtractor(syncHandle!);
-            memLog('3-AUDIO-EXTRACTOR-CREATED');
-
+            let audioExtractor: any = null;
             try {
+                audioExtractor = new AudioExtractor(syncHandle!);
+                memLog('3-AUDIO-EXTRACTOR-CREATED');
+
                 let lastReport = 0;
                 while (true) {
                     const chunk = audioExtractor.pull_chunk(1024 * 1024);
@@ -381,12 +382,12 @@ async function processMedia(fileName: string, options: any = {}) {
                 postMessage({ type: 'AUDIO_DONE', fileName: fileName.replace(/\.[^/.]+$/, "") + ".aac" });
                 memLog('4-AUDIO-DONE');
             } catch (e: any) {
-                // Audio extraction failed (e.g. no AAC track in WebM, unsupported codec).
+                // Audio extraction failed (e.g. no AAC track in WebM/Opus, unsupported codec).
                 // This is non-fatal — warn and proceed to slide extraction.
                 console.warn('[Worker] Audio extraction failed, continuing with slides:', e?.message);
                 postMessage({ type: 'STATUS', status: `⚠️ Audio unavailable: ${e?.message ?? 'unsupported format'}. Extracting slides only...` });
             } finally {
-                try { (audioExtractor as any).free(); } catch(_) {}
+                if (audioExtractor) try { audioExtractor.free(); } catch(_) {}
                 memLog('5-AUDIO-FREED');
             }
         } else {
