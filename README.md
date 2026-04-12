@@ -2,20 +2,22 @@
 
 **Browser-native video slide & audio extraction engine.**
 
-Extract presentation slides and audio from video files entirely in the browser — no server, no uploads, no FFmpeg CLI. Powered by WebCodecs, WASM, and OPFS.
+Extract presentation slides and audio from video files entirely in the browser — no server, no uploads, no FFmpeg CLI. Powered by WebCodecs, WebAssembly, and OPFS.
+
+> **[Live Demo →](https://fast-extractor.pages.dev)**
 
 ---
 
-## What It Does
+## ✨ Features
 
-Drop in a lecture recording or screen capture and get back:
-
-- **🖼️ Slide images** — every unique slide, deduplicated, as WebP
-- **🎧 Audio track** — raw AAC stream, ready to play or transcribe
-- **📊 Timestamps** — when each slide appeared and for how long
-- **📈 Metrics** — frame count, extraction time, peak RAM
-
-All processing happens client-side. Your video never leaves the browser.
+- **🖼️ Slide extraction** — unique slides captured as WebP with millisecond-accurate timestamps
+- **🎧 Audio extraction** — raw AAC stream, ready to play or transcribe
+- **🚀 Turbo mode** — keyframe-only scanning, processes a 1-hour video in ~20 seconds
+- **🎯 Accurate mode** — sequential full-frame decode for pixel-perfect transitions
+- **🎭 Region masking** — interactive 8×8 grid to exclude webcam overlays, watermarks, etc.
+- **📊 Live metrics** — real-time decode speed, frame count, peak RAM, and analysis time
+- **🔒 100% client-side** — your video never leaves the browser
+- **📱 Mobile-safe** — adaptive memory management, Android SAF handling, backpressure controls
 
 ---
 
@@ -65,7 +67,7 @@ if (!support.supported) {
   console.error(support.reason);
 }
 
-// 2. Create extractor
+// 2. Create extractor (defaults to turbo mode)
 const extractor = new FastExtractor({ mode: 'turbo' });
 
 // 3. Extract from a File object (e.g. from <input type="file">)
@@ -124,16 +126,16 @@ controller.abort();
 
 ## Extraction Modes
 
-| Mode | Strategy | Speed | Accuracy | Best For |
-|------|----------|-------|----------|----------|
-| `'turbo'` | Keyframe-only seeking | ~20s / 1hr video | Good | Quick previews, long recordings |
-| `'accurate'` | Sequential frame decode | ~2-3min / 1hr video | Best | Short videos, precise transitions |
+| Mode | Strategy | Speed | Accuracy | Default |
+|------|----------|-------|----------|---------|
+| `'turbo'` | Keyframe-only seeking | ~20s / 1hr video | ~95% of transitions | ✅ Yes |
+| `'accurate'` | Sequential frame decode | ~2-3min / 1hr video | 100% of transitions | |
 
 ```typescript
-// Turbo — 10x faster, skips non-keyframes
+// Turbo (default) — 10x faster, skips non-keyframes
 new FastExtractor({ mode: 'turbo' });
 
-// Sequential — every frame, catches subtle transitions
+// Accurate — every frame, catches subtle transitions
 new FastExtractor({ mode: 'accurate' });
 ```
 
@@ -141,7 +143,7 @@ new FastExtractor({ mode: 'accurate' });
 
 ## Configuration
 
-All options have sensible defaults. Only `mode` matters for most users.
+All options have sensible defaults. Most users won't need to change anything.
 
 ```typescript
 new FastExtractor({
@@ -216,21 +218,28 @@ await FastExtractor.cleanupStorage();
 
 ---
 
-## Browser Support
+## Browser Compatibility
 
-| Browser | Status | Notes |
-|---------|--------|-------|
-| Chrome 102+ (Desktop) | ✅ Full support | Recommended |
-| Chrome 102+ (Android) | ✅ Works | Auto Turbo mode on ≤4GB RAM |
-| Edge 102+ | ✅ Works | Chromium-based |
-| Firefox 130+ | ✅ Works | WebCodecs now enabled by default |
-| Safari | ❌ No OPFS sync | |
-| iOS Safari | ❌ No WebCodecs | |
+| Browser | Platform | Status | Notes |
+|---------|----------|--------|-------|
+| Chrome 102+ | Desktop | ✅ Full support | Recommended |
+| Chrome 102+ | Android | ✅ Full support | Auto turbo on ≤4GB RAM devices |
+| Edge 102+ | Desktop | ✅ Full support | Chromium-based |
+| Brave / Vivaldi | Desktop, Android | ✅ Full support | Chromium-based |
+| Firefox 130+ | Desktop | ✅ Full support | WebCodecs enabled by default |
+| Safari | macOS | ❌ Unsupported | No OPFS `SyncAccessHandle` |
+| Safari / WebKit | iOS, iPadOS | ❌ Unsupported | No WebCodecs or OPFS sync access |
 
-**Requirements:**
+**Required APIs:**
 - Secure Context (HTTPS or localhost)
 - WebCodecs (`VideoDecoder`)
-- Origin Private File System (OPFS with sync access)
+- Origin Private File System (OPFS with `FileSystemSyncAccessHandle`)
+
+**Supported formats:**
+- **Video:** `.mp4`, `.mov`, `.webm`, `.mkv` — H.264, H.265*, VP8, VP9, AV1
+- **Audio:** AAC only (raw ADTS passthrough, no re-encoding)
+
+> For the full compatibility matrix including mobile limitations, storage quotas, and format edge cases, see **[COMPATIBILITY.md](./COMPATIBILITY.md)**.
 
 ---
 
@@ -240,6 +249,7 @@ await FastExtractor.cleanupStorage();
 fast-extractor/
 ├── src/
 │   ├── fast-extractor.ts    # Public API — ReadableStream wrapper
+│   ├── extractor.ts         # Detection engine (three-pointer drift)
 │   ├── worker.ts            # Web Worker — orchestrates the pipeline
 │   ├── App.tsx              # Reference implementation (React)
 │   ├── GridMaskPicker.tsx   # Region masking UI component
@@ -252,10 +262,10 @@ fast-extractor/
         └── lib.rs           # WASM module (Rust)
             • Static memory arena (zero GC)
             • RGBA→grayscale (SIMD-vectorized)
-            • Edge detection (branchless)
+            • Edge detection (branchless Sobel)
             • dHash perceptual hashing
             • 8×8 grid density comparison
-            • Audio extraction (Symphonia)
+            • Audio extraction (Symphonia AAC)
 ```
 
 ### Detection Pipeline (per frame)
