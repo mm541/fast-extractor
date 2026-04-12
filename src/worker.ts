@@ -98,7 +98,7 @@ let shouldCleanup = true;                    // Controlled via CONFIG (cleanupAf
  * See extractor.ts SlideExtractorOptions for full documentation of each field.
  */
 let detectionConfig: Partial<SlideExtractorOptions> = {
-    mode: 'accurate',
+    mode: 'turbo',
     edgeThreshold: 30,
     blockThreshold: 12,
     densityThresholdPct: 5,

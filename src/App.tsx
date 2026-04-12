@@ -86,7 +86,7 @@ const App: React.FC = () => {
     const [progress, setProgress] = useState<number>(0);
     const [jobMetrics, setJobMetrics] = useState<{ start: number; end: number | null }>({ start: 0, end: null });
 //
-    const [mode, setMode] = useState<'accurate' | 'turbo'>('accurate');
+    const [mode, setMode] = useState<'accurate' | 'turbo'>('turbo');
     
     const [config, setConfig] = useState({
         edgeThreshold: 30,

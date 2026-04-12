@@ -315,7 +315,7 @@ export class FastExtractor {
 
           // 4. Configure — extract asset URLs from options before sending detection config
           const {
-            mode = 'accurate',
+            mode = 'turbo',
             wasmUrl: _wasmUrl,           // consumed above, don't forward
             demuxerWasmUrl,              // forwarded to worker
             worker: _workerOpt,          // consumed above, don't forward
