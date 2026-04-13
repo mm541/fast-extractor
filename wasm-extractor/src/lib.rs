@@ -297,16 +297,17 @@ impl AudioExtractor {
             handle: SyncHandle,
             pos: std::sync::Arc<std::sync::atomic::AtomicU64>,
             scratch: Uint8Array,
+            options: Object,    // reused across reads — avoids per-read JS allocation
+            at_key: JsValue,    // cached "at" string — avoids per-read interning
         }
         
         impl Read for SharedPosReader {
             fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
                 let len = buf.len() as u32;
                 let sub = self.scratch.subarray(0, len);
-                let options = Object::new();
                 let current_pos = self.pos.load(std::sync::atomic::Ordering::Relaxed);
-                Reflect::set(&options, &"at".into(), &(current_pos as f64).into()).ok();
-                let bytes_read = self.handle.read_at(&sub, &options) as usize;
+                Reflect::set(&self.options, &self.at_key, &(current_pos as f64).into()).ok();
+                let bytes_read = self.handle.read_at(&sub, &self.options) as usize;
                 if bytes_read > 0 {
                     sub.subarray(0, bytes_read as u32).copy_to(&mut buf[..bytes_read]);
                     self.pos.fetch_add(bytes_read as u64, std::sync::atomic::Ordering::Relaxed);
@@ -338,7 +339,9 @@ impl AudioExtractor {
         }
 
         let scratch = Uint8Array::new_with_length(65536);
-        let mss = MediaSourceStream::new(Box::new(SharedPosReader { handle, pos: reader_pos, scratch }), Default::default());
+        let options = Object::new();
+        let at_key: JsValue = "at".into();
+        let mss = MediaSourceStream::new(Box::new(SharedPosReader { handle, pos: reader_pos, scratch, options, at_key }), Default::default());
         let probed = symphonia::default::get_probe()
             .format(&Hint::new(), mss, &Default::default(), &Default::default())
             .map_err(|_| JsValue::from_str("Failed to parse media format"))?;
