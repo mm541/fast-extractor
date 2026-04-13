@@ -21,6 +21,19 @@ Extract presentation slides and audio from video files entirely in the browser â
 
 ---
 
+## âš¡ Performance & Benchmarks
+
+Tested on a modern gaming laptop (**ASUS TUF Gaming F17**, Intel Core i9-12900H, NVIDIA RTX 3050 Ti, NVMe SSD) running Linux in **Turbo Mode** (Hardware decode via Chrome WebCodecs).
+
+| Video Resolution | Video Duration | Processing Time | Speed Multiplier | Throughput |
+|------------------|----------------|-----------------|------------------|------------|
+| **720p HD** | 3 hours, 41 mins | **47 seconds** | **282x** Real-time | ~282 FPS |
+| **1080p FHD** | 5 hours, 43 mins | **164 seconds** | **125x** Real-time | ~125 FPS |
+
+*Note: Performance heavily relies on hardware video decoders. Speeds will be slower on battery power or older ARM/Intel CPUs lacking modern video decoders. The ~2.25x speed difference between 720p and 1080p is driven by GPU hardware decoding limits and downscaling overhead before reaching WASM.*
+
+---
+
 ## How It Works
 
 ```
