@@ -42,50 +42,6 @@ extern "C" {
     pub fn get_size(this: &SyncHandle) -> f64;
 }
 
-// ... OpfsReader implementation same as before ...
-struct OpfsReader {
-    handle: SyncHandle,
-    pos: u64,
-}
-
-unsafe impl Send for OpfsReader {}
-unsafe impl Sync for OpfsReader {}
-
-impl Read for OpfsReader {
-    fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
-        let len = buf.len();
-        let js_buf = Uint8Array::new_with_length(len as u32);
-        
-        let options = Object::new();
-        let at_val = (self.pos as f64).into();
-        Reflect::set(&options, &"at".into(), &at_val).ok();
-        
-        let bytes_read = self.handle.read_at(&js_buf, &options) as usize;
-        
-        if bytes_read > 0 {
-            js_buf.subarray(0, bytes_read as u32).copy_to(&mut buf[..bytes_read]);
-            self.pos += bytes_read as u64;
-        }
-        
-        Ok(bytes_read)
-    }
-}
-
-impl Seek for OpfsReader {
-    fn seek(&mut self, pos: SeekFrom) -> IoResult<u64> {
-        match pos {
-            SeekFrom::Start(p) => self.pos = p,
-            SeekFrom::End(offset) => self.pos = (self.handle.get_size() as i64 + offset) as u64,
-            SeekFrom::Current(offset) => self.pos = (self.pos as i64 + offset) as u64,
-        }
-        Ok(self.pos)
-    }
-}
-
-impl symphonia::core::io::MediaSource for OpfsReader {
-    fn is_seekable(&self) -> bool { true }
-    fn byte_len(&self) -> Option<u64> { Some(self.handle.get_size() as u64) }
-}
 
 // ════════════════════════════════════════════════
 // 2. MATURE SLIDE-DIFF LOGIC (3-BUFFER ARENA)
