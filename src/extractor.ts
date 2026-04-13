@@ -764,6 +764,7 @@ export class SlideExtractor {
     if (!this.compareCanvas) {
       this.compareCanvas = new OffscreenCanvas(W, H);
       this.compareCtx = this.compareCanvas.getContext('2d', { willReadFrequently: true })!;
+      this.compareCtx.imageSmoothingEnabled = false;
     }
     this.compareCtx!.drawImage(frame, 0, 0, W, H);
     const { data } = this.compareCtx!.getImageData(0, 0, W, H);

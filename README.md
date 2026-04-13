@@ -12,7 +12,7 @@ Extract presentation slides and audio from video files entirely in the browser �
 
 - **🖼️ Slide extraction** — unique slides captured as WebP with millisecond-accurate timestamps
 - **🎧 Audio extraction** — raw AAC stream, ready to play or transcribe
-- **🚀 Turbo mode** — keyframe-only scanning, processes a 1-hour video in ~20 seconds
+- **🚀 Turbo mode** — keyframe-only scanning, processes a 1-hour HD video in under 15 seconds
 - **🎯 Accurate mode** — sequential full-frame decode for pixel-perfect transitions
 - **🎭 Region masking** — interactive 8×8 grid to exclude webcam overlays, watermarks, etc.
 - **📊 Live metrics** — real-time decode speed, frame count, peak RAM, and analysis time
@@ -23,43 +23,21 @@ Extract presentation slides and audio from video files entirely in the browser �
 
 ## ⚡ Performance & Benchmarks
 
-Tested on a modern gaming laptop (**ASUS TUF Gaming F17**, Intel Core i9-12900H, NVIDIA RTX 3050 Ti, NVMe SSD) running Linux in **Turbo Mode** (Hardware decode via Chrome WebCodecs).
+*All benchmarks represent the **full extraction pipeline** (concurrent Audio AAC stream demuxing + unique Slide WebP exportation).*
 
-| Video Resolution | Video Duration | Processing Time | Speed Multiplier | Throughput |
-|------------------|----------------|-----------------|------------------|------------|
-| **720p HD** | 3 hours, 41 mins | **47 seconds** | **282x** Real-time | ~282 FPS |
-| **1080p FHD** | 5 hours, 43 mins | **164 seconds** | **125x** Real-time | ~125 FPS |
-
-*Note: Performance heavily relies on hardware video decoders. Speeds will be slower on battery power or older ARM/Intel CPUs lacking modern video decoders. The ~2.25x speed difference between 720p and 1080p is driven by GPU hardware decoding limits and downscaling overhead before reaching WASM.*
+| Device / Hardware | OS / Browser | Resolution | Mode | Video Length | Processing Time | Speed | Throughput |
+|-------------------|--------------|------------|------|--------------|-----------------|-------|------------|
+| **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **720p HD** | Turbo | 3h 43m | **47s** | **285x** | ~285 FPS |
+| **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **720p HD** | Accurate | 3h 43m | **410s** | **33x** | ~33 FPS |
+| **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **1080p FHD** | Turbo | 5h 53m | **149s** | **142x** | ~142 FPS |
+| **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **1080p FHD** | Accurate | 5h 53m | **1322s** | **16x** | ~16 FPS |
+| **Redmi Note 9 Pro** (SD 720G, 4GB) | Android (Chrome 146) | **1080p FHD** | Turbo | 5h 53m | **600s** | **35x** | ~35 FPS |
 
 ---
 
 ## How It Works
 
-```
-Video File
-    │
-    ▼
-┌──────────────────────────────────────────┐
-│  Web Worker                              │
-│                                          │
-│  ┌──────────┐   ┌──────────────────────┐ │
-│  │   OPFS   │──▶│  Rust/WASM Engine    │ │
-│  │ (temp    │   │  • Grayscale (SIMD)  │ │
-│  │  storage)│   │  • Edge detection    │ │
-│  └──────────┘   │  • Grid comparison   │ │
-│       │         │  • dHash dedup       │ │
-│       ▼         │  • Audio extraction  │ │
-│  ┌──────────┐   └──────────────────────┘ │
-│  │WebCodecs │                            │
-│  │(HW       │──▶ Slides + Audio chunks   │
-│  │ decode)  │                            │
-│  └──────────┘                            │
-└──────────────────┬───────────────────────┘
-                   │
-                   ▼
-          ReadableStream<ExtractorEvent>
-```
+![Fast-Extractor Architecture](https://kroki.io/graphviz/svg/eJx8U11PIkEQfOdXdPZeIAfRUzwhHiTI4kcikYgeD2Iuszs1MHGY2ZudNW4u_vfLfiJKJAF2q6t7qqt7uFxZFq3pkv41iCzTz1zawf35WYNIGw56jNcswiAwr22KXaow8KxJNAdvC6kUuNem7CE0ytiB9030RF-wDDTaabbBwLuCeoGTYYZWNA4c4af3lJ0DvgI9fs1nPDgJeMFvEP2WHOZCKtCjYgHUwMsRyiCvTYVmL0yV1Bz2g0T0EULUteIkKDwIVRI72D8LY59hc0OIyvILBFTiMxlBSQ3vLCfs0d05N4qX4f2elanvfcs_ZaACQ_AuZyWY_9zOLuZ1z_nLDUthl7p5j01Ec2csW6G1x4OnosoCwdhwhHFdZYuMZtdL3bxaFPaSj9Bw2NbHCQtxjMN3sxEiOO3y6oCi60-esnhTOlp7epfEjg5oMZpPaaJXUoOaN1KDWZpiY2xKIwvNWmX_X3u56yaOxZHYhiq4fxgy0a_h8m-UcGkmr652JAdo8uosC91SN0ejMY1NlLaqHonmSnL42ObkAPlwCJ00eqk7dGlZGodMgebXU79AJKf7tUW8NopLvcpAfsXiNfngSVTVf2tk3wbRbeKiZHvIHRhngcLcWbDNr1KhsZMXaDdc6mauIs6GPKPvRWM0Xif6Of44RfTECfrvptj7EZ72utvF0cYh07Nz2zrD3Q3MLxz51pTS82BnuGfLaDrrHiwQTOk8EaLax4r_aQSUeV7o95lj9WXdFu4MPw-hVGrZBvQgteuNrGVpnVzzszZ2naUHLf8myJ2Li4Ra0x52oazoJKe__Q8AAP__7Aek1w)
 
 **Key architecture decisions:**
 - **Zero GC pressure** — static WASM memory arena, no per-frame allocations
