@@ -49,7 +49,7 @@
  */
 import React, { useState, useRef, useEffect } from 'react';
 import GridMaskPicker from './GridMaskPicker';
-import { FastExtractor } from './fast-extractor';
+import { FastExtractor } from '../engine/fast-extractor';
 
 interface Slide {
     url: string;
