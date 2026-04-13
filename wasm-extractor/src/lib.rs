@@ -1,23 +1,55 @@
 #![allow(static_mut_refs)]
 
-// ⚠️ WARNING: DO NOT MISUSE STATIC MUT IN THIS LIBRARY ⚠️
+// ═══════════════════════════════════════════════════════════════════════════
+// wasm_extractor — Browser-native Slide Detection & Audio Extraction Engine
+// ═══════════════════════════════════════════════════════════════════════════
 //
-// This library safely uses `static mut` (like the `ARENA` buffer) to bypass
-// Rust's standard mutable aliasing restrictions. This is done intentionally
-// for maximum zero-overhead performance and direct JS memory access.
+// This WASM module provides two core capabilities:
+//   1. SLIDE DETECTION — Edge-based frame comparison on a static memory arena
+//   2. AUDIO EXTRACTION — AAC demuxing via Symphonia with zero-copy OPFS reads
 //
-// CRITICAL RULES FOR SAFETY:
-// 1. SINGLE-THREADED ONLY: This WASM module MUST remain strictly 
-//    single-threaded. Do NOT use these bindings inside multithreaded 
-//    Web Workers (with SharedArrayBuffer) without introducing a `Mutex`.
-// 2. NO RE-ENTRANCY: Ensure JS never concurrently calls into the Rust
-//    API while another Rust function accessing the `ARENA` is executing. 
-// 3. DO NOT STORE RUST REFERENCES: Never hold or store `&mut` references
-//    beyond the scope of a single function call. Only ever return raw
-//    memory pointers (`*mut u8`) back to the JavaScript side.
+// ── INITIALIZATION CONTRACT ──────────────────────────────────────────────
 //
-// Violating these rules will result in Undefined Behavior (UB), 
-// memory corruption, and unpredictable application crashes.
+//   init_arena() MUST be called before ANY slide detection function:
+//     • get_buffer_*_ptr(), copy_rgba_to_gray(), compare_frames(),
+//       compare_prev_current(), compute_dhash(), check_stability(),
+//       shift_current_to_prev(), get_avg_brightness()
+//
+//   If called without init_arena(), these functions will return safe
+//   defaults (0) instead of panicking. However, this is a programming
+//   error — the results are meaningless without an initialized arena.
+//
+//   AudioExtractor is independent of the arena and can be used standalone.
+//
+// ── MEMORY LAYOUT ────────────────────────────────────────────────────────
+//
+//   init_arena() allocates four fixed buffers in WASM linear memory:
+//     Buffer A  (raw_a)    — 427×240 grayscale — Baseline (last emitted slide)
+//     Buffer B  (raw_b)    — 427×240 grayscale — Current frame being evaluated
+//     Buffer Prev (raw_prev) — 427×240 grayscale — Previous frame (drift detection)
+//     RGBA Buffer (rgba_buf) — 427×240×4 RGBA  — Staging area for pixel ingestion
+//
+//   Total: ~512KB. Allocated once, never freed, never resized.
+//   Zero per-frame allocations. Zero GC pressure.
+//
+// ── PERFORMANCE INVARIANTS ───────────────────────────────────────────────
+//
+//   • All hot loops are bounds-check-free (LLVM proves safety at compile time)
+//   • Edge detection uses branchless (diff > threshold) as u8 casts
+//   • Grayscale conversion uses integer-only BT.601 coefficients (no floats)
+//   • AudioExtractor reuses a scratch Uint8Array + options Object across reads
+//
+// ── SAFETY: STATIC MUT ──────────────────────────────────────────────────
+//
+//   This module uses `static mut ARENA` to bypass Rust's aliasing rules.
+//   This is safe ONLY because:
+//     1. WASM is SINGLE-THREADED — no data races possible
+//     2. NO RE-ENTRANCY — JS never calls Rust concurrently
+//     3. No stored references — only raw pointers returned to JS
+//
+//   Violating these assumptions → Undefined Behavior.
+// ═══════════════════════════════════════════════════════════════════════════
+
 
 use std::io::{Read, Seek, SeekFrom, Result as IoResult};
 use js_sys::{Uint8Array, Object, Reflect};
@@ -86,20 +118,21 @@ pub fn init_arena() {
 }
 
 #[wasm_bindgen]
-pub fn get_buffer_a_ptr() -> *mut u8 { unsafe { ARENA.as_mut().unwrap().raw_a.as_mut_ptr() } }
+pub fn get_buffer_a_ptr() -> *mut u8 { unsafe { match ARENA.as_mut() { Some(a) => a.raw_a.as_mut_ptr(), None => std::ptr::null_mut() } } }
 #[wasm_bindgen]
-pub fn get_buffer_b_ptr() -> *mut u8 { unsafe { ARENA.as_mut().unwrap().raw_b.as_mut_ptr() } }
+pub fn get_buffer_b_ptr() -> *mut u8 { unsafe { match ARENA.as_mut() { Some(a) => a.raw_b.as_mut_ptr(), None => std::ptr::null_mut() } } }
 #[wasm_bindgen]
-pub fn get_buffer_prev_ptr() -> *mut u8 { unsafe { ARENA.as_mut().unwrap().raw_prev.as_mut_ptr() } }
+pub fn get_buffer_prev_ptr() -> *mut u8 { unsafe { match ARENA.as_mut() { Some(a) => a.raw_prev.as_mut_ptr(), None => std::ptr::null_mut() } } }
 #[wasm_bindgen]
-pub fn get_rgba_buffer_ptr() -> *mut u8 { unsafe { ARENA.as_mut().unwrap().rgba_buf.as_mut_ptr() } }
+pub fn get_rgba_buffer_ptr() -> *mut u8 { unsafe { match ARENA.as_mut() { Some(a) => a.rgba_buf.as_mut_ptr(), None => std::ptr::null_mut() } } }
 
 /// Efficient rotation: Current becomes Previous
 #[wasm_bindgen]
 pub fn shift_current_to_prev() {
     unsafe {
-        let arena = ARENA.as_mut().unwrap();
-        arena.raw_prev.copy_from_slice(&arena.raw_b);
+        if let Some(arena) = ARENA.as_mut() {
+            arena.raw_prev.copy_from_slice(&arena.raw_b);
+        }
     }
 }
 
@@ -109,7 +142,7 @@ pub fn shift_current_to_prev() {
 #[wasm_bindgen]
 pub fn copy_rgba_to_gray(is_target_b: bool) {
     unsafe {
-        let arena = ARENA.as_mut().unwrap();
+        let arena = match ARENA.as_mut() { Some(a) => a, None => return };
         let target = if is_target_b { &mut arena.raw_b } else { &mut arena.raw_a };
 
         let src = &arena.rgba_buf[..ARENA_SIZE * 4];
@@ -182,7 +215,7 @@ fn compare_grid_density(edges_a: &[u8], edges_b: &[u8], width: usize, height: us
 #[wasm_bindgen]
 pub fn compare_frames(edge_threshold: i16, density_num: u32, mask: u64) -> u32 {
     unsafe {
-        let arena = ARENA.as_mut().expect("Arena not initialized");
+        let arena = match ARENA.as_mut() { Some(a) => a, None => return 0 };
         compute_edge_map_into(&arena.raw_a, ARENA_WIDTH, ARENA_HEIGHT, edge_threshold, &mut arena.edge_a);
         compute_edge_map_into(&arena.raw_b, ARENA_WIDTH, ARENA_HEIGHT, edge_threshold, &mut arena.edge_b);
         compare_grid_density(&arena.edge_a, &arena.edge_b, ARENA_WIDTH, ARENA_HEIGHT, density_num, 100, mask)
@@ -192,7 +225,7 @@ pub fn compare_frames(edge_threshold: i16, density_num: u32, mask: u64) -> u32 {
 #[wasm_bindgen]
 pub fn compute_dhash(is_buffer_b: bool) -> u64 {
     unsafe {
-        let arena = ARENA.as_ref().expect("Arena not initialized");
+        let arena = match ARENA.as_ref() { Some(a) => a, None => return 0 };
         let pixels = if is_buffer_b { &arena.raw_b } else { &arena.raw_a };
         let w = ARENA_WIDTH;
         let h = ARENA_HEIGHT;
@@ -232,7 +265,7 @@ pub fn compute_dhash(is_buffer_b: bool) -> u64 {
 #[wasm_bindgen]
 pub fn check_stability(stability_threshold: u64) -> bool {
     unsafe {
-        let arena = ARENA.as_ref().expect("Arena not initialized");
+        let arena = match ARENA.as_ref() { Some(a) => a, None => return false };
         let total_pixels = (ARENA_WIDTH as u64) * (ARENA_HEIGHT as u64);
         let mut diff_sum: u64 = 0;
         for i in 0..ARENA_SIZE {
@@ -249,7 +282,7 @@ pub fn check_stability(stability_threshold: u64) -> bool {
 #[wasm_bindgen]
 pub fn compare_prev_current(edge_threshold: i16, density_num: u32, mask: u64) -> u32 {
     unsafe {
-        let arena = ARENA.as_mut().expect("Arena not initialized");
+        let arena = match ARENA.as_mut() { Some(a) => a, None => return 0 };
         compute_edge_map_into(&arena.raw_prev, ARENA_WIDTH, ARENA_HEIGHT, edge_threshold, &mut arena.edge_a);
         compute_edge_map_into(&arena.raw_b, ARENA_WIDTH, ARENA_HEIGHT, edge_threshold, &mut arena.edge_b);
         compare_grid_density(&arena.edge_a, &arena.edge_b, ARENA_WIDTH, ARENA_HEIGHT, density_num, 100, mask)
@@ -260,7 +293,7 @@ pub fn compare_prev_current(edge_threshold: i16, density_num: u32, mask: u64) ->
 #[wasm_bindgen]
 pub fn get_avg_brightness() -> u32 {
     unsafe {
-        let arena = ARENA.as_ref().expect("Arena not initialized");
+        let arena = match ARENA.as_ref() { Some(a) => a, None => return 0 };
         let mut sum: u64 = 0;
         for i in 0..ARENA_SIZE {
             sum += arena.raw_b[i] as u64;
