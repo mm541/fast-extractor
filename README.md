@@ -32,6 +32,10 @@ Extract presentation slides and audio from video files entirely in the browser â
 | **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **1080p FHD** | Turbo | 5h 53m | **149s** | **142x** | ~142 FPS |
 | **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **1080p FHD** | Accurate | 5h 53m | **1322s** | **16x** | ~16 FPS |
 | **Redmi Note 9 Pro** (SD 720G, 4GB) | Android (Chrome 146) | **1080p FHD** | Turbo | 5h 53m | **600s** | **35x** | ~35 FPS |
+| **Redmi Note 9 Pro** (SD 720G, 4GB) | Android (Chrome 146) | **1080p FHD** | Accurate | 5h 53m | **4610s** | **4.6x** | ~4.6 FPS |
+| **AMD A6-7310** (2015 Legacy APU, 4GB) | Linux (Firefox 149) | **1080p FHD** | Turbo | 5h 53m | **977s** | **22x** | ~22 FPS |
+
+*Note: The AMD A6 benchmark demonstrates worst-case "floor" performance, successfully extracting a 6-hour video on a decade-old processor with slow DDR3 memory, proving the engine's extreme memory efficiency.*
 
 ---
 
@@ -467,7 +471,7 @@ cp pkg/wasm_extractor_bg.wasm.d.ts ../src/wasm/
 
 ## License
 
-MIT
+Released under the [MIT License](LICENSE).
 
 ---
 
