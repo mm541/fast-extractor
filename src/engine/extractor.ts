@@ -161,7 +161,7 @@ export interface ExtractionMetrics {
   endTime?: number;
   totalFrames: number;
   totalSlides: number;
-  peakRamMb: number;
+  // peakRamMb: number; // Removed due to inconsistent browser security gating for real memory APIs
   avgFrameProcessTimeMs: number;
   /** Last video frame timestamp in seconds — used to compute last slide's endMs */
   lastFrameTimestamp?: number;
@@ -251,7 +251,7 @@ export class SlideExtractor {
   private pendingCandidate: { bitmap: ImageBitmap; timestamp: number; hash: bigint } | null = null;
 
   private metrics: ExtractionMetrics = {
-    startTime: 0, totalFrames: 0, totalSlides: 0, peakRamMb: 0, avgFrameProcessTimeMs: 0
+    startTime: 0, totalFrames: 0, totalSlides: 0, avgFrameProcessTimeMs: 0
   };
 
 
@@ -263,7 +263,7 @@ export class SlideExtractor {
   }
 
   public async extract(file: File, demuxerWasmUrl: string) {
-    this.metrics = { startTime: performance.now(), totalFrames: 0, totalSlides: 0, peakRamMb: 0, avgFrameProcessTimeMs: 0 };
+    this.metrics = { startTime: performance.now(), totalFrames: 0, totalSlides: 0, avgFrameProcessTimeMs: 0 };
     this.hasBaseline = false;
     this.savedHashes = [];
     if (this.pendingCandidate) { this.pendingCandidate.bitmap.close(); }
@@ -869,41 +869,15 @@ export class SlideExtractor {
   }
 
   /**
-   * RAM MEASUREMENT — uses the real W3C `measureUserAgentSpecificMemory()` API.
-   *
-   * WHAT IT MEASURES (Chromium):
-   *   The full process footprint — JS heap, WASM linear memory, OffscreenCanvases,
-   *   GPU-backed VideoFrame textures, WebCodecs decoder buffers, OPFS caches, etc.
-   *   This matches what Chrome Task Manager reports.
-   *
-   * BROWSER COMPATIBILITY:
-   *   ┌──────────────┬───────────────────────────────────────────────────┐
-   *   │ Chrome/Edge  │ ✅ Full total memory (requires crossOriginIsolated) │
-   *   │ Firefox      │ ❌ Falls back to WASM-only measurement             │
-   *   │ Safari       │ ❌ Falls back to WASM-only measurement             │
-   *   └──────────────┴───────────────────────────────────────────────────┘
-   *
-   * WHY FIRE-AND-FORGET (non-blocking):
-   *   The API returns a Promise (~20ms to resolve). We do NOT await it because
-   *   updateMetrics() is called from the hot extraction loop. Awaiting would
-   *   pause frame processing. Instead, we let the Promise resolve in the
-   *   background and update peakRamMb via .then(). This is safe because:
-   *     1. peakRamMb is only used for UI display
-   *     2. We only Math.max() it (monotonically increasing, no race hazard)
-   *     3. The value converges within 1-2 update cycles (~1-2 seconds)
+   * RAM MEASUREMENT (Commented out)
+   * We previously used performance.measureUserAgentSpecificMemory(), but it requires
+   * strict COOP/COEP (require-corp) headers which can break cross-origin resources.
+   * Fallbacks to WASM memory only measure ~25MB (missing the 300MB+ in GPU/Decoder bounds).
+   * Rather than showing wildly inaccurate numbers based on the user's browser security context,
+   * we've removed this metric for now.
    */
   private updateMetrics(_decoderQueueSize: number = 0) {
-    if (typeof performance !== 'undefined' && 'measureUserAgentSpecificMemory' in performance) {
-      (performance as any).measureUserAgentSpecificMemory().then((result: { bytes: number }) => {
-        const totalMb = Math.round(result.bytes / 1e6);
-        this.metrics.peakRamMb = Math.max(this.metrics.peakRamMb, totalMb);
-      }).catch(() => { /* API rejected — security policy or unsupported context */ });
-    } else {
-      // Fallback: report only what we can measure exactly (WASM linear memory).
-      // On Firefox/Safari, this will show a smaller number than actual total usage.
-      const wasmMb = Math.round(this.wasm.memory.buffer.byteLength / 1e6);
-      this.metrics.peakRamMb = Math.max(this.metrics.peakRamMb, wasmMb);
-    }
+    // Left empty for future implementation if a reliable sync API ever emerges.
   }
 }
 

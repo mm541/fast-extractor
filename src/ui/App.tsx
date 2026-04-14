@@ -594,10 +594,10 @@ const App: React.FC = () => {
                                 {mode === 'turbo' ? ' Keyframes/s' : ' FPS'}
                             </span>
                         </div>
-                        <div className="metric-card">
+                        {/* <div className="metric-card">
                             <span className="label">Peak RAM</span>
                             <span className="value">{metrics.peakRamMb > 0 ? `${Math.round(metrics.peakRamMb)}MB` : 'N/A'}</span>
-                        </div>
+                        </div> */}
                         <div className="metric-card">
                             <span className="label">Frame Analysis Time</span>
                             <span className="value">{metrics.avgFrameProcessTimeMs?.toFixed(1) ?? 'N/A'}ms</span>

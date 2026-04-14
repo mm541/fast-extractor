@@ -96,7 +96,7 @@ export interface ProgressEvent {
   metrics?: {
     totalFrames: number;
     totalSlides: number;
-    peakRamMb: number;
+    // peakRamMb: number; // Removed due to browser security gating inconsistencies
     avgFrameProcessTimeMs: number;
   };
 }
