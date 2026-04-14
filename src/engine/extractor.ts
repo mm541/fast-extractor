@@ -254,10 +254,7 @@ export class SlideExtractor {
     startTime: 0, totalFrames: 0, totalSlides: 0, peakRamMb: 0, avgFrameProcessTimeMs: 0
   };
 
-  // Placeholder dimensions to prevent NaN logic crashes during startup.
-  // These are immediately overwritten with exact dimensions when demuxer loads.
-  private videoWidth = 1920;
-  private videoHeight = 1080;
+
 
   constructor(wasm: WasmModule, options?: Partial<SlideExtractorOptions>) {
     this.wasm = wasm;
@@ -341,8 +338,7 @@ export class SlideExtractor {
    */
   private async extractKeyframes(demuxer: WebDemuxer, duration: number, interval: number) {
     const config = await demuxer.getDecoderConfig('video');
-    this.videoWidth = config.codedWidth || 1920;
-    this.videoHeight = config.codedHeight || 1080;
+
     
     let packetCount = 0;
     let decodedCount = 0;
@@ -872,25 +868,42 @@ export class SlideExtractor {
       <= this.options.dhashDuplicateThreshold;
   }
 
-  private updateMetrics(decoderQueueSize: number = 0) {
-    // 1. WASM Linear Memory (exact byte length of our ArrayBuffer)
-    const wasmRamMb = this.wasm.memory.buffer.byteLength / 1e6;
-
-    // 2. Decoder buffers & WebCodecs queue
-    // Each frame in WebCodecs queue holds raw GPU pixels. Worst case: RGBA.
-    // Use exact dimensions from the video demuxer to prevent false readings.
-    const frameSizeMb = (this.videoWidth * this.videoHeight * 4) / 1e6;
-    // FFmpeg/Demuxer baseline overhead is roughly ~30MB.
-    const decoderOverheadMb = 30 + (decoderQueueSize * frameSizeMb);
-
-    // 3. Fallback to performance.memory if available for V8 JS Heap
-    const jsHeapMb = (performance as any).memory?.usedJSHeapSize 
-      ? (performance as any).memory.usedJSHeapSize / 1e6 
-      : 15; // default 15MB assumption if OS security policy blocks API
-
-    const totalEstimatedMb = wasmRamMb + decoderOverheadMb + jsHeapMb;
-
-    this.metrics.peakRamMb = Math.max(this.metrics.peakRamMb, Math.round(totalEstimatedMb));
+  /**
+   * RAM MEASUREMENT — uses the real W3C `measureUserAgentSpecificMemory()` API.
+   *
+   * WHAT IT MEASURES (Chromium):
+   *   The full process footprint — JS heap, WASM linear memory, OffscreenCanvases,
+   *   GPU-backed VideoFrame textures, WebCodecs decoder buffers, OPFS caches, etc.
+   *   This matches what Chrome Task Manager reports.
+   *
+   * BROWSER COMPATIBILITY:
+   *   ┌──────────────┬───────────────────────────────────────────────────┐
+   *   │ Chrome/Edge  │ ✅ Full total memory (requires crossOriginIsolated) │
+   *   │ Firefox      │ ❌ Falls back to WASM-only measurement             │
+   *   │ Safari       │ ❌ Falls back to WASM-only measurement             │
+   *   └──────────────┴───────────────────────────────────────────────────┘
+   *
+   * WHY FIRE-AND-FORGET (non-blocking):
+   *   The API returns a Promise (~20ms to resolve). We do NOT await it because
+   *   updateMetrics() is called from the hot extraction loop. Awaiting would
+   *   pause frame processing. Instead, we let the Promise resolve in the
+   *   background and update peakRamMb via .then(). This is safe because:
+   *     1. peakRamMb is only used for UI display
+   *     2. We only Math.max() it (monotonically increasing, no race hazard)
+   *     3. The value converges within 1-2 update cycles (~1-2 seconds)
+   */
+  private updateMetrics(_decoderQueueSize: number = 0) {
+    if (typeof performance !== 'undefined' && 'measureUserAgentSpecificMemory' in performance) {
+      (performance as any).measureUserAgentSpecificMemory().then((result: { bytes: number }) => {
+        const totalMb = Math.round(result.bytes / 1e6);
+        this.metrics.peakRamMb = Math.max(this.metrics.peakRamMb, totalMb);
+      }).catch(() => { /* API rejected — security policy or unsupported context */ });
+    } else {
+      // Fallback: report only what we can measure exactly (WASM linear memory).
+      // On Firefox/Safari, this will show a smaller number than actual total usage.
+      const wasmMb = Math.round(this.wasm.memory.buffer.byteLength / 1e6);
+      this.metrics.peakRamMb = Math.max(this.metrics.peakRamMb, wasmMb);
+    }
   }
 }
 
