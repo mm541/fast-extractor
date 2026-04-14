@@ -10,14 +10,9 @@
 //
 // ── INITIALIZATION CONTRACT ──────────────────────────────────────────────
 //
-//   init_arena() MUST be called before ANY slide detection function:
-//     • get_buffer_*_ptr(), copy_rgba_to_gray(), compare_frames(),
-//       compare_prev_current(), compute_dhash(), check_stability(),
-//       shift_current_to_prev(), get_avg_brightness()
-//
-//   If called without init_arena(), these functions will return safe
-//   defaults (0) instead of panicking. However, this is a programming
-//   error — the results are meaningless without an initialized arena.
+//   All slide detection functions lazily initialize the arena on first use.
+//   Calling init_arena() explicitly is optional but recommended for
+//   predictable timing (avoids a ~512KB allocation on the first frame).
 //
 //   AudioExtractor is independent of the arena and can be used standalone.
 //
@@ -108,31 +103,37 @@ impl FrameArena {
 
 static mut ARENA: Option<FrameArena> = None;
 
-#[wasm_bindgen]
-pub fn init_arena() {
-    unsafe {
-        if ARENA.is_none() {
-            ARENA = Some(FrameArena::new());
-        }
+/// Lazy accessor — guarantees the arena is always initialized.
+/// If JS forgot to call init_arena(), this silently creates it on first use.
+/// Cost: a single branch per call (predicted-taken after first init).
+#[inline(always)]
+unsafe fn arena() -> &'static mut FrameArena {
+    if ARENA.is_none() {
+        ARENA = Some(FrameArena::new());
     }
+    ARENA.as_mut().unwrap_unchecked()
 }
 
 #[wasm_bindgen]
-pub fn get_buffer_a_ptr() -> *mut u8 { unsafe { match ARENA.as_mut() { Some(a) => a.raw_a.as_mut_ptr(), None => std::ptr::null_mut() } } }
+pub fn init_arena() {
+    unsafe { let _ = arena(); }
+}
+
 #[wasm_bindgen]
-pub fn get_buffer_b_ptr() -> *mut u8 { unsafe { match ARENA.as_mut() { Some(a) => a.raw_b.as_mut_ptr(), None => std::ptr::null_mut() } } }
+pub fn get_buffer_a_ptr() -> *mut u8 { unsafe { arena().raw_a.as_mut_ptr() } }
 #[wasm_bindgen]
-pub fn get_buffer_prev_ptr() -> *mut u8 { unsafe { match ARENA.as_mut() { Some(a) => a.raw_prev.as_mut_ptr(), None => std::ptr::null_mut() } } }
+pub fn get_buffer_b_ptr() -> *mut u8 { unsafe { arena().raw_b.as_mut_ptr() } }
 #[wasm_bindgen]
-pub fn get_rgba_buffer_ptr() -> *mut u8 { unsafe { match ARENA.as_mut() { Some(a) => a.rgba_buf.as_mut_ptr(), None => std::ptr::null_mut() } } }
+pub fn get_buffer_prev_ptr() -> *mut u8 { unsafe { arena().raw_prev.as_mut_ptr() } }
+#[wasm_bindgen]
+pub fn get_rgba_buffer_ptr() -> *mut u8 { unsafe { arena().rgba_buf.as_mut_ptr() } }
 
 /// Efficient rotation: Current becomes Previous
 #[wasm_bindgen]
 pub fn shift_current_to_prev() {
     unsafe {
-        if let Some(arena) = ARENA.as_mut() {
-            arena.raw_prev.copy_from_slice(&arena.raw_b);
-        }
+        let a = arena();
+        a.raw_prev.copy_from_slice(&a.raw_b);
     }
 }
 
@@ -142,10 +143,10 @@ pub fn shift_current_to_prev() {
 #[wasm_bindgen]
 pub fn copy_rgba_to_gray(is_target_b: bool) {
     unsafe {
-        let arena = match ARENA.as_mut() { Some(a) => a, None => return };
-        let target = if is_target_b { &mut arena.raw_b } else { &mut arena.raw_a };
+        let a = arena();
+        let target = if is_target_b { &mut a.raw_b } else { &mut a.raw_a };
 
-        let src = &arena.rgba_buf[..ARENA_SIZE * 4];
+        let src = &a.rgba_buf[..ARENA_SIZE * 4];
         let dst = &mut target[..ARENA_SIZE];
 
         for (d, s) in dst.iter_mut().zip(src.chunks_exact(4)) {
@@ -215,18 +216,18 @@ fn compare_grid_density(edges_a: &[u8], edges_b: &[u8], width: usize, height: us
 #[wasm_bindgen]
 pub fn compare_frames(edge_threshold: i16, density_num: u32, mask: u64) -> u32 {
     unsafe {
-        let arena = match ARENA.as_mut() { Some(a) => a, None => return 0 };
-        compute_edge_map_into(&arena.raw_a, ARENA_WIDTH, ARENA_HEIGHT, edge_threshold, &mut arena.edge_a);
-        compute_edge_map_into(&arena.raw_b, ARENA_WIDTH, ARENA_HEIGHT, edge_threshold, &mut arena.edge_b);
-        compare_grid_density(&arena.edge_a, &arena.edge_b, ARENA_WIDTH, ARENA_HEIGHT, density_num, 100, mask)
+        let a = arena();
+        compute_edge_map_into(&a.raw_a, ARENA_WIDTH, ARENA_HEIGHT, edge_threshold, &mut a.edge_a);
+        compute_edge_map_into(&a.raw_b, ARENA_WIDTH, ARENA_HEIGHT, edge_threshold, &mut a.edge_b);
+        compare_grid_density(&a.edge_a, &a.edge_b, ARENA_WIDTH, ARENA_HEIGHT, density_num, 100, mask)
     }
 }
 
 #[wasm_bindgen]
 pub fn compute_dhash(is_buffer_b: bool) -> u64 {
     unsafe {
-        let arena = match ARENA.as_ref() { Some(a) => a, None => return 0 };
-        let pixels = if is_buffer_b { &arena.raw_b } else { &arena.raw_a };
+        let a = arena();
+        let pixels = if is_buffer_b { &a.raw_b } else { &a.raw_a };
         let w = ARENA_WIDTH;
         let h = ARENA_HEIGHT;
         let dw: usize = 9;
@@ -265,11 +266,11 @@ pub fn compute_dhash(is_buffer_b: bool) -> u64 {
 #[wasm_bindgen]
 pub fn check_stability(stability_threshold: u64) -> bool {
     unsafe {
-        let arena = match ARENA.as_ref() { Some(a) => a, None => return false };
+        let a = arena();
         let total_pixels = (ARENA_WIDTH as u64) * (ARENA_HEIGHT as u64);
         let mut diff_sum: u64 = 0;
         for i in 0..ARENA_SIZE {
-            diff_sum += (arena.raw_b[i] as i16 - arena.raw_prev[i] as i16).unsigned_abs() as u64;
+            diff_sum += (a.raw_b[i] as i16 - a.raw_prev[i] as i16).unsigned_abs() as u64;
         }
         diff_sum < stability_threshold * total_pixels
     }
@@ -282,10 +283,10 @@ pub fn check_stability(stability_threshold: u64) -> bool {
 #[wasm_bindgen]
 pub fn compare_prev_current(edge_threshold: i16, density_num: u32, mask: u64) -> u32 {
     unsafe {
-        let arena = match ARENA.as_mut() { Some(a) => a, None => return 0 };
-        compute_edge_map_into(&arena.raw_prev, ARENA_WIDTH, ARENA_HEIGHT, edge_threshold, &mut arena.edge_a);
-        compute_edge_map_into(&arena.raw_b, ARENA_WIDTH, ARENA_HEIGHT, edge_threshold, &mut arena.edge_b);
-        compare_grid_density(&arena.edge_a, &arena.edge_b, ARENA_WIDTH, ARENA_HEIGHT, density_num, 100, mask)
+        let a = arena();
+        compute_edge_map_into(&a.raw_prev, ARENA_WIDTH, ARENA_HEIGHT, edge_threshold, &mut a.edge_a);
+        compute_edge_map_into(&a.raw_b, ARENA_WIDTH, ARENA_HEIGHT, edge_threshold, &mut a.edge_b);
+        compare_grid_density(&a.edge_a, &a.edge_b, ARENA_WIDTH, ARENA_HEIGHT, density_num, 100, mask)
     }
 }
 
@@ -293,10 +294,10 @@ pub fn compare_prev_current(edge_threshold: i16, density_num: u32, mask: u64) ->
 #[wasm_bindgen]
 pub fn get_avg_brightness() -> u32 {
     unsafe {
-        let arena = match ARENA.as_ref() { Some(a) => a, None => return 0 };
+        let a = arena();
         let mut sum: u64 = 0;
         for i in 0..ARENA_SIZE {
-            sum += arena.raw_b[i] as u64;
+            sum += a.raw_b[i] as u64;
         }
         (sum / ARENA_SIZE as u64) as u32
     }
