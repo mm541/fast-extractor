@@ -51,9 +51,8 @@
  *      a standard URL or a blob URL.
  */
 
-// Vite-specific imports — used as defaults when consumer doesn't provide URLs.
-// Library consumers using other bundlers will override these via options.
-import MediaWorker from './worker?worker';
+// Proprietary ?worker syntax removed to decouple from Vite.
+// We now use the standard Web API `new URL('./worker.ts', import.meta.url)` instead.
 import defaultWasmUrl from './wasm/wasm_extractor_bg.wasm?url';
 
 // ─── Public Event Types ───
@@ -301,8 +300,11 @@ export class FastExtractor {
     const stream = new ReadableStream<ExtractorEvent>({
       start: async (controller) => {
         try {
-          // 1. Create worker instantly
-          worker = this.options.worker ?? new MediaWorker();
+          // 1. Create worker
+          // If the consumer passes an explicit worker or URL, use it.
+          // Otherwise, construct standard Worker using import.meta.url (which Vite, Webpack 5, Next, etc compute statically).
+          const standardWorkerUrl = new URL('./worker.ts', import.meta.url);
+          worker = this.options.worker ?? new Worker(standardWorkerUrl, { type: 'module' });
 
           // 2. Handle abort signal
           if (signal) {
