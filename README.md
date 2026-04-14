@@ -265,6 +265,8 @@ new FastExtractor({ mode: 'accurate' });
 
 All options have sensible defaults. Most users won't need to change anything.
 
+> **🎯 Tuning Tip:** Don't guess parameter values from docs — use the **[live demo](https://fast-extractor.mm541.in)** as a calibration workbench. Drop in a sample video representative of your use case, adjust `edgeThreshold`, `blockThreshold`, `confirmThreshold`, and the region mask interactively, see exactly which slides get captured in real-time, then copy the tuned values into your code.
+
 ```typescript
 new FastExtractor({
   mode: 'turbo',
