@@ -31,8 +31,8 @@
  *     → handles cancellation → worker.terminate()
  *
  * ⚠️ RULES FOR FUTURE DEVELOPERS:
- *   1. This file must NEVER import from worker.ts directly without using the standard Worker 
- *      constructor. It relies on `new Worker(new URL('./worker.ts', import.meta.url))`.
+ *   1. This file must NEVER import from worker.ts directly.
+ *      It only references the Worker via Vite's ?worker import.
  *   2. The worker protocol (message types) is the contract.
  *      If you change message types in worker.ts, update the switch below.
  *   3. This file must have ZERO React dependencies.
@@ -51,10 +51,10 @@
  *      a standard URL or a blob URL.
  */
 
-// Proprietary ?worker syntax removed to decouple from Vite.
-// We now use the standard Web API `new URL('./worker.ts', import.meta.url)` instead.
-// Proprietary ?url syntax removed to decouple from Vite.
-// We now use the standard Web API `new URL('./wasm/wasm_extractor_bg.wasm', import.meta.url).href` instead.
+// Vite-specific imports — used as defaults when consumer doesn't provide URLs.
+// Library consumers using other bundlers will override these via options.
+import MediaWorker from './worker?worker';
+import defaultWasmUrl from './wasm/wasm_extractor_bg.wasm?url';
 
 // ─── Public Event Types ───
 
@@ -301,11 +301,8 @@ export class FastExtractor {
     const stream = new ReadableStream<ExtractorEvent>({
       start: async (controller) => {
         try {
-          // 1. Create worker
-          // If the consumer passes an explicit worker or URL, use it.
-          // Otherwise, construct standard Worker using import.meta.url (which Vite, Webpack 5, Next, etc compute statically).
-          const standardWorkerUrl = new URL('./worker.ts', import.meta.url);
-          worker = this.options.worker ?? new Worker(standardWorkerUrl, { type: 'module' });
+          // 1. Create worker instantly
+          worker = this.options.worker ?? new MediaWorker();
 
           // 2. Handle abort signal
           if (signal) {
@@ -441,7 +438,6 @@ export class FastExtractor {
           worker.postMessage({ type: 'START_INGEST', fileName: file.name, file });
 
           // 6. Fetch WASM asynchronously in the background and send INIT when ready
-          const defaultWasmUrl = new URL('./wasm/wasm_extractor_bg.wasm', import.meta.url).href;
           const resolvedWasmUrl = this.options.wasmUrl
             ?? new URL(defaultWasmUrl, self.location?.origin ?? 'https://localhost').href;
           fetch(resolvedWasmUrl)
