@@ -53,7 +53,8 @@
 
 // Proprietary ?worker syntax removed to decouple from Vite.
 // We now use the standard Web API `new URL('./worker.ts', import.meta.url)` instead.
-import defaultWasmUrl from './wasm/wasm_extractor_bg.wasm?url';
+// Proprietary ?url syntax removed to decouple from Vite.
+// We now use the standard Web API `new URL('./wasm/wasm_extractor_bg.wasm', import.meta.url).href` instead.
 
 // ─── Public Event Types ───
 
@@ -440,6 +441,7 @@ export class FastExtractor {
           worker.postMessage({ type: 'START_INGEST', fileName: file.name, file });
 
           // 6. Fetch WASM asynchronously in the background and send INIT when ready
+          const defaultWasmUrl = new URL('./wasm/wasm_extractor_bg.wasm', import.meta.url).href;
           const resolvedWasmUrl = this.options.wasmUrl
             ?? new URL(defaultWasmUrl, self.location?.origin ?? 'https://localhost').href;
           fetch(resolvedWasmUrl)
