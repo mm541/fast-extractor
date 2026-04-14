@@ -56,6 +56,25 @@
 import MediaWorker from './worker?worker';
 import defaultWasmUrl from './wasm/wasm_extractor_bg.wasm?url';
 
+// ─── Public Error Types ───
+
+export type ExtractorErrorCode =
+  | 'ERR_OPFS_NOT_SUPPORTED'
+  | 'ERR_OPFS_PERMISSION'
+  | 'ERR_OPFS_STALE_LOCK'
+  | 'ERR_WASM_INIT'
+  | 'ERR_FILE_INGEST'
+  | 'ERR_AUDIO_EXTRACTION'
+  | 'ERR_VIDEO_DECODE'
+  | 'ERR_WORKER_GENERIC';
+
+export class ExtractorError extends Error {
+  constructor(public code: ExtractorErrorCode, message: string) {
+    super(message);
+    this.name = 'ExtractorError';
+  }
+}
+
 // ─── Public Event Types ───
 
 /** Audio chunk streamed from the worker (zero-copy transferred ArrayBuffer) */
@@ -391,22 +410,26 @@ export class FastExtractor {
 
                 case 'ERROR': {
                   const errorMsg: string = e.data.error;
+                  const errorCode: ExtractorErrorCode = e.data.code ?? 'ERR_WORKER_GENERIC';
+                  const customError = new ExtractorError(errorCode, errorMsg);
+                  
                   const isRecoverable = errorMsg.includes('File ingest failed') || errorMsg.includes('could not be read');
-                  if (isRecoverable) {
+                  if (errorCode === 'ERR_FILE_INGEST' || isRecoverable) {
                     // Emit as a recoverable event — let consumer decide how to handle
                     controller.enqueue({
                       type: 'error',
-                      message: errorMsg,
+                      message: customError.message,
                       recoverable: true,
                     });
-                    // Don't close the stream — consumer may retry with a fresh File
+                    // Don't close the stream via error — close it cleanly or leave open?
+                    // Previous logic closed it.
                     worker?.terminate();
                     worker = null;
                     controller.close();
                   } else {
                     worker?.terminate();
                     worker = null;
-                    controller.error(new Error(errorMsg));
+                    controller.error(customError);
                   }
                   break;
                 }

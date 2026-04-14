@@ -68,7 +68,7 @@ self.postMessage({ type: 'STATUS', status: 'Worker Thread Initializing...' });
 self.onerror = (event: string | Event, source?: string, lineno?: number, colno?: number, error?: Error) => {
     const msg = typeof event === 'string' ? event : (error?.message || 'Unknown Worker Error');
     console.error("Worker Global Error:", msg, { source, lineno, colno, error });
-    self.postMessage({ type: 'ERROR', error: 'Worker Global Error: ' + msg });
+    self.postMessage({ type: 'ERROR', code: 'ERR_WORKER_GENERIC', error: 'Worker Global Error: ' + msg });
 };
 
 // Polyfill: some libraries (web-demuxer) check for `window` global
@@ -207,7 +207,7 @@ self.onmessage = async (e: MessageEvent) => {
             try {
                 await initStorage();
             } catch (err: any) {
-                self.postMessage({ type: 'ERROR', error: 'OPFS not available: ' + err.message });
+                self.postMessage({ type: 'ERROR', code: 'ERR_OPFS_NOT_SUPPORTED', error: 'OPFS not available: ' + err.message });
                 return;
             }
             self.postMessage({ type: 'STATUS', status: 'Worker Initialized. Ready.' });
@@ -230,7 +230,7 @@ self.onmessage = async (e: MessageEvent) => {
 
             if (!root) {
                 try { await initStorage(); } catch (err: any) {
-                    self.postMessage({ type: 'ERROR', error: 'Storage init failed: ' + err.message });
+                    self.postMessage({ type: 'ERROR', code: 'ERR_OPFS_NOT_SUPPORTED', error: 'Storage init failed: ' + err.message });
                     return;
                 }
             }
@@ -241,7 +241,7 @@ self.onmessage = async (e: MessageEvent) => {
                 (self as any).currentTempFile = currentTempFile;
                 syncHandle = await createSyncAccessHandleWithTimeout(fileHandle, 5000);
             } catch (err: any) {
-                self.postMessage({ type: 'ERROR', error: 'File handle failed: ' + err.message });
+                self.postMessage({ type: 'ERROR', code: 'ERR_OPFS_STALE_LOCK', error: 'File handle failed: ' + err.message });
                 return;
             }
 
@@ -284,7 +284,7 @@ self.onmessage = async (e: MessageEvent) => {
                     syncHandle!.truncate(0);
                     await doIngest(ingestFile);
                 } catch (retryErr: any) {
-                    self.postMessage({ type: 'ERROR', error: 'File ingest failed: ' + retryErr.message });
+                    self.postMessage({ type: 'ERROR', code: 'ERR_FILE_INGEST', error: 'File ingest failed: ' + retryErr.message });
                     return;
                 }
             }
@@ -307,7 +307,7 @@ self.onmessage = async (e: MessageEvent) => {
         }
     } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        self.postMessage({ type: 'ERROR', error: message });
+        self.postMessage({ type: 'ERROR', code: 'ERR_WORKER_GENERIC', error: message });
     }
 };
 
@@ -391,7 +391,7 @@ async function processMedia(fileName: string, options: any = {}) {
                     postMessage({ type: 'STATUS', status: `⚠️ Audio unavailable: ${reason}. Extracting slides only...` });
                 } else {
                     // Fatal — audio was the ONLY thing requested and it failed.
-                    postMessage({ type: 'ERROR', error: `Audio extraction failed: ${reason}. This file does not contain an AAC audio track (common with WebM/Opus). Try an MP4 file instead.` });
+                    postMessage({ type: 'ERROR', code: 'ERR_AUDIO_EXTRACTION', error: `Audio extraction failed: ${reason}. This file does not contain an AAC audio track (common with WebM/Opus). Try an MP4 file instead.` });
                     return;
                 }
             } finally {
@@ -522,7 +522,7 @@ async function processMedia(fileName: string, options: any = {}) {
         }
     } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        postMessage({ type: 'ERROR', error: 'Extraction Error: ' + message });
+        postMessage({ type: 'ERROR', code: 'ERR_VIDEO_DECODE', error: 'Extraction Error: ' + message });
     } finally {
         if (syncHandle) {
             try { syncHandle.close(); } catch (e) {}
