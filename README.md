@@ -25,15 +25,15 @@ Extract presentation slides and audio from video files entirely in the browser �
 
 *All benchmarks represent the **full extraction pipeline** (concurrent Audio AAC stream demuxing + unique Slide WebP exportation).*
 
-| Device / Hardware | OS / Browser | Resolution | Mode | Video Length | Processing Time | Speed | Throughput |
-|-------------------|--------------|------------|------|--------------|-----------------|-------|------------|
-| **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **720p HD** | Turbo | 3h 43m | **47s** | **285x** | ~285 FPS |
-| **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **720p HD** | Accurate | 3h 43m | **410s** | **33x** | ~33 FPS |
-| **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **1080p FHD** | Turbo | 5h 53m | **149s** | **142x** | ~142 FPS |
-| **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **1080p FHD** | Accurate | 5h 53m | **1322s** | **16x** | ~16 FPS |
-| **Redmi Note 9 Pro** (SD 720G, 4GB) | Android (Chrome 146) | **1080p FHD** | Turbo | 5h 53m | **600s** | **35x** | ~35 FPS |
-| **Redmi Note 9 Pro** (SD 720G, 4GB) | Android (Chrome 146) | **1080p FHD** | Accurate | 5h 53m | **4610s** | **4.6x** | ~4.6 FPS |
-| **AMD A6-7310** (2015 Legacy APU, 4GB) | Linux (Firefox 149) | **1080p FHD** | Turbo | 5h 53m | **977s** | **22x** | ~22 FPS |
+| Device / Hardware | OS / Browser | Resolution | Mode | Video Length | Processing Time | Speed |
+|-------------------|--------------|------------|------|--------------|-----------------|-------|
+| **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **720p HD** | Turbo | 3h 43m | **47s** | **285×** |
+| **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **720p HD** | Accurate | 3h 43m | **6m 50s** | **33×** |
+| **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **1080p FHD** | Turbo | 5h 53m | **2m 29s** | **142×** |
+| **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **1080p FHD** | Accurate | 5h 53m | **22m 2s** | **16×** |
+| **Redmi Note 9 Pro** (SD 720G, 4GB) | Android (Chrome 146) | **1080p FHD** | Turbo | 5h 53m | **10m** | **35×** |
+| **Redmi Note 9 Pro** (SD 720G, 4GB) | Android (Chrome 146) | **1080p FHD** | Accurate | 5h 53m | **1h 16m** | **4.6×** |
+| **AMD A6-7310** (2015 Legacy APU, 4GB) | Linux (Firefox 149) | **1080p FHD** | Turbo | 5h 53m | **16m 17s** | **22×** |
 
 *Note: The AMD A6 benchmark demonstrates worst-case "floor" performance, successfully extracting a 6-hour video on a decade-old processor with slow DDR3 memory, proving the engine's extreme memory efficiency.*
 
