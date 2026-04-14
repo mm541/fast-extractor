@@ -31,8 +31,8 @@
  *     → handles cancellation → worker.terminate()
  *
  * ⚠️ RULES FOR FUTURE DEVELOPERS:
- *   1. This file must NEVER import from worker.ts directly.
- *      It only references the Worker via Vite's ?worker import.
+ *   1. This file must NEVER import from worker.ts directly without using the standard Worker 
+ *      constructor. It relies on `new Worker(new URL('./worker.ts', import.meta.url))`.
  *   2. The worker protocol (message types) is the contract.
  *      If you change message types in worker.ts, update the switch below.
  *   3. This file must have ZERO React dependencies.
