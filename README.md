@@ -107,6 +107,39 @@ while (true) {
 }
 ```
 
+### Error Handling
+
+All fatal errors are instances of `ExtractorError` with a typed `code` property. No string parsing required.
+
+```typescript
+import { FastExtractor, ExtractorError } from './fast-extractor';
+
+try {
+  for await (const event of extractor.extract(file)) {
+    // ... handle events
+  }
+} catch (err) {
+  if (err instanceof ExtractorError) {
+    switch (err.code) {
+      case 'ERR_OPFS_NOT_SUPPORTED':
+        showMessage('Your browser does not support OPFS. Try Chrome 102+.');
+        break;
+      case 'ERR_OPFS_STALE_LOCK':
+        showMessage('A previous session is still active. Refresh the page.');
+        break;
+      case 'ERR_AUDIO_EXTRACTION':
+        showMessage('No AAC audio track found. Try an MP4 file.');
+        break;
+      case 'ERR_VIDEO_DECODE':
+        showMessage('Video format not supported by this browser.');
+        break;
+      default:
+        showMessage(`Extraction failed: ${err.message}`);
+    }
+  }
+}
+```
+
 ### Cancellation
 
 ```typescript
@@ -364,7 +397,26 @@ await FastExtractor.cleanupStorage();
 | `audio_done` | `fileName: string` | Audio extraction complete |
 | `slide` | `imageBuffer`, `timestamp`, `startMs`, `endMs` | New slide detected |
 | `progress` | `percent`, `message`, `metrics?` | Status updates |
-| `error` | `message`, `recoverable` | Non-fatal error |
+| `error` | `message`, `recoverable` | Non-fatal error (stream stays open) |
+
+---
+
+## Error Codes
+
+Fatal errors thrown via the stream are instances of `ExtractorError` (extends `Error`) with a typed `code`:
+
+| Code | Meaning | Typical Cause |
+|------|---------|---------------|
+| `ERR_OPFS_NOT_SUPPORTED` | Browser lacks OPFS | Safari, older Firefox, non-secure context |
+| `ERR_OPFS_PERMISSION` | Storage permission denied | User denied storage quota prompt |
+| `ERR_OPFS_STALE_LOCK` | Previous crashed tab holds exclusive handle | Tab crashed without releasing `SyncAccessHandle` |
+| `ERR_WASM_INIT` | WASM module failed to initialize | Network error loading `.wasm`, or unsupported browser |
+| `ERR_FILE_INGEST` | File copy to OPFS failed | Disk quota exceeded, or corrupted file — **recoverable** |
+| `ERR_AUDIO_EXTRACTION` | No AAC track found | WebM/Opus files, screen recordings without audio |
+| `ERR_VIDEO_DECODE` | WebCodecs / demuxer failure | Unsupported codec, truncated file |
+| `ERR_WORKER_GENERIC` | Unhandled worker exception | Bug in extraction logic (should not occur) |
+
+`ERR_FILE_INGEST` is emitted as a **recoverable** stream event (not thrown), allowing the consumer to prompt for a different file without restarting.
 
 ---
 
@@ -398,24 +450,27 @@ await FastExtractor.cleanupStorage();
 ```
 fast-extractor/
 ├── src/
-│   ├── fast-extractor.ts    # Public API — ReadableStream wrapper
-│   ├── extractor.ts         # Detection engine (three-pointer drift)
-│   ├── worker.ts            # Web Worker — orchestrates the pipeline
-│   ├── App.tsx              # Reference implementation (React)
-│   ├── GridMaskPicker.tsx   # Region masking UI component
-│   ├── index.css            # Styles
-│   └── wasm/                # Pre-built WASM binaries
-│       ├── wasm_extractor_bg.wasm
-│       └── wasm_extractor.js
+│   ├── main.tsx                 # App entry point
+│   ├── engine/                  # ── Core extraction library (framework-agnostic) ──
+│   │   ├── fast-extractor.ts    #   Public API — ReadableStream wrapper + ExtractorError
+│   │   ├── extractor.ts         #   Slide detection engine (three-pointer drift)
+│   │   ├── worker.ts            #   Web Worker — OPFS + audio + video pipeline
+│   │   ├── types/               #   Type declarations (mp4box.d.ts)
+│   │   └── wasm/                #   Pre-built WASM binaries
+│   │       ├── wasm_extractor_bg.wasm
+│   │       └── wasm_extractor.js
+│   └── ui/                      # ── Reference demo app (React) ──
+│       ├── App.tsx              #   Demo UI with drag-and-drop
+│       └── GridMaskPicker.tsx   #   Interactive region masking component
 └── wasm-extractor/
     └── src/
-        └── lib.rs           # WASM module (Rust)
-            • Static memory arena (zero GC)
-            • RGBA→grayscale (SIMD-vectorized)
-            • Edge detection (branchless Sobel)
-            • dHash perceptual hashing
-            • 8×8 grid density comparison
-            • Audio extraction (Symphonia AAC)
+        └── lib.rs               # Rust/WASM module
+            • Static 512KB memory arena (zero GC, zero per-frame alloc)
+            • RGBA→grayscale (BT.601, SIMD auto-vectorized)
+            • Edge detection (branchless Sobel gradient)
+            • dHash perceptual hashing (64-bit fingerprint)
+            • 8×8 grid density comparison with bitmask exclusion
+            • Audio extraction (Symphonia AAC over OPFS sync reads)
 ```
 
 ### Detection Pipeline (per frame)
@@ -450,12 +505,12 @@ npx vite preview --port 4173
 ### Rebuilding WASM (requires Rust + wasm-pack)
 
 ```bash
+# One-step build (uses the npm script, outputs directly to src/engine/wasm/)
+npm run build:wasm
+
+# Or manually:
 cd wasm-extractor
-wasm-pack build --target web --release
-cp pkg/wasm_extractor_bg.wasm ../src/wasm/
-cp pkg/wasm_extractor.js ../src/wasm/
-cp pkg/wasm_extractor.d.ts ../src/wasm/
-cp pkg/wasm_extractor_bg.wasm.d.ts ../src/wasm/
+wasm-pack build --target web --out-dir ../src/engine/wasm
 ```
 
 ---
@@ -466,6 +521,37 @@ cp pkg/wasm_extractor_bg.wasm.d.ts ../src/wasm/
 - **RAG pipelines** — Slide images + timestamps + transcript → multi-modal vector embeddings
 - **Accessibility** — Generate slide descriptions from video content
 - **Archival** — Pull presentation assets from screen recordings
+
+---
+
+## Internals & Safety Contracts
+
+For anyone reading the source or contributing:
+
+| Invariant | Enforced By |
+|---|---|
+| **Zero per-frame allocations** | Static `FrameArena` in WASM — allocated once, never freed, never resized |
+| **Lazy memory init** | `arena()` helper auto-initializes on first use — impossible to read uninitialized memory |
+| **No data races** | WASM is single-threaded; `static mut` is safe under this constraint |
+| **VideoFrame leak prevention** | Every `VideoFrame` is closed immediately after pixel copy — unclosed frames hold GPU memory |
+| **OPFS lock timeout** | `createSyncAccessHandleWithTimeout(5000ms)` — prevents infinite hang from crashed-tab stale locks |
+| **Mobile file expiry bypass** | File is copied to OPFS while `<input>` permission is still alive — subsequent reads use the OPFS copy |
+| **Nested-worker CORS bypass** | web-demuxer WASM is fetched and converted to `data:` URL — no network request from `null`-origin blob worker |
+| **Zero-copy slide transfer** | `ArrayBuffer` is transferred (not cloned) from Worker to main thread via `postMessage` transferList |
+
+---
+
+## Production Build
+
+```
+dist/assets/
+  worker-DC5oHOjA.js               133KB    Compiled Web Worker
+  wasm_extractor_bg-DG2f_dB7.wasm  545KB    Rust/WASM binary (gzip: 272KB)
+  index-D_vfm4N4.js                210KB    React UI (gzip: 67KB)
+  index-CmtCqZpd.css               12KB     Styles (gzip: 3KB)
+```
+
+Total cold-load transfer: **~345KB gzipped**.
 
 ---
 
