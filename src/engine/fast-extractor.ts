@@ -214,6 +214,32 @@ export interface FastExtractorOptions {
    * Call FastExtractor.cleanupStorage() explicitly when you're done.
    */
   cleanupAfterExtraction?: boolean;
+
+  // ─── Debugging ───
+  /**
+   * When true, logs all internal worker messages and state transitions to the
+   * browser console. Useful for diagnosing extraction failures.
+   * Default: false. Has zero performance impact when disabled.
+   */
+  debug?: boolean;
+}
+
+// ─── Callback API ───
+
+/** Callback-style interface as an alternative to ReadableStream consumption. */
+export interface ExtractorCallbacks {
+  /** Called for each raw AAC audio chunk. */
+  onAudio?: (chunk: ArrayBuffer) => void;
+  /** Called when audio extraction is complete. */
+  onAudioDone?: (fileName: string) => void;
+  /** Called when a new slide is detected. */
+  onSlide?: (slide: { imageBuffer: ArrayBuffer; timestamp: string; startMs: number; endMs: number }) => void;
+  /** Called on progress updates. */
+  onProgress?: (percent: number, message: string, metrics?: ProgressEvent['metrics']) => void;
+  /** Called on recoverable errors (stream stays alive). */
+  onError?: (error: ExtractorError | Error) => void;
+  /** Called when extraction is fully complete. */
+  onDone?: () => void;
 }
 
 // ─── Main Class ───
@@ -351,8 +377,13 @@ export class FastExtractor {
           });
 
           // 5. Wire up message → stream translation
+          const debugMode = this.options.debug ?? false;
           worker.onmessage = (e: MessageEvent) => {
             const { type } = e.data;
+
+            if (debugMode) {
+              console.log(`[FastExtractor:DEBUG] Worker → Main | type=${type}`, e.data);
+            }
 
             try {
               switch (type) {
@@ -493,6 +524,66 @@ export class FastExtractor {
     });
 
     return stream;
+  }
+
+  /**
+   * Callback-style extraction — a simpler alternative to ReadableStream.
+   *
+   * Internally calls `extract()` and reads the stream, dispatching to your callbacks.
+   * Returns a Promise that resolves when extraction completes or rejects on fatal error.
+   *
+   * @param file - The video File object
+   * @param callbacks - Object with onSlide, onAudio, onProgress, etc.
+   * @param signal - Optional AbortSignal for cancellation
+   *
+   * @example
+   * await extractor.extractWithCallbacks(file, {
+   *   onSlide: (slide) => console.log('Slide at', slide.timestamp),
+   *   onProgress: (pct, msg) => console.log(`${pct}%: ${msg}`),
+   *   onDone: () => console.log('Done!'),
+   * });
+   */
+  async extractWithCallbacks(file: File, callbacks: ExtractorCallbacks, signal?: AbortSignal): Promise<void> {
+    const stream = this.extract(file, signal);
+    const reader = stream.getReader();
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        switch (value.type) {
+          case 'audio':
+            callbacks.onAudio?.(value.chunk);
+            break;
+          case 'audio_done':
+            callbacks.onAudioDone?.(value.fileName);
+            break;
+          case 'slide':
+            callbacks.onSlide?.({
+              imageBuffer: value.imageBuffer,
+              timestamp: value.timestamp,
+              startMs: value.startMs,
+              endMs: value.endMs,
+            });
+            break;
+          case 'progress':
+            callbacks.onProgress?.(value.percent, value.message, value.metrics);
+            break;
+          case 'error':
+            callbacks.onError?.(new ExtractorError('ERR_WORKER_GENERIC', value.message));
+            break;
+        }
+      }
+      callbacks.onDone?.();
+    } catch (err) {
+      if (err instanceof ExtractorError) {
+        callbacks.onError?.(err);
+      } else {
+        callbacks.onError?.(err instanceof Error ? err : new Error(String(err)));
+      }
+      throw err;
+    }
   }
 }
 

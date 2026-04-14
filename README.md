@@ -140,6 +140,81 @@ try {
 }
 ```
 
+### Callback API
+
+Prefer callbacks over streams? Use `extractWithCallbacks()` — same engine, simpler wiring:
+
+```typescript
+const extractor = new FastExtractor({ mode: 'turbo' });
+
+await extractor.extractWithCallbacks(file, {
+  onSlide: (slide) => {
+    const img = document.createElement('img');
+    img.src = URL.createObjectURL(new Blob([slide.imageBuffer], { type: 'image/webp' }));
+    document.body.appendChild(img);
+  },
+  onAudio: (chunk) => audioChunks.push(chunk),
+  onProgress: (pct, msg) => console.log(`${pct}%: ${msg}`),
+  onError: (err) => console.error(err.code, err.message),
+  onDone: () => console.log('Extraction complete!'),
+});
+```
+
+### React Hook
+
+For React apps, `useFastExtractor` manages all state automatically:
+
+```tsx
+import { useFastExtractor } from './ui/useFastExtractor';
+
+function App() {
+  const {
+    extract, cancel,
+    isExtracting, progress, slides, audioBlob, error
+  } = useFastExtractor({ mode: 'turbo' });
+
+  return (
+    <div>
+      <input
+        type="file"
+        accept="video/*"
+        onChange={(e) => extract(e.target.files![0])}
+        disabled={isExtracting}
+      />
+
+      {isExtracting && (
+        <p>{progress.message} — {progress.percent}%</p>
+      )}
+
+      {error && <p style={{ color: 'red' }}>{error.message}</p>}
+
+      {slides.map((s, i) => (
+        <img key={i} src={s.url} alt={`Slide at ${s.timestamp}`} />
+      ))}
+
+      {audioBlob && (
+        <audio controls src={URL.createObjectURL(audioBlob)} />
+      )}
+
+      {isExtracting && <button onClick={cancel}>Cancel</button>}
+    </div>
+  );
+}
+```
+
+The hook returns:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `extract(file)` | `(File) => void` | Start extraction (auto-cancels previous) |
+| `cancel()` | `() => void` | Cancel current extraction |
+| `isExtracting` | `boolean` | Whether extraction is in progress |
+| `progress` | `{ percent, message }` | Current progress state |
+| `slides` | `SlideResult[]` | Accumulated slides with `url`, `timestamp`, `startMs`, `endMs` |
+| `audioBlob` | `Blob \| null` | Finalized AAC audio blob |
+| `error` | `Error \| null` | Last error (includes `ExtractorError` with `.code`) |
+| `metrics` | `object \| null` | Final performance metrics |
+
 ### Cancellation
 
 ```typescript
@@ -149,6 +224,23 @@ const stream = extractor.extract(file, controller.signal);
 // Cancel anytime:
 controller.abort();
 ```
+
+### Debug Mode
+
+Pass `debug: true` to log every internal worker message to the browser console:
+
+```typescript
+const extractor = new FastExtractor({ mode: 'turbo', debug: true });
+```
+
+```
+[FastExtractor:DEBUG] Worker → Main | type=STATUS {status: "Worker Thread Initializing...", ...}
+[FastExtractor:DEBUG] Worker → Main | type=INIT_COMPLETE {}
+[FastExtractor:DEBUG] Worker → Main | type=AUDIO_CHUNK {buffer: ArrayBuffer(4096)}
+...
+```
+
+No performance impact when `debug: false` (the default) — the logging branch is never entered.
 
 ---
 
@@ -452,16 +544,18 @@ fast-extractor/
 ├── src/
 │   ├── main.tsx                 # App entry point
 │   ├── engine/                  # ── Core extraction library (framework-agnostic) ──
-│   │   ├── fast-extractor.ts    #   Public API — ReadableStream wrapper + ExtractorError
+│   │   ├── fast-extractor.ts    #   Public API — ReadableStream + Callback API + ExtractorError
 │   │   ├── extractor.ts         #   Slide detection engine (three-pointer drift)
 │   │   ├── worker.ts            #   Web Worker — OPFS + audio + video pipeline
+│   │   ├── index.ts             #   Barrel export — single import entry point
 │   │   ├── types/               #   Type declarations (mp4box.d.ts)
 │   │   └── wasm/                #   Pre-built WASM binaries
 │   │       ├── wasm_extractor_bg.wasm
 │   │       └── wasm_extractor.js
 │   └── ui/                      # ── Reference demo app (React) ──
 │       ├── App.tsx              #   Demo UI with drag-and-drop
-│       └── GridMaskPicker.tsx   #   Interactive region masking component
+│       ├── GridMaskPicker.tsx   #   Interactive region masking component
+│       └── useFastExtractor.ts  #   React hook — managed state wrapper
 └── wasm-extractor/
     └── src/
         └── lib.rs               # Rust/WASM module
