@@ -161,7 +161,7 @@ export interface ExtractionMetrics {
   endTime?: number;
   totalFrames: number;
   totalSlides: number;
-  // peakRamMb: number; // Removed due to inconsistent browser security gating for real memory APIs
+  peakRamMb: number;
   avgFrameProcessTimeMs: number;
   /** Last video frame timestamp in seconds — used to compute last slide's endMs */
   lastFrameTimestamp?: number;
@@ -251,10 +251,13 @@ export class SlideExtractor {
   private pendingCandidate: { bitmap: ImageBitmap; timestamp: number; hash: bigint } | null = null;
 
   private metrics: ExtractionMetrics = {
-    startTime: 0, totalFrames: 0, totalSlides: 0, avgFrameProcessTimeMs: 0
+    startTime: 0, totalFrames: 0, totalSlides: 0, peakRamMb: 0, avgFrameProcessTimeMs: 0
   };
 
-
+  // Placeholder dimensions to prevent NaN logic crashes during startup.
+  // These are immediately overwritten with exact dimensions when demuxer loads.
+  private videoWidth = 1920;
+  private videoHeight = 1080;
 
   constructor(wasm: WasmModule, options?: Partial<SlideExtractorOptions>) {
     this.wasm = wasm;
@@ -263,7 +266,7 @@ export class SlideExtractor {
   }
 
   public async extract(file: File, demuxerWasmUrl: string) {
-    this.metrics = { startTime: performance.now(), totalFrames: 0, totalSlides: 0, avgFrameProcessTimeMs: 0 };
+    this.metrics = { startTime: performance.now(), totalFrames: 0, totalSlides: 0, peakRamMb: 0, avgFrameProcessTimeMs: 0 };
     this.hasBaseline = false;
     this.savedHashes = [];
     if (this.pendingCandidate) { this.pendingCandidate.bitmap.close(); }
@@ -338,7 +341,8 @@ export class SlideExtractor {
    */
   private async extractKeyframes(demuxer: WebDemuxer, duration: number, interval: number) {
     const config = await demuxer.getDecoderConfig('video');
-
+    this.videoWidth = config.codedWidth || 1920;
+    this.videoHeight = config.codedHeight || 1080;
     
     let packetCount = 0;
     let decodedCount = 0;
@@ -868,16 +872,25 @@ export class SlideExtractor {
       <= this.options.dhashDuplicateThreshold;
   }
 
-  /**
-   * RAM MEASUREMENT (Commented out)
-   * We previously used performance.measureUserAgentSpecificMemory(), but it requires
-   * strict COOP/COEP (require-corp) headers which can break cross-origin resources.
-   * Fallbacks to WASM memory only measure ~25MB (missing the 300MB+ in GPU/Decoder bounds).
-   * Rather than showing wildly inaccurate numbers based on the user's browser security context,
-   * we've removed this metric for now.
-   */
-  private updateMetrics(_decoderQueueSize: number = 0) {
-    // Left empty for future implementation if a reliable sync API ever emerges.
+  private updateMetrics(decoderQueueSize: number = 0) {
+    // 1. WASM Linear Memory (exact byte length of our ArrayBuffer)
+    const wasmRamMb = this.wasm.memory.buffer.byteLength / 1e6;
+
+    // 2. Decoder buffers & WebCodecs queue
+    // Each frame in WebCodecs queue holds raw GPU pixels. Worst case: RGBA.
+    // Use exact dimensions from the video demuxer to prevent false readings.
+    const frameSizeMb = (this.videoWidth * this.videoHeight * 4) / 1e6;
+    // FFmpeg/Demuxer baseline overhead is roughly ~30MB.
+    const decoderOverheadMb = 30 + (decoderQueueSize * frameSizeMb);
+
+    // 3. Fallback to performance.memory if available for V8 JS Heap
+    const jsHeapMb = (performance as any).memory?.usedJSHeapSize 
+      ? (performance as any).memory.usedJSHeapSize / 1e6 
+      : 15; // default 15MB assumption if OS security policy blocks API
+
+    const totalEstimatedMb = wasmRamMb + decoderOverheadMb + jsHeapMb;
+
+    this.metrics.peakRamMb = Math.max(this.metrics.peakRamMb, Math.round(totalEstimatedMb));
   }
 }
 
