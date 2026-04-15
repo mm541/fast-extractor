@@ -777,6 +777,9 @@ export class SlideExtractor {
     new Uint8Array(this.wasm.memory.buffer, ptr, W * H * 4).set(data);
 
     // Buffer the frame in higher resolution for export!
+    // SECURITY/CRITICAL: Hardware GPUs (used in accurate mode) often return raw
+    // frames where `displayWidth` is missing/zero. You MUST fall back to `codedWidth`
+    // to prevent constructing a 0x0 canvas, which crashes `transferToImageBitmap()`.
     const sourceW = frame.displayWidth || frame.codedWidth;
     const sourceH = frame.displayHeight || frame.codedHeight;
     const targetW = this.options.exportResolution || sourceW;
