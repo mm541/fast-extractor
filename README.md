@@ -272,6 +272,7 @@ new FastExtractor({
   mode: 'turbo',
   extractAudio: true,
   extractSlides: true,
+  sampleFps: 1,
   edgeThreshold: 30,
   blockThreshold: 12,
   minSlideDuration: 3,
@@ -301,6 +302,18 @@ Controls which video decoding strategy is used.
 | Short screen recordings (<10 min) | `'accurate'` |
 | Mobile devices with ≤4GB RAM | `'turbo'` |
 | Animated/scrolling slide transitions | `'accurate'` |
+
+---
+
+#### `sampleFps`
+**Type:** `number` · **Range:** `0.2–10` · **Default:** `1`
+
+**Accurate mode only.** Frame sampling rate for accurate mode. 
+- **`1`** — Compare 1 frame per second (default).
+- **`0.5`** — Extract and compare 1 frame every 2 seconds. Faster, but may drift timestamp precision slightly.
+- **`5`** — Analyze 5 frames a second. Catches extremely fast transitions but will heavily load the CPU.
+
+*Ignored in `turbo` mode, which natively decodes exactly one keyframe every few seconds depending on the file's encoding.*
 
 ---
 
