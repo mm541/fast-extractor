@@ -777,8 +777,10 @@ export class SlideExtractor {
     new Uint8Array(this.wasm.memory.buffer, ptr, W * H * 4).set(data);
 
     // Buffer the frame in higher resolution for export!
-    const targetW = this.options.exportResolution || frame.displayWidth;
-    const targetH = Math.round(targetW * (frame.displayHeight / frame.displayWidth));
+    const sourceW = frame.displayWidth || frame.codedWidth;
+    const sourceH = frame.displayHeight || frame.codedHeight;
+    const targetW = this.options.exportResolution || sourceW;
+    const targetH = Math.round(targetW * (sourceH / sourceW));
     
     if (!this.exportCanvas) {
       this.exportCanvas = new OffscreenCanvas(targetW, targetH);
