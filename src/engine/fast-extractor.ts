@@ -159,6 +159,14 @@ export interface FastExtractorOptions {
   // ─── Extraction mode ───
   /** 'turbo' = keyframe-only (~10x faster), 'accurate' = every frame */
   mode?: 'accurate' | 'turbo';
+  
+  /** 
+   * Frame sampling rate for accurate mode (0.2 - 10). Default: 1.
+   * 1 = compare 1 frame per second.
+   * 0.5 = one frame every 2 seconds.
+   * Ignored in turbo mode.
+   */
+  sampleFps?: number;
 
   // ─── Asset URLs (for library consumers using non-Vite bundlers) ───
   /**

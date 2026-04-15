@@ -478,8 +478,7 @@ async function processMedia(fileName: string, options: any = {}) {
 
             console.log("Starting Video Extraction with options:", {
                 mode: finalOptions.mode,
-                sampleFps: finalOptions.sampleFps,
-                turboInterval: finalOptions.turboInterval
+                sampleFps: finalOptions.sampleFps
             });
 
             const slideExtractor = new SlideExtractor(

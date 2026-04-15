@@ -89,6 +89,7 @@ const App: React.FC = () => {
     const [mode, setMode] = useState<'accurate' | 'turbo'>('turbo');
     
     const [config, setConfig] = useState({
+        sampleFps: 1,
         edgeThreshold: 30,
         blockThreshold: 12,
         densityThresholdPct: 5,
@@ -396,6 +397,17 @@ const App: React.FC = () => {
                         )}
 
                         <div className="settings-grid">
+                            {mode === 'accurate' && (
+                                <div className="setting-item">
+                                    <label>Accurate FPS: <strong>{config.sampleFps}</strong></label>
+                                    <input 
+                                        type="range" min="0.2" max="10" step="0.2" 
+                                        value={config.sampleFps} onChange={e => setConfig({...config, sampleFps: Number(e.target.value)})} 
+                                        disabled={isExtracting}
+                                        aria-label="Frames per second to sample in accurate mode"
+                                    />
+                                </div>
+                            )}
                             <div className="setting-item">
                                 <label>Edge Threshold: <strong>{config.edgeThreshold}</strong></label>
                                 <input 
