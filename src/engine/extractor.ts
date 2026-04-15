@@ -80,10 +80,6 @@
  *     Percentage of pixels within a single block that must differ.
  *     5% = at least 5% of the block's pixels must have changed.
  *
- *   stabilityThreshold (1-20, default 3)
- *     Number of consecutive frames with no drift required before
- *     considering the content "settled" (used by drift detection).
- *
  *   minSlideDuration (1-30s, default 3)
  *     Minimum seconds between two slide emissions.
  *     Prevents rapid-fire emissions during animations.
@@ -116,12 +112,18 @@
  *   noiseMainRatio (0.05-0.5, default 0.25)
  *     Reset drift only if mainChanges < blockThreshold × this ratio.
  *     Ensures we don't reset when there's a genuine slow transition in progress.
+ *
+ *   sampleFps (0.2-10, default 1) [accurate mode only]
+ *     Frame sampling rate for accurate mode.
+ *     1 = compare 1 frame per second (default).
+ *     0.5 = one frame every 2 seconds (faster, less precise).
+ *     Ignored in turbo mode (turbo always decodes every keyframe).
  */
 import { WebDemuxer } from 'web-demuxer';
 
 export interface SlideExtractorOptions {
   mode: 'accurate' | 'turbo';
-  fps: number;
+  sampleFps: number;
   edgeThreshold: number;
   blockThreshold: number;
   densityThresholdPct: number;
@@ -130,9 +132,8 @@ export interface SlideExtractorOptions {
   // Three-pointer drift detection
   blankBrightnessThreshold: number;     // skip frames darker than this (0-255)
   cumulativeDriftMultiplier: number;    // cumulative drift must reach blockThreshold * this
-  cumulativeSettledFrames: number;      // frames of stability before emitting on drift
+  cumulativeSettledFrames: number;      // frames of stability before emitting on drift or partial match
   partialThresholdRatio: number;        // fraction of blockThreshold for partial match (0-1)
-  partialDriftSettledFrames: number;    // settled frames for partial match
   noiseResetFrames: number;             // reset drift after this many drift frames if no trigger
   noiseMainRatio: number;               // reset only if mainChanges < blockThreshold * this (0-1)
   // Color-aware detection
@@ -168,7 +169,7 @@ export interface ExtractionMetrics {
 }
 
 export const DEFAULT_OPTIONS: SlideExtractorOptions = {
-  mode: 'turbo', fps: 1,
+  mode: 'turbo', sampleFps: 1,
   edgeThreshold: 30, blockThreshold: 12, densityThresholdPct: 5,
   minSlideDuration: 3, dhashDuplicateThreshold: 10,
   // Three-pointer defaults
@@ -176,7 +177,6 @@ export const DEFAULT_OPTIONS: SlideExtractorOptions = {
   cumulativeDriftMultiplier: 2,
   cumulativeSettledFrames: 2,
   partialThresholdRatio: 0.5,
-  partialDriftSettledFrames: 1,
   noiseResetFrames: 30,
   noiseMainRatio: 0.25,
   // Color detection: 25 = detect shifts where any channel moves >25/255
@@ -201,7 +201,7 @@ export interface WasmModule {
   compare_frames: (edge: number, density: number, mask: bigint) => number;
   compare_prev_current: (edge: number, density: number, mask: bigint) => number;
   compute_dhash: (is_buffer_b: boolean) => bigint;
-  check_stability: (threshold: bigint) => boolean;
+  compute_color_signature: () => bigint;
   get_avg_brightness: () => number;
   memory: WebAssembly.Memory;
 }
@@ -311,7 +311,7 @@ export class SlideExtractor {
 
       const interval = this.options.mode === 'turbo'
         ? 2
-        : (1 / (this.options.fps || 1));
+        : (1 / (this.options.sampleFps || 1));
 
       await this.extractKeyframes(demuxer, duration, interval);
 
@@ -580,8 +580,13 @@ export class SlideExtractor {
 
     // === Frame closed. Only WASM buffers from here. ===
 
-    // Step 2: Compute color signature BEFORE grayscale conversion
-    const colorSig = this.computeColorSignature();
+    // Step 2: Compute color signature in WASM (before grayscale conversion)
+    const colorSigPacked = this.wasm.compute_color_signature();
+    const colorSig: [number, number, number] = [
+      Number((colorSigPacked >> 48n) & 0xFFFFn),
+      Number((colorSigPacked >> 32n) & 0xFFFFn),
+      Number((colorSigPacked >> 16n) & 0xFFFFn),
+    ];
 
     // Step 3: Convert RGBA → grayscale for block comparison
     this.convertRgbaToGray();
@@ -698,7 +703,7 @@ export class SlideExtractor {
     else if (
       mainChanges >= Math.floor(blockThreshold * this.options.partialThresholdRatio) &&
       this.cumulativeDrift >= blockThreshold &&
-      this.staticCount >= this.options.partialDriftSettledFrames
+      this.staticCount >= this.options.cumulativeSettledFrames
     ) {
       shouldEmit = true;
     }
@@ -788,26 +793,6 @@ export class SlideExtractor {
   /** Convert RGBA buffer to grayscale into buffer B. Call after captureFrameToRgba. */
   private convertRgbaToGray() {
     this.wasm.copy_rgba_to_gray(true);
-  }
-
-  /**
-   * Compute average R, G, B from the WASM RGBA buffer by sampling every 64th pixel.
-   * ~1600 samples from a 427×240 image — fast and representative.
-   * Must be called AFTER captureFrameToRgba but BEFORE convertRgbaToGray.
-   */
-  private computeColorSignature(): [number, number, number] {
-    const W = SlideExtractor.CMP_W, H = SlideExtractor.CMP_H;
-    const ptr = this.wasm.get_rgba_buffer_ptr();
-    const rgba = new Uint8Array(this.wasm.memory.buffer, ptr, W * H * 4);
-    let sumR = 0, sumG = 0, sumB = 0, count = 0;
-    // Sample every 64th pixel (stride of 256 bytes in RGBA)
-    for (let i = 0; i < rgba.length; i += 256) {
-      sumR += rgba[i];
-      sumG += rgba[i + 1];
-      sumB += rgba[i + 2];
-      count++;
-    }
-    return [sumR / count, sumG / count, sumB / count];
   }
 
   /**

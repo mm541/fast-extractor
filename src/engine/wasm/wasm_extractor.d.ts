@@ -10,12 +10,8 @@ export class AudioExtractor {
 }
 
 /**
- * ACCURATE STABILITY: Compares Current (B) vs Previous (Prev)
- */
-export function check_stability(stability_threshold: bigint): boolean;
-
-/**
  * Compare Baseline (A) vs Current (B). mask=0 to compare all blocks.
+ * Caches B's edge map — subsequent calls with the same B skip recomputation.
  */
 export function compare_frames(edge_threshold: number, density_num: number, mask: bigint): number;
 
@@ -23,9 +19,17 @@ export function compare_frames(edge_threshold: number, density_num: number, mask
  * Consecutive frame drift: edge-density comparison of Prev vs B.
  * Same algorithm as compare_frames but uses raw_prev instead of raw_a.
  * Returns number of grid blocks that changed (0-64).
- * Compare Previous (Prev) vs Current (B). mask=0 to compare all blocks.
+ * Reuses B's cached edge map from compare_frames if available.
  */
 export function compare_prev_current(edge_threshold: number, density_num: number, mask: bigint): number;
+
+/**
+ * Compute average color signature from the RGBA buffer.
+ * Returns packed u64: [avgR: u16 | avgG: u16 | avgB: u16 | unused: u16]
+ * Samples every 64th pixel (~1600 samples from 427×240) — fast and representative.
+ * Must be called AFTER pixel ingestion but BEFORE copy_rgba_to_gray().
+ */
+export function compute_color_signature(): bigint;
 
 export function compute_dhash(is_buffer_b: boolean): bigint;
 
@@ -64,9 +68,9 @@ export interface InitOutput {
     readonly audioextractor_get_progress: (a: number) => number;
     readonly audioextractor_new: (a: any) => [number, number, number];
     readonly audioextractor_pull_chunk: (a: number, b: number) => any;
-    readonly check_stability: (a: bigint) => number;
     readonly compare_frames: (a: number, b: number, c: bigint) => number;
     readonly compare_prev_current: (a: number, b: number, c: bigint) => number;
+    readonly compute_color_signature: () => bigint;
     readonly compute_dhash: (a: number) => bigint;
     readonly copy_rgba_to_gray: (a: number) => void;
     readonly get_avg_brightness: () => number;

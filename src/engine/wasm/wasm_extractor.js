@@ -42,17 +42,8 @@ export class AudioExtractor {
 if (Symbol.dispose) AudioExtractor.prototype[Symbol.dispose] = AudioExtractor.prototype.free;
 
 /**
- * ACCURATE STABILITY: Compares Current (B) vs Previous (Prev)
- * @param {bigint} stability_threshold
- * @returns {boolean}
- */
-export function check_stability(stability_threshold) {
-    const ret = wasm.check_stability(stability_threshold);
-    return ret !== 0;
-}
-
-/**
  * Compare Baseline (A) vs Current (B). mask=0 to compare all blocks.
+ * Caches B's edge map — subsequent calls with the same B skip recomputation.
  * @param {number} edge_threshold
  * @param {number} density_num
  * @param {bigint} mask
@@ -67,7 +58,7 @@ export function compare_frames(edge_threshold, density_num, mask) {
  * Consecutive frame drift: edge-density comparison of Prev vs B.
  * Same algorithm as compare_frames but uses raw_prev instead of raw_a.
  * Returns number of grid blocks that changed (0-64).
- * Compare Previous (Prev) vs Current (B). mask=0 to compare all blocks.
+ * Reuses B's cached edge map from compare_frames if available.
  * @param {number} edge_threshold
  * @param {number} density_num
  * @param {bigint} mask
@@ -76,6 +67,18 @@ export function compare_frames(edge_threshold, density_num, mask) {
 export function compare_prev_current(edge_threshold, density_num, mask) {
     const ret = wasm.compare_prev_current(edge_threshold, density_num, mask);
     return ret >>> 0;
+}
+
+/**
+ * Compute average color signature from the RGBA buffer.
+ * Returns packed u64: [avgR: u16 | avgG: u16 | avgB: u16 | unused: u16]
+ * Samples every 64th pixel (~1600 samples from 427×240) — fast and representative.
+ * Must be called AFTER pixel ingestion but BEFORE copy_rgba_to_gray().
+ * @returns {bigint}
+ */
+export function compute_color_signature() {
+    const ret = wasm.compute_color_signature();
+    return BigInt.asUintN(64, ret);
 }
 
 /**

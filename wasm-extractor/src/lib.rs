@@ -86,6 +86,7 @@ struct FrameArena {
     edge_a: Vec<u8>,
     edge_b: Vec<u8>,
     rgba_buf: Vec<u8>, // Transfer Buffer
+    edge_b_valid: bool, // Cache flag: true if edge_b matches current raw_b
 }
 
 impl FrameArena {
@@ -97,6 +98,7 @@ impl FrameArena {
             edge_a: vec![0u8; ARENA_SIZE],
             edge_b: vec![0u8; ARENA_SIZE],
             rgba_buf: vec![0u8; RGBA_SIZE],
+            edge_b_valid: false,
         }
     }
 }
@@ -151,6 +153,11 @@ pub fn copy_rgba_to_gray(is_target_b: bool) {
 
         for (d, s) in dst.iter_mut().zip(src.chunks_exact(4)) {
             *d = ((77 * s[0] as u32 + 150 * s[1] as u32 + 29 * s[2] as u32) >> 8) as u8;
+        }
+
+        // Invalidate cached edge map when B's pixel data changes
+        if is_target_b {
+            a.edge_b_valid = false;
         }
     }
 }
@@ -213,12 +220,16 @@ fn compare_grid_density(edges_a: &[u8], edges_b: &[u8], width: usize, height: us
 }
 
 /// Compare Baseline (A) vs Current (B). mask=0 to compare all blocks.
+/// Caches B's edge map — subsequent calls with the same B skip recomputation.
 #[wasm_bindgen]
 pub fn compare_frames(edge_threshold: i16, density_num: u32, mask: u64) -> u32 {
     unsafe {
         let a = arena();
         compute_edge_map_into(&a.raw_a, ARENA_WIDTH, ARENA_HEIGHT, edge_threshold, &mut a.edge_a);
-        compute_edge_map_into(&a.raw_b, ARENA_WIDTH, ARENA_HEIGHT, edge_threshold, &mut a.edge_b);
+        if !a.edge_b_valid {
+            compute_edge_map_into(&a.raw_b, ARENA_WIDTH, ARENA_HEIGHT, edge_threshold, &mut a.edge_b);
+            a.edge_b_valid = true;
+        }
         compare_grid_density(&a.edge_a, &a.edge_b, ARENA_WIDTH, ARENA_HEIGHT, density_num, 100, mask)
     }
 }
@@ -262,30 +273,21 @@ pub fn compute_dhash(is_buffer_b: bool) -> u64 {
     }
 }
 
-/// ACCURATE STABILITY: Compares Current (B) vs Previous (Prev)
-#[wasm_bindgen]
-pub fn check_stability(stability_threshold: u64) -> bool {
-    unsafe {
-        let a = arena();
-        let total_pixels = (ARENA_WIDTH as u64) * (ARENA_HEIGHT as u64);
-        let mut diff_sum: u64 = 0;
-        for i in 0..ARENA_SIZE {
-            diff_sum += (a.raw_b[i] as i16 - a.raw_prev[i] as i16).unsigned_abs() as u64;
-        }
-        diff_sum < stability_threshold * total_pixels
-    }
-}
-
 /// Consecutive frame drift: edge-density comparison of Prev vs B.
 /// Same algorithm as compare_frames but uses raw_prev instead of raw_a.
 /// Returns number of grid blocks that changed (0-64).
-/// Compare Previous (Prev) vs Current (B). mask=0 to compare all blocks.
+/// Reuses B's cached edge map from compare_frames if available.
 #[wasm_bindgen]
 pub fn compare_prev_current(edge_threshold: i16, density_num: u32, mask: u64) -> u32 {
     unsafe {
         let a = arena();
+        // edge_a is scratch — overwrite with Prev's edge map
         compute_edge_map_into(&a.raw_prev, ARENA_WIDTH, ARENA_HEIGHT, edge_threshold, &mut a.edge_a);
-        compute_edge_map_into(&a.raw_b, ARENA_WIDTH, ARENA_HEIGHT, edge_threshold, &mut a.edge_b);
+        // Reuse B's cached edge map if compare_frames already computed it
+        if !a.edge_b_valid {
+            compute_edge_map_into(&a.raw_b, ARENA_WIDTH, ARENA_HEIGHT, edge_threshold, &mut a.edge_b);
+            a.edge_b_valid = true;
+        }
         compare_grid_density(&a.edge_a, &a.edge_b, ARENA_WIDTH, ARENA_HEIGHT, density_num, 100, mask)
     }
 }
@@ -300,6 +302,35 @@ pub fn get_avg_brightness() -> u32 {
             sum += a.raw_b[i] as u64;
         }
         (sum / ARENA_SIZE as u64) as u32
+    }
+}
+
+/// Compute average color signature from the RGBA buffer.
+/// Returns packed u64: [avgR: u16 | avgG: u16 | avgB: u16 | unused: u16]
+/// Samples every 64th pixel (~1600 samples from 427×240) — fast and representative.
+/// Must be called AFTER pixel ingestion but BEFORE copy_rgba_to_gray().
+#[wasm_bindgen]
+pub fn compute_color_signature() -> u64 {
+    unsafe {
+        let a = arena();
+        let rgba = &a.rgba_buf[..RGBA_SIZE];
+        let mut sum_r: u64 = 0;
+        let mut sum_g: u64 = 0;
+        let mut sum_b: u64 = 0;
+        let mut count: u64 = 0;
+        // Sample every 64th pixel (stride of 256 bytes in RGBA)
+        let mut i = 0;
+        while i < RGBA_SIZE {
+            sum_r += rgba[i] as u64;
+            sum_g += rgba[i + 1] as u64;
+            sum_b += rgba[i + 2] as u64;
+            count += 1;
+            i += 256;
+        }
+        let avg_r = (sum_r / count) as u64;
+        let avg_g = (sum_g / count) as u64;
+        let avg_b = (sum_b / count) as u64;
+        (avg_r << 48) | (avg_g << 32) | (avg_b << 16)
     }
 }
 

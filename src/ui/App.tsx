@@ -100,7 +100,6 @@ const App: React.FC = () => {
         cumulativeDriftMultiplier: 2,
         cumulativeSettledFrames: 2,
         partialThresholdRatio: 0.5,
-        partialDriftSettledFrames: 1,
         noiseResetFrames: 30,
         noiseMainRatio: 0.25,
         imageQuality: 0.8,
@@ -521,15 +520,6 @@ const App: React.FC = () => {
                                         value={config.partialThresholdRatio} onChange={e => setConfig({...config, partialThresholdRatio: Number(e.target.value)})} 
                                         disabled={isExtracting}
                                         aria-label="Partial threshold ratio"
-                                    />
-                                </div>
-                                <div className="setting-item">
-                                    <label>Partial Settled: <strong>{config.partialDriftSettledFrames}</strong></label>
-                                    <input 
-                                        type="range" min="1" max="5" step="1" 
-                                        value={config.partialDriftSettledFrames} onChange={e => setConfig({...config, partialDriftSettledFrames: Number(e.target.value)})} 
-                                        disabled={isExtracting}
-                                        aria-label="Settled frames for partial match"
                                     />
                                 </div>
                                 <div className="setting-item">

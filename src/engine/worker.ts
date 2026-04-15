@@ -74,7 +74,7 @@ self.onerror = (event: string | Event, source?: string, lineno?: number, colno?:
 // Polyfill: some libraries (web-demuxer) check for `window` global
 (self as unknown as { window: unknown }).window = self;
 
-import init, { AudioExtractor, compare_frames, compare_prev_current, compute_dhash, check_stability, get_avg_brightness, init_arena, get_buffer_a_ptr, get_buffer_b_ptr, get_buffer_prev_ptr, get_rgba_buffer_ptr, shift_current_to_prev, copy_rgba_to_gray } from './wasm/wasm_extractor';
+import init, { AudioExtractor, compare_frames, compare_prev_current, compute_dhash, compute_color_signature, get_avg_brightness, init_arena, get_buffer_a_ptr, get_buffer_b_ptr, get_buffer_prev_ptr, get_rgba_buffer_ptr, shift_current_to_prev, copy_rgba_to_gray } from './wasm/wasm_extractor';
 import { SlideExtractor } from './extractor';
 import type { SlideExtractorOptions } from './extractor';
 
@@ -478,7 +478,7 @@ async function processMedia(fileName: string, options: any = {}) {
 
             console.log("Starting Video Extraction with options:", {
                 mode: finalOptions.mode,
-                fps: finalOptions.fps,
+                sampleFps: finalOptions.sampleFps,
                 turboInterval: finalOptions.turboInterval
             });
 
@@ -494,7 +494,7 @@ async function processMedia(fileName: string, options: any = {}) {
                     compare_frames, 
                     compare_prev_current,
                     compute_dhash, 
-                    check_stability,
+                    compute_color_signature,
                     get_avg_brightness,
                     memory: wasmModule.memory
                 } as any,
