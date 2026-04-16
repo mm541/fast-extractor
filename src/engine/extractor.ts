@@ -31,11 +31,11 @@
  *     - Cumulative drift resets after noiseResetFrames without a trigger
  *
  * TWO EXTRACTION MODES:
- *   TURBO:    Decode only keyframes (IDR). ~20s for a 1-hour video.
- *             One VideoDecoder, flush() between each keyframe.
+ *   TURBO:    Decode only keyframes (IDR). ~10-20s for a 1-hour video.
+ *             One pipelined VideoDecoder (no per-frame flush — see perf warning).
  *             Catches ~95% of transitions (misses those between IDRs).
  *
- *   ACCURATE: Decode EVERY frame in 60s chunks. ~120-150s for a 1-hour video.
+ *   ACCURATE: Decode EVERY frame in 300s (5-min) chunks. ~120-150s for a 1-hour video.
  *             Decoder is recycled per chunk to bound RAM.
  *             Catches 100% of transitions. Higher accuracy, higher cost.
  *
@@ -454,7 +454,7 @@ export class SlideExtractor {
     } else {
       // ACCURATE: Full decode of EVERY frame. ~120-150s for 1-hour video.
       // Catches 100% of transitions including between keyframes.
-      // Chunked: 60s segments with decoder recycling to bound RAM.
+      // Chunked: 300s (5-minute) segments with decoder recycling to bound RAM.
       const CHUNK_SIZE = 300;
       let nextCaptureTime = 0;
       let pendingResolve: (() => void) | null = null;
