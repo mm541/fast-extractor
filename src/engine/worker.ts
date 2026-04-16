@@ -371,7 +371,11 @@ async function processMedia(fileName: string, options: any = {}) {
                 while (true) {
                     const chunk = audioExtractor.pull_chunk(1024 * 1024);
                     if (chunk.length === 0) break;
-                    const ab = chunk.buffer.slice(0) as ArrayBuffer;
+                    // SECURITY & PERF: `chunk` points to WebAssembly.Memory.
+                    // DO NOT use `chunk.buffer.slice(0)`! That clones the ENTIRE WASM 
+                    // heap (potentially hundreds of MBs) on every single chunk, causing 
+                    // massive lag/OOM on mobile. `chunk.slice()` copies ONLY the 1MB chunk.
+                    const ab = chunk.slice().buffer as ArrayBuffer;
                     postMessage({ type: 'AUDIO_CHUNK', buffer: ab }, [ab]);
                     const progress = Math.floor(audioExtractor.get_progress());
                     if (progress >= lastReport + 5 || progress === 100) {
