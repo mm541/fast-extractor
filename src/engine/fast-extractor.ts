@@ -366,7 +366,7 @@ export class FastExtractor {
             }, { once: true });
           }
 
-          // 4. Configure — extract asset URLs from options before sending detection config
+          // 3. Configure — extract asset URLs from options before sending detection config
           const {
             mode = 'turbo',
             wasmUrl: _wasmUrl,           // consumed above, don't forward
@@ -384,7 +384,7 @@ export class FastExtractor {
             config: { ...detectionConfig, mode },
           });
 
-          // 5. Wire up message → stream translation
+          // 4. Wire up message → stream translation
           const debugMode = this.options.debug ?? false;
           worker.onmessage = (e: MessageEvent) => {
             const { type } = e.data;
