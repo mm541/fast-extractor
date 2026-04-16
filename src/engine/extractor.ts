@@ -407,13 +407,16 @@ export class SlideExtractor {
             decodedCount++;
             const ts = frame.timestamp / 1e6;
             const t0 = performance.now();
-            
-            // processFrameSync handles frame closure internally via finally block
-            this.processFrameSync(frame, ts);
-            
-            this.metrics.avgFrameProcessTimeMs =
-              (this.metrics.avgFrameProcessTimeMs * (this.metrics.totalFrames - 1) + (performance.now() - t0))
-              / this.metrics.totalFrames;
+            try {
+              this.processFrameSync(frame, ts);
+              this.metrics.avgFrameProcessTimeMs =
+                (this.metrics.avgFrameProcessTimeMs * (this.metrics.totalFrames - 1) + (performance.now() - t0))
+                / this.metrics.totalFrames;
+            } catch (e) {
+              // Gracefully skip bad frames instead of crashing the entire worker.
+              // processFrameSync closes the frame in its own finally{} block.
+              console.warn('Turbo: processFrameSync threw (skipping frame):', e);
+            }
           },
           error: (e) => {
             console.warn('Turbo decode pipeline error:', e);
@@ -510,10 +513,16 @@ export class SlideExtractor {
 
             if (ts >= nextCaptureTime) {
               const t0 = performance.now();
-              this.processFrameSync(frame, ts);
-              this.metrics.avgFrameProcessTimeMs =
-                (this.metrics.avgFrameProcessTimeMs * (this.metrics.totalFrames - 1) + (performance.now() - t0))
-                / this.metrics.totalFrames;
+              try {
+                this.processFrameSync(frame, ts);
+                this.metrics.avgFrameProcessTimeMs =
+                  (this.metrics.avgFrameProcessTimeMs * (this.metrics.totalFrames - 1) + (performance.now() - t0))
+                  / this.metrics.totalFrames;
+              } catch (e) {
+                // Gracefully skip bad frames instead of crashing the entire worker.
+                // processFrameSync closes the frame in its own finally{} block.
+                console.warn('Sequential: processFrameSync threw (skipping frame):', e);
+              }
               nextCaptureTime = ts + interval;
             } else {
               frame.close();
@@ -880,6 +889,10 @@ export class SlideExtractor {
     this.renderBitmapToBlob(bitmap).then(blob => {
       this.options.onSlide(blob, timestamp);
       this.metrics.totalSlides++;
+    }).catch(e => {
+      // Prevent unhandled promise rejection from crashing the worker.
+      // convertToBlob can fail under mobile memory pressure or unsupported formats.
+      console.warn('emitBitmap: WebP encode failed (skipping slide):', e);
     });
   }
 
