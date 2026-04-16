@@ -349,14 +349,11 @@ export class SlideExtractor {
     let lastReport = 0;
 
     if (this.options.mode === 'turbo') {
-      // TURBO: Decode ALL keyframes via streaming. ~20s for 1-hour video.
-      // Keyframes are IDR (self-contained), flush() between each is safe.
-      // Catches ~95% of slide transitions. Backfill closes the remaining ~5%.
-      let frameResolve: ((frame: VideoFrame | null) => void) | null = null;
+      // TURBO: Decode ALL keyframes via streaming.
+      // Keyframes are IDR (self-contained) so pipelining them is 100% safe.
+      // We keep 'prefer-software' to prevent older GPUs from silently dropping 
+      // frames, but we pipeline the queue to restore optimal performance.
       const baseConfig = { ...config as VideoDecoderConfig, optimizeForLatency: true };
-      // prefer-software prevents older GPUs from silently dropping isolated keyframes.
-      // But some browsers don't support the hardwareAcceleration option at all,
-      // so we probe first and fall back to the default (let-browser-decide).
       let turboDecoderConfig: VideoDecoderConfig = baseConfig;
       try {
         const swConfig = { ...baseConfig, hardwareAcceleration: 'prefer-software' as const };
@@ -367,12 +364,20 @@ export class SlideExtractor {
       const makeTurboDecoder = () => {
         const d = new VideoDecoder({
           output: (frame) => {
-            if (frameResolve) { const r = frameResolve; frameResolve = null; r(frame); }
-            else frame.close();
+            decodedCount++;
+            const ts = frame.timestamp / 1e6;
+            const t0 = performance.now();
+            
+            // processFrameSync handles frame closure internally via finally block
+            this.processFrameSync(frame, ts);
+            
+            this.metrics.avgFrameProcessTimeMs =
+              (this.metrics.avgFrameProcessTimeMs * (this.metrics.totalFrames - 1) + (performance.now() - t0))
+              / this.metrics.totalFrames;
           },
           error: (e) => {
-            console.warn('Turbo decode error callback:', e);
-            if (frameResolve) { const r = frameResolve; frameResolve = null; r(null); }
+            console.warn('Turbo decode pipeline error:', e);
+            // Decoder state becomes 'closed', main loop spins up a fresh one on next frame
           }
         });
         d.configure(turboDecoderConfig);
@@ -403,31 +408,19 @@ export class SlideExtractor {
               decoder = makeTurboDecoder();
             }
 
-            const framePromise = new Promise<VideoFrame | null>(resolve => { frameResolve = resolve; });
+            // Backpressure: prevent memory blowout if demuxer vastly outpaces decoding.
+            // Also gives the browser event loop time to fire output callbacks.
+            while (decoder.state !== 'closed' && decoder.decodeQueueSize > 5) {
+              await new Promise(r => setTimeout(r, 5));
+            }
+
             try {
+              // NO flush() here! Just queue it up so the pipeline stays saturated.
               decoder.decode(value);
-              await decoder.flush();
             } catch (e: any) {
               console.warn('Turbo decode error (skipping keyframe):', e);
               continue;
             }
-
-            // Race: if the hardware decoder silently drops the frame (no output
-            // callback), framePromise hangs forever. 5s timeout → skip frame.
-            const frame = await Promise.race([
-              framePromise,
-              new Promise<VideoFrame | null>(r => setTimeout(() => r(null), 5000))
-            ]);
-            decodedCount++;
-
-            if (frame) {
-              const t0 = performance.now();
-              this.processFrameSync(frame, ts);
-              this.metrics.avgFrameProcessTimeMs =
-                (this.metrics.avgFrameProcessTimeMs * (this.metrics.totalFrames - 1) + (performance.now() - t0))
-                / this.metrics.totalFrames;
-            }
-
           }
 
           if (ts >= lastReport + 1) {
@@ -440,7 +433,11 @@ export class SlideExtractor {
             lastReport = ts;
           }
         }
-        if (decoder.state !== 'closed') await decoder.flush();
+        
+        // Wait for all remaining queued frames in the pipeline to be outputted
+        if (decoder.state !== 'closed') {
+          await decoder.flush();
+        }
       } finally {
         if (decoder.state !== 'closed') decoder.close();
       }
