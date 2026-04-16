@@ -415,7 +415,16 @@ export class SlideExtractor {
             }
 
             try {
-              // NO flush() here! Just queue it up so the pipeline stays saturated.
+              // ⚠️ CRITICAL PERFORMANCE WARNING ⚠️
+              // DO NOT add `await decoder.flush()` or synchronous `Promise.race()` calls here!
+              //
+              // History: In commit 1c3de0f, per-frame flush() was added. Paired with 4bb3d27 
+              // ('prefer-software'), this destroyed turbo mode performance, taking a 25s run 
+              // to 48s because it forced the multi-threaded software decoder to run 100% 
+              // sequentially, stalling the pipeline on every single frame.
+              //
+              // Let the decoder run freely. `decodeQueueSize` handles backpressure above.
+              // A dropped frame simply skips the callback and continues normally.
               decoder.decode(value);
             } catch (e: any) {
               console.warn('Turbo decode error (skipping keyframe):', e);
