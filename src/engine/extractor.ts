@@ -66,6 +66,46 @@
  *   doesn't improve slide detection accuracy but massively increases cost.
  *   maxFrameWidth only affects the ORIGINAL file decoding, not comparison.
  *
+ * 💡 CONSIDERATION: ACCURATE MODE BACKPRESSURE (Promise.race + 5s timeout)
+ *   The accurate mode backpressure loop (decodeQueueSize >= 3) uses a
+ *   Promise.race with a 5s timeout as a deadlock safety net. Hardware
+ *   decoders on mobile can silently drop frames, causing the output
+ *   callback to never fire and pendingResolve to hang forever. The 5s
+ *   timeout breaks the deadlock. In normal operation, the callback fires
+ *   within milliseconds so the timeout never triggers. This is NOT the
+ *   same bottleneck as the turbo per-frame flush — it's only backpressure,
+ *   not a synchronous barrier. If you want to optimize accurate mode
+ *   further, consider switching to `decodeQueueSize`-only polling (like
+ *   turbo mode) — but test thoroughly on mobile hardware first.
+ *
+ * 💡 CONSIDERATION: FIRE-AND-FORGET emitBitmap()
+ *   emitBitmap() calls renderBitmapToBlob().then() without awaiting it.
+ *   This is safe because: (1) the ImageBitmap is .close()'d synchronously
+ *   inside renderBitmapToBlob, so GPU memory is freed immediately, and
+ *   (2) minSlideDuration (default 3s) guarantees a minimum gap between
+ *   emissions, so WebP encodes (50-200ms each) can never overlap. If you
+ *   ever reduce minSlideDuration to 0, this assumption breaks and you'd
+ *   need to await or serialize the encode calls to prevent memory pileup.
+ *
+ * 💡 CONSIDERATION: DUPLICATE DETECTION — LAST HASH ONLY
+ *   isDuplicate() only compares against the LAST saved hash, not all of
+ *   them. This is intentional: consecutive dedup filters codec artifacts
+ *   between keyframes, while still allowing a presenter to revisit an
+ *   earlier slide (A → B → A) and have it captured as a new timeline event.
+ *   Global dedup would silently swallow legitimate revisits and create
+ *   unexplained gaps in the timeline. If you need global dedup for a
+ *   specific use case, check against savedHashes[0..N] — but be aware
+ *   it becomes O(N) per frame and changes the user-facing behavior.
+ *
+ * 💡 CONSIDERATION: BASE64 WASM CHUNKING (String.fromCharCode += loop)
+ *   The demuxer WASM binary (~2MB) is converted to a data: URL via a
+ *   += string concatenation loop. This looks inefficient (quadratic string
+ *   growth), but it runs exactly ONCE per extraction during the
+ *   "Initializing Demuxer..." phase. The alternative (array.join) saves
+ *   ~50-100ms on mobile but adds code complexity for a one-time cost.
+ *   The chunking (32KB per iteration) exists to prevent call stack
+ *   overflow — String.fromCharCode.apply() crashes if given >64K args.
+ *
  * CONFIGURATION REFERENCE:
  *   edgeThreshold (10-100, default 30)
  *     Per-pixel luminance difference required to count as "changed".
