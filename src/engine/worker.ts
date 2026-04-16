@@ -284,6 +284,11 @@ self.onmessage = async (e: MessageEvent) => {
                     syncHandle!.truncate(0);
                     await doIngest(ingestFile);
                 } catch (retryErr: any) {
+                    console.error('[Ingest] Second attempt failed:', retryErr.message);
+                    if (syncHandle) {
+                        try { syncHandle.close(); } catch (e) {}
+                        syncHandle = undefined;
+                    }
                     self.postMessage({ type: 'ERROR', code: 'ERR_FILE_INGEST', error: 'File ingest failed: ' + retryErr.message });
                     return;
                 }
@@ -469,14 +474,18 @@ async function processMedia(fileName: string, options: any = {}) {
                     self.postMessage({ type: 'STATUS', status: message, progress: Math.round(percent), metrics });
                 },
                 onSlide: async (blob: Blob, timestamp: number) => {
-                    const ab = await blob.arrayBuffer();
-                    const startMs = Math.round(timestamp * 1000);
+                    try {
+                        const ab = await blob.arrayBuffer();
+                        const startMs = Math.round(timestamp * 1000);
 
-                    // Emit the PREVIOUS slide with endMs = this slide's start
-                    flushPendingSlide(startMs);
+                        // Emit the PREVIOUS slide with endMs = this slide's start
+                        flushPendingSlide(startMs);
 
-                    // Buffer this slide (will be emitted when next slide arrives or on ALL_DONE)
-                    pendingSlide = { buffer: ab, startMs, timestamp: formatTime(timestamp) };
+                        // Buffer this slide (will be emitted when next slide arrives or on ALL_DONE)
+                        pendingSlide = { buffer: ab, startMs, timestamp: formatTime(timestamp) };
+                    } catch (e: any) {
+                        console.warn('[Worker] onSlide buffer read failed (skipping):', e.message);
+                    }
                 }
             };
 
