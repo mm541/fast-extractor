@@ -14,6 +14,9 @@ export default defineConfig({
     host: true,
     https: {},
     cors: true,
+    // These headers are NOT required by the library — no API used needs
+    // cross-origin isolation. Set here only for demo site dev parity.
+    // Consumers should NOT copy these; COOP breaks OAuth popups/iframes.
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'credentialless',
@@ -24,6 +27,7 @@ export default defineConfig({
     https: {},
     cors: true,
     port: 4173,
+    // Same note as server.headers above.
     headers: {
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'credentialless',

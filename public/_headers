@@ -1,7 +1,14 @@
 # Applied to all routes on the demo site (Cloudflare Pages).
-# These headers enable cross-origin isolation for SharedArrayBuffer/OPFS.
-# NOTE: Library consumers do NOT need these — the library handles
-# WASM loading internally via blob URLs (see extractor.ts).
+#
+# ⚠️ These headers are NOT required by the extraction library.
+# Neither OPFS SyncAccessHandle, WebCodecs, nor web-demuxer use
+# SharedArrayBuffer — there is no cross-origin isolation requirement.
+# The library handles WASM loading via data: URL injection to bypass
+# CORS entirely (see fast-extractor.ts, WASM INJECTION STRATEGY).
+#
+# These are set here defensively for the demo site only.
+# Library consumers should NOT blindly copy these — COOP: same-origin
+# breaks third-party scripts (analytics, OAuth popups, payment iframes).
 /*
   Cross-Origin-Embedder-Policy: credentialless
   Cross-Origin-Opener-Policy: same-origin
