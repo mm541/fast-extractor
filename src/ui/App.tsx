@@ -213,8 +213,9 @@ const App: React.FC = () => {
                         const slide = slides[i];
                         const response = await fetch(slide.url);
                         const blob = await response.blob();
-                        const timeStr = formatMs(slide.startMs).replace(/:/g, '-');
-                        slidesFolder.file(`slide_${String(i+1).padStart(3, '0')}_${timeStr}.webp`, blob);
+                        const startStr = formatMs(slide.startMs).replace(/:/g, '-');
+                        const endStr = formatMs(slide.endMs).replace(/:/g, '-');
+                        slidesFolder.file(`slide_${String(i+1).padStart(3, '0')}_${startStr}_to_${endStr}.webp`, blob);
                     }
                 }
             }
