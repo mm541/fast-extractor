@@ -360,7 +360,6 @@ export class SlideExtractor {
       // Flush last buffered candidate (turbo deferred-emit)
       // MUST await here — fire-and-forget would race against worker termination,
       // causing the last slide's convertToBlob to resolve after ALL_DONE kills the worker.
-      // eslint-disable-next-line -- TS CFA narrows to `never` after async calls
       const lc = this.pendingCandidate as { bitmap: ImageBitmap; timestamp: number; hash: bigint } | null;
       if (lc) {
         this.savedHashes.push(lc.hash);

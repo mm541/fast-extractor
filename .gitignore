@@ -26,6 +26,7 @@ dist-ssr
 # Rust
 target/
 wasm-extractor/target/
+wasm-extractor/pkg/
 
 # wrangler files
 .wrangler
