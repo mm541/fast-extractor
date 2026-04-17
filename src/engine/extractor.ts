@@ -78,14 +78,21 @@
  *   further, consider switching to `decodeQueueSize`-only polling (like
  *   turbo mode) — but test thoroughly on mobile hardware first.
  *
- * 💡 CONSIDERATION: FIRE-AND-FORGET emitBitmap()
- *   emitBitmap() calls renderBitmapToBlob().then() without awaiting it.
- *   This is safe because: (1) the ImageBitmap is .close()'d synchronously
- *   inside renderBitmapToBlob, so GPU memory is freed immediately, and
- *   (2) minSlideDuration (default 3s) guarantees a minimum gap between
- *   emissions, so WebP encodes (50-200ms each) can never overlap. If you
- *   ever reduce minSlideDuration to 0, this assumption breaks and you'd
- *   need to await or serialize the encode calls to prevent memory pileup.
+ * 💡 CONSIDERATION: DUAL-EMIT MODEL (emitBitmap + emitBitmapAsync)
+ *   Hot-loop emissions use fire-and-forget emitBitmap() — it calls
+ *   renderBitmapToBlob().then() without awaiting. This is safe because:
+ *   (1) the ImageBitmap is .close()'d synchronously inside renderBitmapToBlob,
+ *   so GPU memory is freed immediately, and (2) minSlideDuration (default 3s)
+ *   guarantees a minimum gap between emissions, so WebP encodes (50-200ms)
+ *   never overlap. If you ever reduce minSlideDuration to 0, this assumption
+ *   breaks and you'd need to serialize the encode calls.
+ *
+ *   The FINAL candidate uses emitBitmapAsync() — an awaitable version that
+ *   ensures the blob is fully encoded before extract() returns. Without this,
+ *   worker.terminate() (triggered by ALL_DONE) would kill the worker while
+ *   convertToBlob is still pending, silently dropping the last slide.
+ *   The worker also drains any in-flight fire-and-forget onSlide callbacks
+ *   via a pendingSlideEncodes counter before sending ALL_DONE.
  *
  * 💡 CONSIDERATION: DUPLICATE DETECTION — LAST HASH ONLY
  *   isDuplicate() only compares against the LAST saved hash, not all of
