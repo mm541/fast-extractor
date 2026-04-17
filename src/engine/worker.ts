@@ -550,26 +550,21 @@ async function processMedia(fileName: string, options: any = {}) {
                     : (ps?.startMs ?? 0);
             flushPendingSlide(videoDurationMs);
 
-            // ⚠ CRITICAL: Release OPFS lock BEFORE posting ALL_DONE.
+            // ⚠ CRITICAL: Clean up OPFS temp file BEFORE posting ALL_DONE.
             // The main thread calls worker.terminate() immediately on ALL_DONE,
             // which kills the worker before the `finally` block can run.
-            // If the lock isn't released here, back-to-back extractions can
-            // hit a stale SyncAccessHandle lock and crash non-deterministically.
-            let cleanedUp = false;
-            try {
-                const h = syncHandle;
-                if (h) { h.close(); }
-                if (shouldCleanup) {
-                    const toRemove = (self as any).currentTempFile;
-                    if (toRemove) {
+            // If the file isn't removed here, it accumulates as dead storage.
+            // NOTE: syncHandle is already closed and undefined at this point
+            // (released on line ~418 before video extraction started).
+            if (shouldCleanup) {
+                const toRemove = (self as any).currentTempFile;
+                if (toRemove) {
+                    try {
                         await root.removeEntry(toRemove);
                         console.log("Cleaned up temp file:", toRemove);
-                        (self as any).currentTempFile = null;
-                    }
+                    } catch (e) {}
+                    (self as any).currentTempFile = null;
                 }
-                cleanedUp = true;
-            } catch (e) {
-                console.warn('[Worker] Pre-ALL_DONE cleanup failed:', e);
             }
 
             postMessage({ type: 'ALL_DONE', metrics });
