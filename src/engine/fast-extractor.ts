@@ -268,6 +268,8 @@ export interface ExtractorCallbacks {
  */
 export class FastExtractor {
   private options: FastExtractorOptions;
+  /** Guards against concurrent extractions with a shared worker */
+  private _extracting = false;
 
   constructor(options?: FastExtractorOptions) {
     this.options = options ?? {};
@@ -349,6 +351,16 @@ export class FastExtractor {
    * @param signal - Optional AbortSignal for cancellation
    */
   extract(file: File, signal?: AbortSignal): ReadableStream<ExtractorEvent> {
+    // Guard: if using a shared custom worker, prevent concurrent extractions
+    // that would corrupt the worker's module-scoped state (syncHandle, wasmBuffer, etc.)
+    if (this._extracting && this.options.worker) {
+      throw new ExtractorError(
+        'ERR_WORKER_GENERIC',
+        'Cannot run concurrent extractions with a shared worker. Wait for the current extraction to complete, or create a separate FastExtractor instance.'
+      );
+    }
+    this._extracting = true;
+
     let worker: Worker | null = null;
 
     const stream = new ReadableStream<ExtractorEvent>({
@@ -360,6 +372,7 @@ export class FastExtractor {
           // 2. Handle abort signal
           if (signal) {
             signal.addEventListener('abort', () => {
+              this._extracting = false;
               worker?.terminate();
               worker = null;
               controller.close();
@@ -442,6 +455,7 @@ export class FastExtractor {
                       metrics: e.data.metrics,
                     });
                   }
+                  this._extracting = false;
                   worker?.terminate();
                   worker = null;
                   controller.close();
@@ -453,6 +467,7 @@ export class FastExtractor {
                   const customError = new ExtractorError(errorCode, errorMsg);
                   
                   const isRecoverable = errorMsg.includes('File ingest failed') || errorMsg.includes('could not be read');
+                  this._extracting = false;
                   if (errorCode === 'ERR_FILE_INGEST' || isRecoverable) {
                     // Emit as a recoverable event — let consumer decide how to handle
                     controller.enqueue({
@@ -482,6 +497,7 @@ export class FastExtractor {
             try {
               controller.error(new Error(event.message || 'Worker crashed'));
             } catch { /* stream already closed */ }
+            this._extracting = false;
             worker?.terminate();
             worker = null;
           };

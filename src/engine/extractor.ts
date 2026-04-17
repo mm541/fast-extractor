@@ -206,6 +206,8 @@ export interface ExtractionMetrics {
   avgFrameProcessTimeMs: number;
   /** Last video frame timestamp in seconds — used to compute last slide's endMs */
   lastFrameTimestamp?: number;
+  /** Video duration in seconds from the demuxer — used for accurate last slide endMs */
+  videoDurationSec?: number;
 }
 
 export const DEFAULT_OPTIONS: SlideExtractorOptions = {
@@ -356,14 +358,17 @@ export class SlideExtractor {
       await this.extractKeyframes(demuxer, duration, interval);
 
       // Flush last buffered candidate (turbo deferred-emit)
+      // MUST await here — fire-and-forget would race against worker termination,
+      // causing the last slide's convertToBlob to resolve after ALL_DONE kills the worker.
       // eslint-disable-next-line -- TS CFA narrows to `never` after async calls
       const lc = this.pendingCandidate as { bitmap: ImageBitmap; timestamp: number; hash: bigint } | null;
       if (lc) {
         this.savedHashes.push(lc.hash);
-        this.emitBitmap(lc.bitmap, lc.timestamp);
+        await this.emitBitmapAsync(lc.bitmap, lc.timestamp);
         this.pendingCandidate = null;
       }
 
+      this.metrics.videoDurationSec = duration;
       this.metrics.endTime = performance.now();
       this.options.onProgress(100, "Done", this.metrics);
     } finally {
@@ -894,6 +899,22 @@ export class SlideExtractor {
       // convertToBlob can fail under mobile memory pressure or unsupported formats.
       console.warn('emitBitmap: WebP encode failed (skipping slide):', e);
     });
+  }
+
+  /**
+   * Awaitable version of emitBitmap — used ONLY for the final candidate flush
+   * at extraction end. This ensures the blob is fully encoded and delivered to
+   * onSlide before extract() returns, preventing the worker from being terminated
+   * while convertToBlob is still pending.
+   */
+  private async emitBitmapAsync(bitmap: ImageBitmap, timestamp: number): Promise<void> {
+    try {
+      const blob = await this.renderBitmapToBlob(bitmap);
+      this.options.onSlide(blob, timestamp);
+      this.metrics.totalSlides++;
+    } catch (e) {
+      console.warn('emitBitmapAsync: WebP encode failed (skipping slide):', e);
+    }
   }
 
   private async renderBitmapToBlob(bitmap: ImageBitmap): Promise<Blob> {

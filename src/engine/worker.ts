@@ -466,6 +466,10 @@ async function processMedia(fileName: string, options: any = {}) {
                 pendingSlide = null;
             };
 
+            // Track pending async onSlide callbacks so we can drain before ALL_DONE
+            let pendingSlideEncodes = 0;
+            let drainResolve: (() => void) | null = null;
+
             // Merge passed options with persistent detectionConfig
             const finalOptions = {
                 ...detectionConfig,
@@ -474,6 +478,7 @@ async function processMedia(fileName: string, options: any = {}) {
                     self.postMessage({ type: 'STATUS', status: message, progress: Math.round(percent), metrics });
                 },
                 onSlide: async (blob: Blob, timestamp: number) => {
+                    pendingSlideEncodes++;
                     try {
                         const ab = await blob.arrayBuffer();
                         const startMs = Math.round(timestamp * 1000);
@@ -485,6 +490,12 @@ async function processMedia(fileName: string, options: any = {}) {
                         pendingSlide = { buffer: ab, startMs, timestamp: formatTime(timestamp) };
                     } catch (e: any) {
                         console.warn('[Worker] onSlide buffer read failed (skipping):', e.message);
+                    } finally {
+                        pendingSlideEncodes--;
+                        if (pendingSlideEncodes === 0 && drainResolve) {
+                            drainResolve();
+                            drainResolve = null;
+                        }
                     }
                 }
             };
@@ -519,12 +530,24 @@ async function processMedia(fileName: string, options: any = {}) {
             await slideExtractor.extract(file, webDemuxerWasmUrl);
             memLog('9-AFTER-VIDEO-EXTRACT');
 
-            // Flush the last buffered slide — use last processed timestamp as endMs
+            // Drain any pending async onSlide callbacks (blob encoding + arrayBuffer)
+            // that haven't resolved yet. Without this, the last slide from a fire-and-forget
+            // emitBitmap could still be encoding when we send ALL_DONE and get terminated.
+            if (pendingSlideEncodes > 0) {
+                await Promise.race([
+                    new Promise<void>(r => { drainResolve = r; }),
+                    new Promise<void>(r => setTimeout(r, 3000)) // safety timeout
+                ]);
+            }
+
+            // Flush the last buffered slide — use video duration for accurate endMs
             const metrics = (slideExtractor as any).metrics;
             const ps = pendingSlide as { buffer: ArrayBuffer; startMs: number; timestamp: string } | null;
-            const videoDurationMs = metrics?.lastFrameTimestamp
-                ? Math.round(metrics.lastFrameTimestamp * 1000)
-                : (ps?.startMs ?? 0);
+            const videoDurationMs = metrics?.videoDurationSec
+                ? Math.round(metrics.videoDurationSec * 1000)
+                : metrics?.lastFrameTimestamp
+                    ? Math.round(metrics.lastFrameTimestamp * 1000)
+                    : (ps?.startMs ?? 0);
             flushPendingSlide(videoDurationMs);
 
             postMessage({ type: 'ALL_DONE', metrics });
@@ -534,7 +557,8 @@ async function processMedia(fileName: string, options: any = {}) {
         }
     } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        postMessage({ type: 'ERROR', code: 'ERR_VIDEO_DECODE', error: 'Extraction Error: ' + message });
+        const code = message.includes('WASM') ? 'ERR_WASM_INIT' : 'ERR_VIDEO_DECODE';
+        postMessage({ type: 'ERROR', code, error: 'Extraction Error: ' + message });
     } finally {
         if (syncHandle) {
             try { syncHandle.close(); } catch (e) {}
