@@ -48,6 +48,7 @@
  *   The "Advanced Drift Detection" section is hidden by default for normal users.
  */
 import React, { useState, useRef, useEffect } from 'react';
+import JSZip from 'jszip';
 import GridMaskPicker from './GridMaskPicker';
 import { FastExtractor } from '../engine/fast-extractor';
 
@@ -80,6 +81,7 @@ const App: React.FC = () => {
     const [file, setFile] = useState<File | null>(null);
     const [status, setStatus] = useState<string>('Ready to extract');
     const [isExtracting, setIsExtracting] = useState(false);
+    const [isZipping, setIsZipping] = useState(false);
     const [audioUrl, setAudioUrl] = useState<string | null>(null);
     const [fileName, setFileName] = useState<string>('');
     const [slides, setSlides] = useState<Slide[]>([]);
@@ -190,6 +192,53 @@ const App: React.FC = () => {
         }
     };
 
+    const downloadAsZip = async () => {
+        if (!file) return;
+        try {
+            setIsZipping(true);
+            const zip = new JSZip();
+            
+            // Add Audio
+            if (audioUrl && fileName) {
+                const response = await fetch(audioUrl);
+                const blob = await response.blob();
+                zip.file(fileName, blob);
+            }
+            
+            // Add Slides
+            if (slides.length > 0) {
+                const slidesFolder = zip.folder("slides");
+                if (slidesFolder) {
+                    for (let i = 0; i < slides.length; i++) {
+                        const slide = slides[i];
+                        const response = await fetch(slide.url);
+                        const blob = await response.blob();
+                        const timeStr = formatMs(slide.startMs).replace(/:/g, '-');
+                        slidesFolder.file(`slide_${String(i+1).padStart(3, '0')}_${timeStr}.webp`, blob);
+                    }
+                }
+            }
+            
+            // Generate and trigger download
+            const zipData = await zip.generateAsync({ type: 'blob' });
+            const zipUrl = URL.createObjectURL(zipData);
+            const a = document.createElement('a');
+            a.href = zipUrl;
+            a.download = `${file.name.replace(/\.[^/.]+$/, "")}_extracted.zip`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            
+            // Cleanup the temp zip URL after a short delay
+            setTimeout(() => URL.revokeObjectURL(zipUrl), 1000);
+            
+        } catch (error) {
+            console.error("Failed to create ZIP:", error);
+            alert("Failed to create ZIP package.");
+        } finally {
+            setIsZipping(false);
+        }
+    };
 
     const startExtraction = async () => {
         if (!file) return;
@@ -613,11 +662,38 @@ const App: React.FC = () => {
 
                 {audioUrl && (
                     <div className="result-card slide-up">
-                        <h3>🎧 Extracted Audio</h3>
-                        <a href={audioUrl} download={fileName} className="btn-download">
-                            Download {fileName}
-                        </a>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <h3 style={{ margin: 0 }}>🎧 Extracted Audio</h3>
+                            <div>
+                                <a href={audioUrl} download={fileName} className="btn-download" style={{ marginRight: '10px' }}>
+                                    Download {fileName}
+                                </a>
+                                {slides.length > 0 && (
+                                    <button 
+                                        onClick={downloadAsZip} 
+                                        disabled={isZipping}
+                                        className="btn-download" 
+                                        style={{ backgroundColor: '#2b2b2b', color: '#fff', border: '1px solid #444', marginLeft: '10px' }}
+                                    >
+                                        {isZipping ? '⌛ Zipping...' : '📦 Download All as ZIP'}
+                                    </button>
+                                )}
+                            </div>
+                        </div>
                     </div>
+                )}
+                
+                {slides.length > 0 && !audioUrl && !isExtracting && (
+                     <div className="result-card slide-up" style={{ textAlign: 'right' }}>
+                        <button 
+                            onClick={downloadAsZip} 
+                            disabled={isZipping}
+                            className="btn-download" 
+                            style={{ backgroundColor: '#2b2b2b', color: '#fff', border: '1px solid #444' }}
+                        >
+                            {isZipping ? '⌛ Zipping...' : '📦 Download All as ZIP'}
+                        </button>
+                     </div>
                 )}
 
                 {slides.length > 0 && (
