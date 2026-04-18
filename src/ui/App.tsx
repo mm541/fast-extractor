@@ -85,6 +85,7 @@ const App: React.FC = () => {
     const [audioUrl, setAudioUrl] = useState<string | null>(null);
     const [fileName, setFileName] = useState<string>('');
     const [videoUrlInput, setVideoUrlInput] = useState<string>('');
+    const [useRawStream, setUseRawStream] = useState<boolean>(false);
     const [slides, setSlides] = useState<Slide[]>([]);
     const [progress, setProgress] = useState<number>(0);
     const [jobMetrics, setJobMetrics] = useState<{ start: number; end: number | null }>({ start: 0, end: null });
@@ -278,7 +279,16 @@ const App: React.FC = () => {
         if (!extractAudio) setAudioUrl(null); // clear stale audio from a previous run
 
         try {
-            const source = fileRef.current || videoUrlInput;
+            let source: File | string | ReadableStream<Uint8Array> = fileRef.current || videoUrlInput;
+            
+            // Experimental UI hook to manually fetch the stream and pass it down raw
+            if (typeof source === 'string' && useRawStream) {
+                setStatus('Simulating raw stream fetch...');
+                const res = await fetch(source);
+                if (!res.ok) throw new Error("HTTP error " + res.status);
+                source = res.body!;
+            }
+
             const stream = extractor.extract(source, controller.signal);
             const reader = stream.getReader();
 
@@ -407,6 +417,18 @@ const App: React.FC = () => {
                                 disabled={isExtracting || !!file}
                                 style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #444', backgroundColor: '#111', color: 'white' }}
                             />
+                            {videoUrlInput && (
+                                <label style={{ display: 'block', marginTop: '8px', fontSize: '12px', color: '#aaa', cursor: 'pointer' }}>
+                                    <input 
+                                        type="checkbox" 
+                                        id="test-raw-stream"
+                                        checked={useRawStream}
+                                        onChange={(e) => setUseRawStream(e.target.checked)}
+                                        style={{ marginRight: '6px' }}
+                                    />
+                                    Test passing as raw <code>ReadableStream</code> instead of string URL
+                                </label>
+                            )}
                         </div>
                         <p className="hint">Tip: Use <b>"Turbo"</b> mode for 10x faster sampling of long videos.</p>
                         
