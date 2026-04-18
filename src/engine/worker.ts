@@ -252,20 +252,13 @@ self.onmessage = async (e: MessageEvent) => {
             const ingestSource = originalFile!;
             self.postMessage({ type: 'STATUS', status: 'Ingesting Media: 0%' });
 
-            const doIngest = async (source: File | string | ReadableStream<Uint8Array>): Promise<void> => {
+            const doIngest = async (source: File | ReadableStream<Uint8Array>): Promise<void> => {
                 let reader: ReadableStreamDefaultReader<Uint8Array>;
                 let totalSize = 0;
 
                 if (source instanceof File) {
                     reader = source.stream().getReader();
                     totalSize = source.size;
-                } else if (typeof source === 'string') {
-                    self.postMessage({ type: 'STATUS', status: 'Fetching Network Stream...' });
-                    const res = await fetch(source);
-                    if (!res.ok) throw new Error(`HTTP error fetching ${source}: ${res.status}`);
-                    if (!res.body) throw new Error(`Fetch response has no body`);
-                    reader = res.body.getReader();
-                    totalSize = Number(res.headers.get('content-length')) || 0;
                 } else {
                     // It's a raw ReadableStream transferred to us
                     reader = source.getReader();

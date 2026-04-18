@@ -347,10 +347,10 @@ export class FastExtractor {
    * The stream completes when extraction is done.
    * Cancel the stream (or use an AbortSignal) to stop extraction early.
    *
-   * @param source - The video File object, a remote URL string, or a raw ReadableStream.
+   * @param source - The video File object or a raw ReadableStream.
    * @param signal - Optional AbortSignal for cancellation
    */
-  extract(source: File | string | ReadableStream<Uint8Array>, signal?: AbortSignal): ReadableStream<ExtractorEvent> {
+  extract(source: File | ReadableStream<Uint8Array>, signal?: AbortSignal): ReadableStream<ExtractorEvent> {
     // Guard: if using a shared custom worker, prevent concurrent extractions
     // that would corrupt the worker's module-scoped state (syncHandle, wasmBuffer, etc.)
     if (this._extracting && this.options.worker) {
@@ -518,10 +518,7 @@ export class FastExtractor {
           
           if (source instanceof File) {
             fileName = source.name;
-          } else if (typeof source === 'string') {
-            fileName = source.split('/').pop() || 'url_stream.mp4';
-            if (fileName.includes('?')) fileName = fileName.split('?')[0];
-          } else if (source instanceof ReadableStream) {
+          } else {
             transferable.push(source as unknown as Transferable);
           }
 
