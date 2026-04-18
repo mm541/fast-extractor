@@ -249,12 +249,29 @@ self.onmessage = async (e: MessageEvent) => {
             // Use file.stream() — it opens the file descriptor ONCE.
             // file.slice().arrayBuffer() re-opens it per chunk, which fails on Android
             // because each open re-checks SAF permissions that may have expired.
-            const ingestFile = originalFile!;
+            const ingestSource = originalFile!;
             self.postMessage({ type: 'STATUS', status: 'Ingesting Media: 0%' });
 
-            const doIngest = async (f: File): Promise<void> => {
-                const stream = f.stream();
-                const reader = stream.getReader();
+            const doIngest = async (source: File | string | ReadableStream<Uint8Array>): Promise<void> => {
+                let reader: ReadableStreamDefaultReader<Uint8Array>;
+                let totalSize = 0;
+
+                if (source instanceof File) {
+                    reader = source.stream().getReader();
+                    totalSize = source.size;
+                } else if (typeof source === 'string') {
+                    self.postMessage({ type: 'STATUS', status: 'Fetching Network Stream...' });
+                    const res = await fetch(source);
+                    if (!res.ok) throw new Error(`HTTP error fetching ${source}: ${res.status}`);
+                    if (!res.body) throw new Error(`Fetch response has no body`);
+                    reader = res.body.getReader();
+                    totalSize = Number(res.headers.get('content-length')) || 0;
+                } else {
+                    // It's a raw ReadableStream transferred to us
+                    reader = source.getReader();
+                    // We don't know the exact size of a raw stream
+                }
+
                 let offset = 0;
                 let lastReportTime = Date.now();
 
@@ -266,8 +283,15 @@ self.onmessage = async (e: MessageEvent) => {
                     offset += value.byteLength;
 
                     if (Date.now() - lastReportTime > 250) {
-                        const pct = Math.floor((offset / f.size) * 100);
-                        self.postMessage({ type: 'STATUS', status: `Ingesting Media: ${pct}%`, progress: pct });
+                        let statusText = '';
+                        let pct = -1;
+                        if (totalSize > 0) {
+                            pct = Math.floor((offset / totalSize) * 100);
+                            statusText = `Ingesting Media: ${pct}%`;
+                        } else {
+                            statusText = `Ingesting Media: ${(offset/1024/1024).toFixed(1)}MB`;
+                        }
+                        self.postMessage({ type: 'STATUS', status: statusText, progress: pct });
                         lastReportTime = Date.now();
                     }
                 }
@@ -275,14 +299,14 @@ self.onmessage = async (e: MessageEvent) => {
             };
 
             try {
-                await doIngest(ingestFile);
+                await doIngest(ingestSource);
             } catch (firstErr: any) {
                 // Retry once — some Android devices transiently fail the first stream open
                 console.warn('[Ingest] First attempt failed, retrying:', firstErr.message);
                 try {
                     // Reset the sync handle write position to 0 for the retry
                     syncHandle!.truncate(0);
-                    await doIngest(ingestFile);
+                    await doIngest(ingestSource);
                 } catch (retryErr: any) {
                     console.error('[Ingest] Second attempt failed:', retryErr.message);
                     if (syncHandle) {

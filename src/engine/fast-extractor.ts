@@ -341,16 +341,16 @@ export class FastExtractor {
   }
 
   /**
-   * Extract audio and slides from a video file.
+   * Extract audio and slides from a video source.
    * Returns a ReadableStream that emits ExtractorEvent objects.
    *
    * The stream completes when extraction is done.
    * Cancel the stream (or use an AbortSignal) to stop extraction early.
    *
-   * @param file - The video File object (from <input type="file"> or drag-and-drop)
+   * @param source - The video File object, a remote URL string, or a raw ReadableStream.
    * @param signal - Optional AbortSignal for cancellation
    */
-  extract(file: File, signal?: AbortSignal): ReadableStream<ExtractorEvent> {
+  extract(source: File | string | ReadableStream<Uint8Array>, signal?: AbortSignal): ReadableStream<ExtractorEvent> {
     // Guard: if using a shared custom worker, prevent concurrent extractions
     // that would corrupt the worker's module-scoped state (syncHandle, wasmBuffer, etc.)
     if (this._extracting && this.options.worker) {
@@ -513,11 +513,27 @@ export class FastExtractor {
           // =========================================================================================
 
           // 5. Send START_INGEST immediately so Android SAF permission doesn't expire
-          worker.postMessage({ type: 'START_INGEST', fileName: file.name, file });
+          let fileName = 'stream.mp4';
+          let transferable: Transferable[] = [];
+          
+          if (source instanceof File) {
+            fileName = source.name;
+          } else if (typeof source === 'string') {
+            fileName = source.split('/').pop() || 'url_stream.mp4';
+            if (fileName.includes('?')) fileName = fileName.split('?')[0];
+          } else if (source instanceof ReadableStream) {
+            transferable.push(source as unknown as Transferable);
+          }
+
+          worker.postMessage(
+            { type: 'START_INGEST', source, fileName, config: { ...detectionConfig, mode } },
+            transferable
+          );
 
           // 6. Fetch WASM asynchronously in the background and send INIT when ready
           const resolvedWasmUrl = this.options.wasmUrl
             ?? new URL(defaultWasmUrl, self.location?.origin ?? 'https://localhost').href;
+          
           fetch(resolvedWasmUrl)
             .then(res => {
               if (!res.ok) throw new Error(`HTTP ${res.status}`);

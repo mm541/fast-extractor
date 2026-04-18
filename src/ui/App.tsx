@@ -84,6 +84,7 @@ const App: React.FC = () => {
     const [isZipping, setIsZipping] = useState(false);
     const [audioUrl, setAudioUrl] = useState<string | null>(null);
     const [fileName, setFileName] = useState<string>('');
+    const [videoUrlInput, setVideoUrlInput] = useState<string>('');
     const [slides, setSlides] = useState<Slide[]>([]);
     const [progress, setProgress] = useState<number>(0);
     const [jobMetrics, setJobMetrics] = useState<{ start: number; end: number | null }>({ start: 0, end: null });
@@ -193,7 +194,7 @@ const App: React.FC = () => {
     };
 
     const downloadAsZip = async () => {
-        if (!file) return;
+        if (!file && !videoUrlInput) return;
         try {
             setIsZipping(true);
             const zip = new JSZip();
@@ -225,7 +226,10 @@ const App: React.FC = () => {
             const zipUrl = URL.createObjectURL(zipData);
             const a = document.createElement('a');
             a.href = zipUrl;
-            a.download = `${file.name.replace(/\.[^/.]+$/, "")}_extracted.zip`;
+            
+            const baseName = file ? file.name.replace(/\.[^/.]+$/, "") : "network_stream";
+            a.download = `${baseName}_extracted.zip`;
+            
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
@@ -242,7 +246,7 @@ const App: React.FC = () => {
     };
 
     const startExtraction = async () => {
-        if (!file) return;
+        if (!file && !videoUrlInput) return;
 
         // Cancel any previous extraction
         if (abortRef.current) {
@@ -274,7 +278,8 @@ const App: React.FC = () => {
         if (!extractAudio) setAudioUrl(null); // clear stale audio from a previous run
 
         try {
-            const stream = extractor.extract(fileRef.current!, controller.signal);
+            const source = fileRef.current || videoUrlInput;
+            const stream = extractor.extract(source, controller.signal);
             const reader = stream.getReader();
 
             while (true) {
@@ -378,10 +383,31 @@ const App: React.FC = () => {
 
                 <div className="glass-panel">
                     <div className="upload-zone">
-                        <label className={`file-label ${file ? 'has-file' : ''}`}>
+                        <label className={`file-label ${file ? 'has-file' : ''}`} style={{ marginBottom: '10px' }}>
                             {file ? '📄 ' + file.name : 'Select Video File'}
                             <input ref={fileInputRef} type="file" accept="video/*" onChange={handleFileChange} disabled={isExtracting} />
                         </label>
+                        
+                        <div style={{ marginTop: '10px', marginBottom: '15px' }}>
+                            <span style={{color: '#888', display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: 'bold'}}>OR</span>
+                            <input 
+                                type="text"
+                                placeholder="Paste a network streaming URL here (CORS required)..."
+                                value={videoUrlInput}
+                                onChange={(e) => {
+                                    setVideoUrlInput(e.target.value);
+                                    if (e.target.value) {
+                                        setFile(null); // Clear file if URL is provided
+                                        fileRef.current = null;
+                                        setStatus('URL provided: ' + e.target.value);
+                                    } else {
+                                        setStatus('Ready to extract');
+                                    }
+                                }}
+                                disabled={isExtracting || !!file}
+                                style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #444', backgroundColor: '#111', color: 'white' }}
+                            />
+                        </div>
                         <p className="hint">Tip: Use <b>"Turbo"</b> mode for 10x faster sampling of long videos.</p>
                         
                         <div className="mode-toggle">
@@ -608,7 +634,7 @@ const App: React.FC = () => {
                         <button 
                             className="btn-extract" 
                             onClick={startExtraction} 
-                            disabled={!file || isExtracting || (capabilities !== null && !capabilities.canExtract)}
+                            disabled={(!file && !videoUrlInput) || isExtracting || (capabilities !== null && !capabilities.canExtract)}
                         >
                             {isExtracting ? <span className="spinner"></span> : (capabilities && !capabilities.canExtract ? '⚠ Not Supported' : '🚀 Start Extraction')}
                         </button>
