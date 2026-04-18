@@ -50,6 +50,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import JSZip from 'jszip';
 import GridMaskPicker from './GridMaskPicker';
+import GoogleDriveDemo from './GoogleDriveDemo';
 import { FastExtractor } from '../engine/fast-extractor';
 
 interface Slide {
@@ -82,6 +83,7 @@ const App: React.FC = () => {
     const [status, setStatus] = useState<string>('Ready to extract');
     const [isExtracting, setIsExtracting] = useState(false);
     const [isZipping, setIsZipping] = useState(false);
+    const [uploadMode, setUploadMode] = useState<'standard' | 'gdrive'>('standard');
     const [audioUrl, setAudioUrl] = useState<string | null>(null);
     const [fileName, setFileName] = useState<string>('');
     const [videoUrlInput, setVideoUrlInput] = useState<string>('');
@@ -245,8 +247,9 @@ const App: React.FC = () => {
         }
     };
 
-    const startExtraction = async () => {
-        if (!file && !videoUrlInput) return;
+    // Modified to accept an optional pre-configured stream parameter for Google Drive injection
+    const startExtraction = async (injectedStream?: ReadableStream<Uint8Array>, injectedSourceInfo?: string) => {
+        if (!file && !videoUrlInput && !injectedStream) return;
 
         // Cancel any previous extraction
         if (abortRef.current) {
@@ -256,7 +259,7 @@ const App: React.FC = () => {
 
         cleanupPreviousSession();
         setIsExtracting(true);
-        setStatus('Initializing Processing Engine...');
+        setStatus(injectedSourceInfo ? `Initializing stream: ${injectedSourceInfo}...` : 'Initializing Processing Engine...');
         setSlides([]);
         setProgress(0);
         setMetrics(null);
@@ -395,32 +398,56 @@ const App: React.FC = () => {
                 )}
 
                 <div className="glass-panel">
+                    <div style={{ display: 'flex', borderBottom: '1px solid #333', marginBottom: '20px' }}>
+                        <button 
+                            style={{ flex: 1, padding: '10px', backgroundColor: uploadMode === 'standard' ? '#333' : 'transparent', color: uploadMode === 'standard' ? '#fff' : '#888', border: 'none', borderBottom: uploadMode === 'standard' ? '2px solid #4a90e2' : 'none', cursor: 'pointer', fontWeight: 'bold' }} 
+                            onClick={() => setUploadMode('standard')} disabled={isExtracting}>📄 Standard File / URL</button>
+                        <button 
+                            style={{ flex: 1, padding: '10px', backgroundColor: uploadMode === 'gdrive' ? '#333' : 'transparent', color: uploadMode === 'gdrive' ? '#fff' : '#888', border: 'none', borderBottom: uploadMode === 'gdrive' ? '2px solid #4a90e2' : 'none', cursor: 'pointer', fontWeight: 'bold' }} 
+                            onClick={() => setUploadMode('gdrive')} disabled={isExtracting}>☁️ Personal G-Drive (OAuth)</button>
+                    </div>
+
                     <div className="upload-zone">
-                        <label className={`file-label ${file ? 'has-file' : ''}`} style={{ marginBottom: '10px' }}>
-                            {file ? '📄 ' + file.name : 'Select Video File'}
-                            <input ref={fileInputRef} type="file" accept="video/*" onChange={handleFileChange} disabled={isExtracting} />
-                        </label>
-                        
-                        <div style={{ marginTop: '10px', marginBottom: '15px' }}>
-                            <span style={{color: '#888', display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: 'bold'}}>OR</span>
-                            <input 
-                                type="text"
-                                placeholder="Paste a streamable network URL here (CORS required)..."
-                                value={videoUrlInput}
-                                onChange={(e) => {
-                                    setVideoUrlInput(e.target.value);
-                                    if (e.target.value) {
-                                        setFile(null); // Clear file if URL is provided
-                                        fileRef.current = null;
-                                        setStatus('URL provided: ' + e.target.value);
-                                    } else {
-                                        setStatus('Ready to extract');
-                                    }
+                        {uploadMode === 'standard' ? (
+                            <>
+                                <label className={`file-label ${file ? 'has-file' : ''}`} style={{ marginBottom: '10px' }}>
+                                    {file ? '📄 ' + file.name : 'Select Video File'}
+                                    <input ref={fileInputRef} type="file" accept="video/*" onChange={handleFileChange} disabled={isExtracting} />
+                                </label>
+                                
+                                <div style={{ marginTop: '10px', marginBottom: '15px' }}>
+                                    <span style={{color: '#888', display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: 'bold'}}>OR</span>
+                                    <input 
+                                        type="text"
+                                        placeholder="Paste a streamable network URL here (CORS required)..."
+                                        value={videoUrlInput}
+                                        onChange={(e) => {
+                                            setVideoUrlInput(e.target.value);
+                                            if (e.target.value) {
+                                                setFile(null);
+                                                fileRef.current = null;
+                                                setStatus('URL provided: ' + e.target.value);
+                                            } else {
+                                                setStatus('Ready to extract');
+                                            }
+                                        }}
+                                        disabled={isExtracting || !!file}
+                                        style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #444', backgroundColor: '#111', color: 'white' }}
+                                    />
+                                </div>
+                            </>
+                        ) : (
+                            <GoogleDriveDemo 
+                                disabled={isExtracting}
+                                onError={(err) => {
+                                    setStatus(`Error: ${err}`);
+                                    alert(err);
                                 }}
-                                disabled={isExtracting || !!file}
-                                style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #444', backgroundColor: '#111', color: 'white' }}
+                                onStreamReady={(stream, filename) => {
+                                    startExtraction(stream, filename);
+                                }}
                             />
-                        </div>
+                        )}
                         <p className="hint">Tip: Use <b>"Turbo"</b> mode for 10x faster sampling of long videos.</p>
                         
                         <div className="mode-toggle">
@@ -646,8 +673,8 @@ const App: React.FC = () => {
 
                         <button 
                             className="btn-extract" 
-                            onClick={startExtraction} 
-                            disabled={(!file && !videoUrlInput) || isExtracting || (capabilities !== null && !capabilities.canExtract)}
+                            onClick={() => startExtraction()} 
+                            disabled={(!file && !videoUrlInput) || isExtracting || (capabilities !== null && !capabilities.canExtract) || uploadMode !== 'standard'}
                         >
                             {isExtracting ? <span className="spinner"></span> : (capabilities && !capabilities.canExtract ? '⚠ Not Supported' : '🚀 Start Extraction')}
                         </button>
