@@ -199,13 +199,7 @@ fn compute_edge_map_into(pixels: &[u8], width: usize, height: usize, edge_thresh
             let diff = (current - right).abs() + (current - bottom).abs();
             out[idx] = (diff > edge_threshold) as u8;
         }
-        // Zero the right-most column
-        out[row_offset + width - 1] = 0;
     }
-    
-    // Zero the bottom-most row
-    let bottom_row_start = (height - 1) * width;
-    out[bottom_row_start..len].fill(0);
 }
 
 /// Compare two edge maps on an 8×8 grid, returning the number of blocks that changed.
