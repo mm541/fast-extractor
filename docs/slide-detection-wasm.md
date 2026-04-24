@@ -1,7 +1,18 @@
-# WASM Slide Detection Engine — Technical Documentation
+# Slide Detection — WASM Computation Layer
 
 > **Module:** `wasm-extractor/src/lib.rs` (Lines 1-361)  
-> **Last Audited:** 2026-04-24
+> **Last Audited:** 2026-04-24  
+> **Scope:** Slide detection math only. Audio extraction (`AudioExtractor`, Lines 365+) is documented separately in [audio-extraction-wasm.md](./audio-extraction-wasm.md).
+
+## Documentation Map
+
+| Document | Covers |
+|----------|--------|
+| **→ You are here** | WASM math: edge detection, grid density, dHash, color signature |
+| [slide-detection-engine.md](./slide-detection-engine.md) | TypeScript decision logic: 4 emit conditions, noise calibration, drift tracking |
+| [audio-extraction-wasm.md](./audio-extraction-wasm.md) | WASM audio: Symphonia AAC demuxing, ADTS header wrapping |
+
+The WASM layer computes raw numbers (changed blocks, hashes, brightness). The TypeScript layer (`extractor.ts`) consumes these numbers and decides when to actually emit a slide. Read both documents together for the full picture.
 
 ---
 
@@ -156,13 +167,8 @@ Turbo mode explicitly uses `hardwareAcceleration: 'prefer-software'` for the `Vi
 
 ---
 
-## TypeScript Decision Engine (4 Emit Conditions)
+## Next: TypeScript Decision Engine
 
-The WASM module returns raw numbers. The TypeScript layer in `extractor.ts` makes all slide-emit decisions:
+This document covers the WASM computation layer — it produces raw numbers. The actual slide-emit decisions (when to save a screenshot, when to skip, how to handle noise and animations) are made by the TypeScript engine.
 
-1. **Direct Threshold:** `mainChanges >= blockThreshold` (with camera shake filter).
-2. **Cumulative Drift:** Small `driftBlocks` accumulated over many frames + screen has settled.
-3. **Partial Main + Drift:** `mainChanges` near threshold AND drift accumulated AND settled.
-4. **Color-Only Change:** Edge detection missed it, but average RGB shifted by ≥ 50.
-
-After emitting, `copyBufferBToA()` promotes the current frame to become the new baseline.
+**→ Continue reading: [slide-detection-engine.md](./slide-detection-engine.md)**
