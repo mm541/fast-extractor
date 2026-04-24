@@ -402,8 +402,9 @@ export class SlideExtractor {
     if (this.options.mode === 'turbo') {
       // TURBO: Decode ALL keyframes via streaming.
       // Keyframes are IDR (self-contained) so pipelining them is 100% safe.
-      // We keep 'prefer-software' to prevent older GPUs from silently dropping 
-      // frames, but we pipeline the queue to restore optimal performance.
+      // We keep 'prefer-software' because hardware decoders output opaque GPU
+      // textures that render as black frames on OffscreenCanvas in Web Workers.
+      // Software decoding returns CPU-backed frames that drawImage can read.
       const baseConfig = { ...config as VideoDecoderConfig, optimizeForLatency: true };
       let turboDecoderConfig: VideoDecoderConfig = baseConfig;
       try {

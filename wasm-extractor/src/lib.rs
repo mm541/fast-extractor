@@ -18,13 +18,16 @@
 //
 // ── MEMORY LAYOUT ────────────────────────────────────────────────────────
 //
-//   init_arena() allocates four fixed buffers in WASM linear memory:
-//     Buffer A  (raw_a)    — 424×240 grayscale — Baseline (last emitted slide)
-//     Buffer B  (raw_b)    — 424×240 grayscale — Current frame being evaluated
-//     Buffer Prev (raw_prev) — 424×240 grayscale — Previous frame (drift detection)
-//     RGBA Buffer (rgba_buf) — 424×240×4 RGBA  — Staging area for pixel ingestion
+//   init_arena() allocates six fixed buffers in WASM linear memory:
+//     Buffer A  (raw_a)    — 424×240 × 1  grayscale — Baseline (last emitted slide)
+//     Buffer B  (raw_b)    — 424×240 × 1  grayscale — Current frame being evaluated
+//     Buffer Prev (raw_prev) — 424×240 × 1  grayscale — Previous frame (drift detection)
+//     Edge A   (edge_a)    — 424×240 × 1  binary    — Baseline edge map (0 or 1)
+//     Edge B   (edge_b)    — 424×240 × 1  binary    — Current frame edge map (cached)
+//     RGBA Buffer (rgba_buf) — 424×240 × 4  RGBA    — Staging area for pixel ingestion
 //
-//   Total: ~512KB. Allocated once, never freed, never resized.
+//   Total: 5 × 101,760 + 407,040 = 915,840 bytes (~894KB).
+//   Allocated once, never freed, never resized.
 //   Zero per-frame allocations. Zero GC pressure.
 //
 // ── PERFORMANCE INVARIANTS ───────────────────────────────────────────────
