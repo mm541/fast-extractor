@@ -228,7 +228,7 @@ fn compare_grid_density(edges_a: &[u8], edges_b: &[u8], width: usize, height: us
             
             let mut sum_a = 0u32;
             let mut sum_b = 0u32;
-            // Mathematical deterministic block size (saves thousands of additions)
+            
             let block_size = ((y1 - y0) * (x1 - x0)) as u32;
             
             for y in y0..y1 {
@@ -267,6 +267,8 @@ pub fn compute_dhash(is_buffer_b: bool) -> u64 {
     let pixels = if is_buffer_b { &a.raw_b } else { &a.raw_a };
     let w = ARENA_WIDTH;
     let h = ARENA_HEIGHT;
+    // Slice assertion: tells LLVM the exact length so it drops all bounds checks below
+    let pixels = &pixels[..w * h];
     let dw: usize = 9;
     let dh: usize = 8;
     let mut small = [0u16; 72]; 
@@ -274,18 +276,20 @@ pub fn compute_dhash(is_buffer_b: bool) -> u64 {
     let block_h = h / dh;
     for sy in 0..dh {
         for sx in 0..dw {
-            let (mut sum, mut count) = (0u32, 0u32);
+            let mut sum = 0u32;
             let y0 = sy * block_h;
             let y1 = if sy == dh - 1 { h } else { (sy + 1) * block_h };
             let x0 = sx * block_w;
             let x1 = if sx == dw - 1 { w } else { (sx + 1) * block_w };
+            let block_size = ((y1 - y0) * (x1 - x0)) as u32;
             for y in y0..y1 {
-                for x in x0..x1 {
-                    sum += pixels[y * w + x] as u32;
-                    count += 1;
+                let start = y * w + x0;
+                let end = y * w + x1;
+                for &p in &pixels[start..end] {
+                    sum += p as u32;
                 }
             }
-            small[sy * dw + sx] = if count > 0 { (sum / count) as u16 } else { 0 };
+            small[sy * dw + sx] = (sum / block_size) as u16;
         }
     }
     let mut hash: u64 = 0;
@@ -319,10 +323,7 @@ pub fn compare_prev_current(edge_threshold: i16, density_num: u32, mask: u64) ->
 #[wasm_bindgen]
 pub fn get_avg_brightness() -> u32 {
     let a = arena();
-    let mut sum: u64 = 0;
-    for i in 0..ARENA_SIZE {
-        sum += a.raw_b[i] as u64;
-    }
+    let sum: u64 = a.raw_b[..ARENA_SIZE].iter().map(|&p| p as u64).sum();
     (sum / ARENA_SIZE as u64) as u32
 }
 
