@@ -207,25 +207,38 @@ fn compute_edge_map_into(pixels: &[u8], width: usize, height: usize, edge_thresh
 /// `mask`: a 64-bit bitmask where bit (row*8 + col) = 1 means SKIP that block.
 /// Pass mask=0 to compare all blocks (default behavior).
 fn compare_grid_density(edges_a: &[u8], edges_b: &[u8], width: usize, height: usize, num: u32, den: u32, mask: u64) -> u32 {
+    // Assert slice bounds once so LLVM drops all bounds checks inside the loops
+    let len = width * height;
+    let edges_a = &edges_a[..len];
+    let edges_b = &edges_b[..len];
+
     let block_h = height / GRID_ROWS;
     let block_w = width / GRID_COLS;
     let mut changed: u32 = 0;
+
     for r in 0..GRID_ROWS {
         let y0 = r * block_h;
         let y1 = if r == GRID_ROWS - 1 { height } else { (r + 1) * block_h };
         for c in 0..GRID_COLS {
             // Skip masked blocks (e.g. webcam overlay region)
             if (mask >> (r * 8 + c)) & 1 == 1 { continue; }
+            
             let x0 = c * block_w;
             let x1 = if c == GRID_COLS - 1 { width } else { (c + 1) * block_w };
-            let (mut sum_a, mut sum_b, mut block_size) = (0u32, 0u32, 0u32);
+            
+            let mut sum_a = 0u32;
+            let mut sum_b = 0u32;
+            // Mathematical deterministic block size (saves thousands of additions)
+            let block_size = ((y1 - y0) * (x1 - x0)) as u32;
+            
             for y in y0..y1 {
-                let row_offset = y * width;
-                for x in x0..x1 {
-                    let idx = row_offset + x;
-                    sum_a += edges_a[idx] as u32;
-                    sum_b += edges_b[idx] as u32;
-                    block_size += 1;
+                let start = y * width + x0;
+                let end = y * width + x1;
+                
+                // Idiomatic SIMD-friendly zip loop (0 bounds checks)
+                for (a, b) in edges_a[start..end].iter().zip(&edges_b[start..end]) {
+                    sum_a += *a as u32;
+                    sum_b += *b as u32;
                 }
             }
             let diff = (sum_a as i32 - sum_b as i32).unsigned_abs();
