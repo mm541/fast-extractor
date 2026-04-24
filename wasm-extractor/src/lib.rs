@@ -175,7 +175,7 @@ pub fn copy_rgba_to_gray(is_target_b: bool) {
 const GRID_ROWS: usize = 8;
 const GRID_COLS: usize = 8;
 
-/// Edge detection via horizontal + vertical Sobel-like gradient.
+/// Edge detection via L1-norm First-Order Forward Difference gradient.
 /// Uses branchless `(bool) as u8` cast to avoid branch-prediction stalls.
 fn compute_edge_map_into(pixels: &[u8], width: usize, height: usize, edge_threshold: i16, out: &mut Vec<u8>) {
     let len = width * height;
