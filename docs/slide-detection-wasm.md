@@ -9,7 +9,7 @@
 | Document | Covers |
 |----------|--------|
 | **→ You are here** | WASM math: edge detection, grid density, dHash, color signature |
-| [slide-detection-engine.md](./slide-detection-engine.md) | TypeScript decision logic: 4 emit conditions, noise calibration, drift tracking |
+| [slide-detection-orchestrator.md](./slide-detection-orchestrator.md) | TypeScript decision logic: 4 emit conditions, noise calibration, drift tracking |
 | [audio-extraction-wasm.md](./audio-extraction-wasm.md) | WASM audio: Symphonia AAC demuxing, ADTS header wrapping |
 
 The WASM layer computes raw numbers (changed blocks, hashes, brightness). The TypeScript layer (`extractor.ts`) consumes these numbers and decides when to actually emit a slide. Read both documents together for the full picture.

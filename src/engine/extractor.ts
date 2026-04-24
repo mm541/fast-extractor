@@ -24,6 +24,8 @@
  *     Condition 2: cumulativeDrift ≥ blockThreshold × multiplier AND settled
  *                  (many small changes that accumulated, e.g., scrolling text)
  *     Condition 3: partial main + partial drift  (combined weak signals)
+ *     Condition 4: color-only change — edges identical but avg RGB shifted ≥ 50
+ *                  (dark mode toggle, background color swap)
  *
  *   NOISE SUPPRESSION:
  *     - Blank frames (brightness < blankBrightnessThreshold) are skipped
@@ -33,11 +35,11 @@
  * TWO EXTRACTION MODES:
  *   TURBO:    Decode only keyframes (IDR). ~10-20s for a 1-hour video.
  *             One pipelined VideoDecoder (no per-frame flush — see perf warning).
- *             Catches ~95% of transitions (misses those between IDRs).
+ *             
  *
- *   ACCURATE: Decode EVERY frame in 300s (5-min) chunks. ~120-150s for a 1-hour video.
+ *   SEQUENTIAL: Decode EVERY frame in 300s (5-min) chunks. ~120-150s for a 1-hour video.
  *             Decoder is recycled per chunk to bound RAM.
- *             Catches 100% of transitions. Higher accuracy, higher cost.
+ *             
  *
  * WASM BUFFER LAYOUT:
  *   init_arena() allocates four buffers in WASM linear memory:

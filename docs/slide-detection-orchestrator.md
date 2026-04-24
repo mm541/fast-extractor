@@ -1,4 +1,4 @@
-# Slide Detection — Engine Decision Logic
+# Slide Detection — Orchestrator (Decision Logic)
 
 > **Module:** `src/engine/extractor.ts`  
 > **Last Audited:** 2026-04-24 (in progress)  
@@ -9,7 +9,7 @@
 | Document | Covers |
 |----------|--------|
 | [slide-detection-wasm.md](./slide-detection-wasm.md) | WASM math: edge detection, grid density, dHash, color signature |
-| **→ You are here** | TypeScript decision logic: 4 emit conditions, noise calibration, drift tracking |
+| [slide-detection-orchestrator.md](./slide-detection-orchestrator.md) | TypeScript decision logic: 4 emit conditions, noise calibration, drift tracking |
 | [audio-extraction-wasm.md](./audio-extraction-wasm.md) | WASM audio: Symphonia AAC demuxing, ADTS header wrapping |
 
 ---
