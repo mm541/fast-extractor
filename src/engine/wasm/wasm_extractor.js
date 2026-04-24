@@ -72,7 +72,7 @@ export function compare_prev_current(edge_threshold, density_num, mask) {
 /**
  * Compute average color signature from the RGBA buffer.
  * Returns packed u64: [avgR: u16 | avgG: u16 | avgB: u16 | unused: u16]
- * Samples every 64th pixel (~1600 samples from 427×240) — fast and representative.
+ * Samples every 64th pixel (~1590 samples from 424×240) — fast and representative.
  * Must be called AFTER pixel ingestion but BEFORE copy_rgba_to_gray().
  * @returns {bigint}
  */

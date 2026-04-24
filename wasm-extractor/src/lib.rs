@@ -19,10 +19,10 @@
 // ── MEMORY LAYOUT ────────────────────────────────────────────────────────
 //
 //   init_arena() allocates four fixed buffers in WASM linear memory:
-//     Buffer A  (raw_a)    — 427×240 grayscale — Baseline (last emitted slide)
-//     Buffer B  (raw_b)    — 427×240 grayscale — Current frame being evaluated
-//     Buffer Prev (raw_prev) — 427×240 grayscale — Previous frame (drift detection)
-//     RGBA Buffer (rgba_buf) — 427×240×4 RGBA  — Staging area for pixel ingestion
+//     Buffer A  (raw_a)    — 424×240 grayscale — Baseline (last emitted slide)
+//     Buffer B  (raw_b)    — 424×240 grayscale — Current frame being evaluated
+//     Buffer Prev (raw_prev) — 424×240 grayscale — Previous frame (drift detection)
+//     RGBA Buffer (rgba_buf) — 424×240×4 RGBA  — Staging area for pixel ingestion
 //
 //   Total: ~512KB. Allocated once, never freed, never resized.
 //   Zero per-frame allocations. Zero GC pressure.
@@ -77,7 +77,7 @@ extern "C" {
 // 2. MATURE SLIDE-DIFF LOGIC (3-BUFFER ARENA)
 // ════════════════════════════════════════════════
 
-const ARENA_WIDTH: usize = 427;
+const ARENA_WIDTH: usize = 424;
 const ARENA_HEIGHT: usize = 240;
 const ARENA_SIZE: usize = ARENA_WIDTH * ARENA_HEIGHT;
 const RGBA_SIZE: usize = ARENA_SIZE * 4;
@@ -180,7 +180,7 @@ const GRID_COLS: usize = 8;
 fn compute_edge_map_into(pixels: &[u8], width: usize, height: usize, edge_threshold: i16, out: &mut Vec<u8>) {
     let len = width * height;
     // Safety net: Ensures the buffer is large enough.
-    // In our FrameArena (427x240), out.len() exactly equals len (102,480),
+    // In our FrameArena (424x240), out.len() exactly equals len (101,760),
     // so this resize() never executes, preserving our zero-allocation invariant.
     if out.len() < len { out.resize(len, 0); }
 
@@ -314,7 +314,7 @@ pub fn get_avg_brightness() -> u32 {
 
 /// Compute average color signature from the RGBA buffer.
 /// Returns packed u64: [avgR: u16 | avgG: u16 | avgB: u16 | unused: u16]
-/// Samples every 64th pixel (~1600 samples from 427×240) — fast and representative.
+/// Samples every 64th pixel (~1590 samples from 424×240) — fast and representative.
 /// Must be called AFTER pixel ingestion but BEFORE copy_rgba_to_gray().
 #[wasm_bindgen]
 pub fn compute_color_signature() -> u64 {

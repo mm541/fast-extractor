@@ -529,7 +529,7 @@ const App: React.FC = () => {
                                     disabled={isExtracting}
                                     aria-label="Output image max width"
                                 >
-                                    <option value={427}>Low (427px)</option>
+                                    <option value={424}>Low (424px)</option>
                                     <option value={854}>Medium (854px)</option>
                                     <option value={1280}>HD (1280px)</option>
                                     <option value={1920}>Full HD (1920px)</option>

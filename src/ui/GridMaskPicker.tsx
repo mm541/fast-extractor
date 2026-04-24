@@ -15,7 +15,7 @@
  * MEMORY:
  *   - <video> element buffers ~2-5MB regardless of file size (browser streams from disk)
  *   - Blob URL is revoked on unmount
- *   - Canvas is small (427×240) — same as comparison resolution
+ *   - Canvas is small (424×240) — same as comparison resolution
  *
  * ⚠️ This component has ZERO dependency on the extraction engine.
  *    It only produces a bigint mask. The consumer passes it to FastExtractor.
@@ -35,7 +35,7 @@ interface GridMaskPickerProps {
 
 const GRID_ROWS = 8;
 const GRID_COLS = 8;
-const PREVIEW_WIDTH = 427;
+const PREVIEW_WIDTH = 424;
 const PREVIEW_HEIGHT = 240;
 
 const GridMaskPicker: React.FC<GridMaskPickerProps> = ({ file, onMaskChange, mask, disabled = false }) => {
