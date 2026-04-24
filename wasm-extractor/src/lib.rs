@@ -338,21 +338,29 @@ pub fn compute_color_signature() -> u64 {
     let mut sum_r: u64 = 0;
     let mut sum_g: u64 = 0;
     let mut sum_b: u64 = 0;
-    let mut count: u64 = 0;
-    // Sample every 64th pixel (stride of 256 bytes in RGBA)
-    let mut i = 0;
-    while i < RGBA_SIZE {
-        sum_r += rgba[i] as u64;
-        sum_g += rgba[i + 1] as u64;
-        sum_b += rgba[i + 2] as u64;
-        count += 1;
-        i += 256;
+    
+    // chunks_exact(256) guarantees every chunk is exactly 256 bytes long.
+    // This allows LLVM to mathematically prove chunk[0], chunk[1], chunk[2] are safe,
+    // completely eliminating bounds checks from the inner loop.
+    let chunks = rgba.chunks_exact(256);
+    let count = chunks.len() as u64;
+    
+    for chunk in chunks {
+        sum_r += chunk[0] as u64;
+        sum_g += chunk[1] as u64;
+        sum_b += chunk[2] as u64;
     }
-    let avg_r = (sum_r / count) as u64;
-    let avg_g = (sum_g / count) as u64;
-    let avg_b = (sum_b / count) as u64;
+    
+    if count == 0 { return 0; }
+    
+    let avg_r = sum_r / count;
+    let avg_g = sum_g / count;
+    let avg_b = sum_b / count;
+    
     (avg_r << 48) | (avg_g << 32) | (avg_b << 16)
 }
+
+
 
 // ════════════════════════════════════════════════
 // 3. AUDIO EXTRACTOR (Symphonia based)
