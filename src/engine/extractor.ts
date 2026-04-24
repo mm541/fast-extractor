@@ -322,6 +322,7 @@ export class SlideExtractor {
     this.savedHashes = [];
     if (this.pendingCandidate) { this.pendingCandidate.bitmap.close(); }
     this.pendingCandidate = null;
+    this.lastSlideTime = -10;
     // Reset robustness state
     this.noiseFloor = 0;
     this.calibrationSamples = [];

@@ -18,8 +18,8 @@ Apply these 7 checks to **every section** during the line-by-line audit.
 
 | Lines | Section | Status |
 |-------|---------|--------|
-| 1-100 | Header comments | `[ ]` |
-| 100-230 | ExtractionOptions + defaults | `[ ]` |
+| 1-100 | Header comments | `[x]` |
+| 100-230 | ExtractionOptions + defaults | `[x]` |
 | 230-350 | Class properties + constructor | `[ ]` |
 | 350-600 | extractSlides() — turbo + accurate | `[ ]` |
 | 600-830 | processFrameSync() — 4 emit conditions | `[ ]` |
