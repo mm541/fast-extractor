@@ -87,8 +87,7 @@ const App: React.FC = () => {
     const [slides, setSlides] = useState<Slide[]>([]);
     const [progress, setProgress] = useState<number>(0);
     const [jobMetrics, setJobMetrics] = useState<{ start: number; end: number | null }>({ start: 0, end: null });
-//
-    const [mode, setMode] = useState<'accurate' | 'turbo'>('turbo');
+    const [extractionMode, setExtractionMode] = useState<'turbo' | 'sequential'>('turbo');
     
     const [config, setConfig] = useState({
         sampleFps: 1,
@@ -139,7 +138,7 @@ const App: React.FC = () => {
             setCapabilities(caps);
             console.log('[DeviceCaps]', caps);
             if (caps.deviceMemoryGb && caps.deviceMemoryGb <= 4) {
-                setMode('turbo');
+                setExtractionMode('turbo');
             }
         });
         return () => {
@@ -263,7 +262,7 @@ const App: React.FC = () => {
 
         // ── Create extractor with current config ──
         const extractor = new FastExtractor({
-            mode,
+            mode: extractionMode,
             ignoreMask,
             extractAudio,
             extractSlides,
@@ -385,20 +384,14 @@ const App: React.FC = () => {
                         <p className="hint">Tip: Use <b>"Turbo"</b> mode for 10x faster sampling of long videos.</p>
                         
                         <div className="mode-toggle">
-                            <button 
-                                className={`mode-btn ${mode === 'accurate' ? 'active' : ''}`}
-                                onClick={() => setMode('accurate')}
-                                disabled={isExtracting}
+                            <select
+                                className="form-select text-sm w-full bg-slate-900 border-slate-700 text-slate-300 rounded"
+                                value={extractionMode}
+                                onChange={(e) => setExtractionMode(e.target.value as 'turbo' | 'sequential')}
                             >
-                                🎯 Sequential
-                            </button>
-                            <button 
-                                className={`mode-btn ${mode === 'turbo' ? 'active' : ''}`}
-                                onClick={() => setMode('turbo')}
-                                disabled={isExtracting}
-                            >
-                                🚀 Turbo
-                            </button>
+                                <option value="turbo">Turbo (Keyframes)</option>
+                                <option value="sequential">Sequential (Every frame)</option>
+                            </select>
                         </div>
 
                         <div className="extract-toggles">
@@ -447,7 +440,7 @@ const App: React.FC = () => {
                         )}
 
                         <div className="settings-grid">
-                            {mode === 'accurate' && (
+                            {extractionMode === 'sequential' && (
                                 <div className="setting-item">
                                     <label>Accurate FPS: <strong>{config.sampleFps}</strong></label>
                                     <input 
@@ -643,7 +636,7 @@ const App: React.FC = () => {
                             <span className="label">Decode Speed</span>
                             <span className="value">
                                 {metrics.totalFrames ? (metrics.totalFrames / (((metrics.endTime || performance.now()) - metrics.startTime) / 1000)).toFixed(1) : '0'} 
-                                {mode === 'turbo' ? ' Keyframes/s' : ' FPS'}
+                                {extractionMode === 'turbo' ? ' Keyframes/s' : ' FPS'}
                             </span>
                         </div>
                         <div className="metric-card">

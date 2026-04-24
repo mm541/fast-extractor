@@ -157,11 +157,11 @@ export interface BrowserSupport {
 /** Options for the FastExtractor. Only mode is required; everything else has sensible defaults. */
 export interface FastExtractorOptions {
   // ─── Extraction mode ───
-  /** 'turbo' = keyframe-only (~10x faster), 'accurate' = every frame */
-  mode?: 'accurate' | 'turbo';
+  /** 'turbo' = keyframe-only (~10x faster), 'sequential' = every frame */
+  mode?: 'sequential' | 'turbo';
   
   /** 
-   * Frame sampling rate for accurate mode (0.2 - 10). Default: 1.
+   * Frame sampling rate for sequential mode (0.2 - 10). Default: 1.
    * 1 = compare 1 frame per second.
    * 0.5 = one frame every 2 seconds.
    * Ignored in turbo mode.

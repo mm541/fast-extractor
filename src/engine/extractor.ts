@@ -162,8 +162,8 @@
  *     Reset drift only if mainChanges < blockThreshold × this ratio.
  *     Ensures we don't reset when there's a genuine slow transition in progress.
  *
- *   sampleFps (0.2-10, default 1) [accurate mode only]
- *     Frame sampling rate for accurate mode.
+ *   sampleFps (0.2-10, default 1) [sequential mode only]
+ *     Frame sampling rate for sequential mode.
  *     1 = compare 1 frame per second (default).
  *     0.5 = one frame every 2 seconds (faster, less precise).
  *     Ignored in turbo mode (turbo always decodes every keyframe).
@@ -171,7 +171,7 @@
 import { WebDemuxer } from 'web-demuxer';
 
 export interface SlideExtractorOptions {
-  mode: 'accurate' | 'turbo';
+  mode: 'sequential' | 'turbo';
   sampleFps: number;
   edgeThreshold: number;
   blockThreshold: number;

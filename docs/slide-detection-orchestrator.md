@@ -120,10 +120,26 @@ Multiple layers of filtering prevent false positive slide emissions.
 
 ---
 
+## Future Architecture: Pluggable Strategy Engines
+
+Currently, the 4 emit conditions are hardcoded into `extractor.ts`. To support a "Zero-Config" fully adaptive extractor in the future, the architecture will be decoupled:
+
+1. **`SlideExtractor` (The Orchestrator)**: Handles `VideoDecoder`, canvas, WASM buffers, and chunking.
+2. **`DetectionEngine` (The Strategy)**: An interface that takes raw WASM numbers and returns an emit decision.
+
+### Planned Engine Types:
+- **`ThresholdEngine`**: (Current) Uses blockThreshold and drift to detect slides. Best for static presentations.
+- **`StabilityEngine`**: (Future) Ignored blockThreshold entirely. Emits only when `driftBlocks == 0` for N frames. Best for sequential mode and live-coding tutorials.
+- **`ZeroConfigEngine`**: (Future) Two-pass statistical engine or lightweight ML model that requires no manual parameter tuning.
+
+This split ensures the complex video plumbing doesn't need to change when we add smarter detection logic.
+
+---
+
 ## Next Steps
 
 This document will be expanded as we audit `extractor.ts` line by line. Sections to be added:
-- [ ] Detailed ExtractionOptions reference with all defaults
+- [x] Detailed ExtractionOptions reference with all defaults
 - [ ] Debug mode output specification
 - [ ] Error handling and error codes
 - [ ] Extensibility guide for adding new emit conditions
