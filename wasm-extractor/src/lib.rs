@@ -202,7 +202,8 @@ fn compute_edge_map_into(pixels: &[u8], width: usize, height: usize, edge_thresh
     }
 }
 
-/// Compare two edge maps on an 8×8 grid, returning the number of blocks that changed.
+/// Divides the screen into an 8×8 grid of macro-regions (8 rows, 8 columns = 64 blocks total).
+/// Compares the edge density of each block. Returns the number of blocks that changed.
 /// `mask`: a 64-bit bitmask where bit (row*8 + col) = 1 means SKIP that block.
 /// Pass mask=0 to compare all blocks (default behavior).
 fn compare_grid_density(edges_a: &[u8], edges_b: &[u8], width: usize, height: usize, num: u32, den: u32, mask: u64) -> u32 {
