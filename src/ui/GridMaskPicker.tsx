@@ -51,6 +51,9 @@ const GridMaskPicker: React.FC<GridMaskPickerProps> = ({ file, onMaskChange, mas
   useEffect(() => {
     const url = URL.createObjectURL(file);
     setBlobUrl(url);
+    if (videoRef.current) {
+      videoRef.current.load(); // Force mobile browsers to parse the Blob URL metadata
+    }
     return () => URL.revokeObjectURL(url);
   }, [file]);
 
@@ -84,12 +87,15 @@ const GridMaskPicker: React.FC<GridMaskPickerProps> = ({ file, onMaskChange, mas
     drawFrame();
   }, [drawFrame]);
 
-  // Time scrubber change
+  // Update UI immediately while dragging
   const onTimeChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const time = parseFloat(e.target.value);
-    setCurrentTime(time);
+    setCurrentTime(parseFloat(e.target.value));
+  }, []);
+
+  // Only tell the browser's heavy video decoder to seek when the user STOPS dragging
+  const onSeekCommit = useCallback((e: React.SyntheticEvent<HTMLInputElement>) => {
     if (videoRef.current) {
-      videoRef.current.currentTime = time;
+      videoRef.current.currentTime = parseFloat(e.currentTarget.value);
     }
   }, []);
 
@@ -205,7 +211,7 @@ const GridMaskPicker: React.FC<GridMaskPickerProps> = ({ file, onMaskChange, mas
               <div
                 key={i}
                 className={`grid-cell ${isMasked ? 'masked' : ''}`}
-                onPointerDown={(e) => { e.preventDefault(); onCellPointerDown(row, col); }}
+                onPointerDown={() => onCellPointerDown(row, col)}
                 onPointerEnter={() => onCellPointerEnter(row, col)}
                 style={{
                   border: '1px solid rgba(255,255,255,0.2)',
@@ -231,6 +237,9 @@ const GridMaskPicker: React.FC<GridMaskPickerProps> = ({ file, onMaskChange, mas
             step={0.1}
             value={currentTime}
             onChange={onTimeChange}
+            onPointerUp={onSeekCommit}
+            onTouchEnd={onSeekCommit}
+            onKeyUp={onSeekCommit}
             style={{ flex: 1 }}
             disabled={disabled || duration === 0}
             aria-label="Seek to timestamp for mask preview"
