@@ -300,6 +300,7 @@ export class SlideExtractor {
   private chunkCount = 0;
   private lastKeyframeTs = -1;
   private lastReportTs = 0;
+  private pendingBackpressureResolve: (() => void) | null = null;
 
 
   // VideoDecoder requires a keyframe after configure() or flush().
@@ -412,14 +413,18 @@ export class SlideExtractor {
     }
 
     // Backpressure: prevent memory blowout
-    const maxQueue = this.options.mode === 'turbo' ? 12 : 3;
-    
-    // Polling decodeQueueSize is robust against dropped frames. If a hardware
-    // decoder silently drops a frame, the output callback never fires, but
-    // decodeQueueSize STILL drops. By polling, we avoid deadlocking or stalling
-    // when frames are dropped.
-    while (this.decoder.state !== 'closed' && this.decoder.decodeQueueSize > maxQueue) {
-      await new Promise(r => setTimeout(r, 5));
+    // Mobile hardware decoders crash or OOM if fed too many frames at once.
+    // Sequential mode keeps this low (5) because it decodes every single frame.
+    const maxQueue = this.options.mode === 'turbo' ? 12 : 5;
+
+    // Use WebCodecs 'ondequeue' event for instant backpressure resolution (0ms).
+    // This restores PC throughput. For dropped frames on mobile, ondequeue STILL
+    // fires, preventing deadlocks. We keep a 15ms fallback just in case.
+    while (this.decoder.state !== 'closed' && this.decoder.decodeQueueSize >= maxQueue) {
+      await Promise.race([
+        new Promise<void>(r => { this.pendingBackpressureResolve = r; }),
+        new Promise<void>(r => setTimeout(r, 15))
+      ]);
     }
 
     // Gate: after configure() or decoder reset, skip delta frames until a keyframe
@@ -534,8 +539,22 @@ export class SlideExtractor {
         console.warn(`${this.options.mode} decode pipeline error:`, e);
         // Re-engage keyframe gate so the next decoder doesn't get fed delta frames
         this.needsKeyframe = true;
+        if (this.pendingBackpressureResolve) {
+          const r = this.pendingBackpressureResolve;
+          this.pendingBackpressureResolve = null;
+          r();
+        }
       }
     });
+
+    d.ondequeue = () => {
+      if (this.pendingBackpressureResolve) {
+        const r = this.pendingBackpressureResolve;
+        this.pendingBackpressureResolve = null;
+        r();
+      }
+    };
+
     d.configure(this.decoderConfig!);
     return d;
   }
