@@ -198,7 +198,7 @@ export interface SlideExtractorOptions {
   
   /** Encoded image quality (0.01 - 1.0). Default: 0.8 */
   imageQuality?: number;
-  /** Output format for extracted slides. Default: 'webp' */
+  /** Output format for extracted slides. Default: 'jpeg' */
   imageFormat?: 'webp' | 'jpeg';
   /** Max width of output slides (e.g. 1280 or 1920). 0 means original. Default: 0. */
   exportResolution?: number;
