@@ -307,6 +307,12 @@ export class SlideExtractor {
   // error → close → recreate → error loop that floods the console and stalls the pipeline.
   private needsKeyframe = true;
 
+  // Sequential mode: sampleFps gating. Decode every frame (reference chain)
+  // but only run processFrameSync at sampleFps rate. Frames between samples
+  // are frame.close()'d immediately in the decoder output callback.
+  // This was the original pre-refactor architecture (nextCaptureTime + interval).
+  private nextCaptureTime = 0;
+
   // processedFrames tracks only frames that pass the sampleFps gate and run
   // through the WASM pipeline — used for accurate avgFrameProcessTimeMs.
   // totalFrames (in metrics) counts ALL decoded frames including skipped ones.
@@ -347,6 +353,7 @@ export class SlideExtractor {
     this.pendingCandidate = null;
     this.lastSlideTime = -10;
     this.needsKeyframe = true;
+    this.nextCaptureTime = 0;
     // Reset robustness state
     this.noiseFloor = 0;
     this.calibrationSamples = [];
@@ -499,11 +506,25 @@ export class SlideExtractor {
     const d = new VideoDecoder({
       output: (frame) => {
         const ts = frame.timestamp / 1e6;
+
+        // Sequential sampleFps gating: decode every frame (reference chain)
+        // but only process at sampleFps rate. This was the original architecture
+        // before the Phase 2 refactor accidentally dropped it.
+        if (this.options.mode === 'sequential' && ts < this.nextCaptureTime) {
+          frame.close();
+          // Still resolve backpressure so feedChunk doesn't stall
+          if (this.pendingBackpressureResolve) {
+            const r = this.pendingBackpressureResolve;
+            this.pendingBackpressureResolve = null;
+            r();
+          }
+          return;
+        }
+
         const t0 = performance.now();
         try {
           this.processFrameSync(frame, ts);
           // Only update avg for frames that actually ran through the WASM pipeline
-          // (processedFrames excludes sampleFps-skipped frames)
           if (this.processedFrames > 0) {
             this.metrics.avgFrameProcessTimeMs =
               (this.metrics.avgFrameProcessTimeMs * (this.processedFrames - 1) + (performance.now() - t0))
@@ -515,6 +536,12 @@ export class SlideExtractor {
           // own frame.close() path ran. Double-close is a harmless no-op.
           try { frame.close(); } catch {}
         }
+
+        // Advance the capture gate for sequential mode
+        if (this.options.mode === 'sequential') {
+          this.nextCaptureTime = ts + (1 / (this.options.sampleFps || 1));
+        }
+
         // Resolve backpressure waiter (sequential mode)
         if (this.pendingBackpressureResolve) {
           const r = this.pendingBackpressureResolve;
