@@ -161,8 +161,6 @@ export interface SlideExtractorOptions {
   blankBrightnessThreshold: number;     // skip frames darker than this (0-255)
   // Color-aware detection
   colorChangeThreshold: number;         // max(|ΔR|,|ΔG|,|ΔB|) to trigger color-only slide (0=disabled)
-  // Camera shake filter
-  shakeFilterStrictMultiplier: number;  // density multiplier for shake confirmation (0=disabled)
   // Region-of-interest masking
   ignoreMask: bigint;                   // 64-bit bitmask: bit (row*8+col)=1 skips that grid block
   
@@ -197,7 +195,7 @@ export const DEFAULT_OPTIONS: SlideExtractorOptions = {
   // Color detection: 25 = detect shifts where any channel moves >25/255
   colorChangeThreshold: 25,
   // Shake filter: 3 = confirm with 3× density. 0 = disabled
-  shakeFilterStrictMultiplier: 3,
+  // Shake filter removed — it requires cumulative drift fallback to work correctly
   // Grid masking: 0n = compare all 64 blocks (no masking)
   ignoreMask: 0n,
   imageQuality: 0.8,
@@ -640,23 +638,7 @@ export class SlideExtractor {
 
     // Condition 1: Absolute Divergence — enough blocks changed from baseline
     if (mainChanges >= blockThreshold) {
-      // --- Camera Shake Filter (optional) ---
-      // If the change is diffuse (all blocks changed a little), it's shake, not a slide.
-      // Confirm with a stricter density check: if few blocks pass 3× density, it's shake.
-      if (this.options.shakeFilterStrictMultiplier > 0 && mainChanges < blockThreshold * 2) {
-        const strictDensity = Math.min(densityThresholdPct * this.options.shakeFilterStrictMultiplier, 100);
-        const strictChanges = this.wasm.compare_frames(edgeThreshold, strictDensity, mask);
-        if (strictChanges >= blockThreshold * 0.3) {
-          shouldEmit = true; // Concentrated change → real slide
-        } else {
-          // Shake filter rejected — update baseline anyway to prevent
-          // infinite re-evaluation on every subsequent frame.
-          this.copyBufferBToA();
-        }
-      } else {
-        // Shake filter disabled OR change is overwhelming (≥2× threshold) → bypass filter
-        shouldEmit = true;
-      }
+      shouldEmit = true;
     }
     // Condition 2: Color-only change
     else if (
