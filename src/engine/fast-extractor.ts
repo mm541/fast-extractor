@@ -758,8 +758,10 @@ async function extractVideoChunks(worker: Worker, options: FastExtractorOptions,
     try {
       worker.postMessage({ type: 'STATUS', status: 'Initializing Demuxer...' });
 
-      // Demuxer runs on main thread now, no Base64 hack needed
-      const wasmUrl = options.demuxerWasmUrl ?? '/wasm-files/web-demuxer.wasm';
+      // Demuxer internally spawns its own worker — workers can't resolve
+      // relative URLs, so we must pass an absolute URL.
+      const rawUrl = options.demuxerWasmUrl ?? '/wasm-files/web-demuxer.wasm';
+      const wasmUrl = rawUrl.startsWith('http') ? rawUrl : new URL(rawUrl, self.location.origin).href;
       demuxer = new WebDemuxer({ wasmFilePath: wasmUrl });
 
       // Read the file back from OPFS so demuxer has a stable reference
