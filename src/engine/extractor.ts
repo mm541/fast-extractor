@@ -106,15 +106,6 @@
  *   specific use case, check against savedHashes[0..N] — but be aware
  *   it becomes O(N) per frame and changes the user-facing behavior.
  *
- * 💡 CONSIDERATION: BASE64 WASM CHUNKING (String.fromCharCode += loop)
- *   The demuxer WASM binary (~2MB) is converted to a data: URL via a
- *   += string concatenation loop. This looks inefficient (quadratic string
- *   growth), but it runs exactly ONCE per extraction during the
- *   "Initializing Demuxer..." phase. The alternative (array.join) saves
- *   ~50-100ms on mobile but adds code complexity for a one-time cost.
- *   The chunking (32KB per iteration) exists to prevent call stack
- *   overflow — String.fromCharCode.apply() crashes if given >64K args.
- *
  * CONFIGURATION REFERENCE:
  *   edgeThreshold (10-100, default 30)
  *     Per-pixel luminance difference required to count as "changed".
@@ -786,7 +777,7 @@ export class SlideExtractor {
     }).catch(e => {
       // Prevent unhandled promise rejection from crashing the worker.
       // convertToBlob can fail under mobile memory pressure or unsupported formats.
-      console.warn('emitBitmap: WebP encode failed (skipping slide):', e);
+      console.warn('emitBitmap: image encode failed (skipping slide):', e);
     });
   }
 
@@ -802,7 +793,7 @@ export class SlideExtractor {
       this.options.onSlide(blob, timestamp);
       this.metrics.totalSlides++;
     } catch (e) {
-      console.warn('emitBitmapAsync: WebP encode failed (skipping slide):', e);
+      console.warn('emitBitmapAsync: image encode failed (skipping slide):', e);
     }
   }
 
