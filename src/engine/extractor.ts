@@ -261,14 +261,15 @@ export interface WasmModule {
  * ARCHITECTURE: Two Pipeline Modes
  *
  * 1. Turbo Mode (Keyframes only)
- *    Stream ALL packets from demuxer. Only DECODE packets that are keyframes.
- *    Extremely fast (~100x real-time) because P/B frames are skipped.
+ *    Stream packets from demuxer. Only pass `type === 'key'` chunks to the VideoDecoder.
+ *    Reduces decode workload by dropping all P and B packets before decoding.
  *    Tradeoff: Can land on blurry crossfades (mitigated by Deferred Emit).
  *
  * 2. Sequential Mode (Sampled FPS)
  *    Stream packets and decode every frame, but only send frames to WASM at `sampleFps`.
  *    Slower, but perfectly accurate for live-coding and fast transitions.
  */
+
 export class SlideExtractor {
   private wasm: WasmModule;
   private options: SlideExtractorOptions;
