@@ -472,6 +472,10 @@ export class FastExtractor {
                   });
                   break;
 
+                case 'CHUNK_PROCESSED':
+                  unackedChunks--;
+                  break;
+
                 case 'ALL_DONE':
                   // Emit final progress with metrics if available
                   if (e.data.metrics) {
@@ -555,6 +559,7 @@ export class FastExtractor {
 
           // 7. Instantiate WorkspaceManager and run the extraction pipeline
           const tempFileName = `extract_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.mp4`;
+          let unackedChunks = 0;
           
           const runPipeline = async () => {
             try {
@@ -587,7 +592,7 @@ export class FastExtractor {
 
               // Run video extraction pipeline
               if (this.options.extractSlides !== false) {
-                  await extractVideoChunks(worker!, this.options, tempFileName);
+                  await extractVideoChunks(worker!, this.options, tempFileName, () => unackedChunks, () => { unackedChunks++; });
               } else {
                   worker!.postMessage({ type: 'VIDEO_DONE', skipped: true });
               }
@@ -753,7 +758,7 @@ async function ingestFile(file: File, tempFileName: string, onProgress: (status:
     await writable.close();
   }
 
-async function extractVideoChunks(worker: Worker, options: FastExtractorOptions, tempFileName: string): Promise<void> {
+async function extractVideoChunks(worker: Worker, options: FastExtractorOptions, tempFileName: string, getUnacked: () => number, incUnacked: () => void): Promise<void> {
     let demuxer: WebDemuxer | null = null;
     try {
       worker.postMessage({ type: 'STATUS', status: 'Initializing Demuxer...' });
@@ -789,6 +794,13 @@ async function extractVideoChunks(worker: Worker, options: FastExtractorOptions,
       let packetCount = 0;
 
       while (true) {
+        // Cross-thread backpressure: Wait if the worker has too many chunks queued up.
+        // This prevents the main thread from reading a 6-hour video into RAM instantly
+        // and flooding the worker's message queue, which would crash the pipeline.
+        while (getUnacked() >= 15) {
+          await new Promise(r => setTimeout(r, 5));
+        }
+
         const { done, value } = await reader.read();
         if (done || !value) break;
 
@@ -798,6 +810,7 @@ async function extractVideoChunks(worker: Worker, options: FastExtractorOptions,
         const chunkData = new ArrayBuffer(value.byteLength);
         value.copyTo(chunkData);
 
+        incUnacked();
         worker.postMessage({
           type: 'VIDEO_CHUNK',
           chunk: chunkData,

@@ -254,6 +254,7 @@ self.onmessage = async (e: MessageEvent) => {
             const { chunk, timestamp, chunkType } = e.data;
             if (slideExtractor) {
                 await slideExtractor.feedChunk(chunk, timestamp, chunkType);
+                self.postMessage({ type: 'CHUNK_PROCESSED' });
             }
             return;
         }
