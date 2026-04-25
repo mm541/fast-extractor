@@ -370,9 +370,10 @@ export class SlideExtractor {
 
     // Turbo: prefer-software decoder to avoid opaque GPU textures that
     // drawImage() reads as black frames on OffscreenCanvas in workers.
-    // Sequential: uses default (hardware) acceleration since it decodes
-    // every frame and needs the throughput.
-    const baseConfig = { ...config, optimizeForLatency: true };
+    // Also uses optimizeForLatency since turbo flushes per-keyframe.
+    // Sequential: uses default (hardware) acceleration with NO latency
+    // optimization — let the hardware decoder batch frames for throughput.
+    const baseConfig = { ...config };
     let decoderConfig: VideoDecoderConfig = baseConfig;
     if (this.options.mode === 'turbo') {
       try {
@@ -411,7 +412,7 @@ export class SlideExtractor {
     }
 
     // Backpressure: prevent memory blowout
-    const maxQueue = 12;
+    const maxQueue = 16
     if (this.options.mode === 'turbo') {
       while (this.decoder.state !== 'closed' && this.decoder.decodeQueueSize > maxQueue) {
         await new Promise(r => setTimeout(r, 5));
