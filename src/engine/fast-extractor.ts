@@ -759,39 +759,21 @@ async function ingestFile(file: File, tempFileName: string, onProgress: (status:
     await writable.close();
   }
 
-// Module-level cache: fetch + base64 encode the demuxer WASM once,
-// reuse the data URL string for all subsequent extractions.
-let cachedDemuxerWasmDataUrl: string | null = null;
-
-async function getDemuxerWasmDataUrl(demuxerWasmUrl?: string): Promise<string> {
-  if (cachedDemuxerWasmDataUrl) return cachedDemuxerWasmDataUrl;
-
-  const rawUrl = demuxerWasmUrl ?? '/wasm-files/web-demuxer.wasm';
-  const fetchUrl = rawUrl.startsWith('http') ? rawUrl : new URL(rawUrl, self.location.origin).href;
-
-  const resp = await fetch(fetchUrl);
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  const wasmBytes = new Uint8Array(await resp.arrayBuffer());
-  let binary = '';
-  const chunkSize = 32768;
-  for (let i = 0; i < wasmBytes.length; i += chunkSize) {
-    binary += String.fromCharCode.apply(null, wasmBytes.subarray(i, i + chunkSize) as any);
-  }
-  cachedDemuxerWasmDataUrl = 'data:application/wasm;base64,' + btoa(binary);
-  return cachedDemuxerWasmDataUrl;
-}
+// No module-level cache needed. The browser's HTTP cache handles WASM fetching.
 
 async function extractVideoChunks(worker: Worker, options: FastExtractorOptions, tempFileName: string, getUnacked: () => number, incUnacked: () => void): Promise<void> {
     let demuxer: WebDemuxer | null = null;
     try {
       worker.postMessage({ type: 'STATUS', status: 'Initializing Demuxer...' });
 
-      // ⚠️ WebDemuxer ALWAYS spawns an internal data: URL worker (null origin).
-      // A null-origin worker CANNOT fetch() from http://192.168.x.x on Android.
-      // We pre-fetch the WASM on the main thread and pass it as a data: URL.
-      // The result is cached at module level so this only happens once.
-      const wasmDataUrl = await getDemuxerWasmDataUrl(options.demuxerWasmUrl);
-      demuxer = new WebDemuxer({ wasmFilePath: wasmDataUrl });
+      // Resolve the WASM URL relative to the current page.
+      // We use a relative path ('wasm-files/...') and self.location.href to ensure
+      // it resolves correctly whether hosted at the root (/) or a subpath (/audio-extractor/).
+      const defaultUrl = 'wasm-files/web-demuxer.wasm';
+      const rawUrl = options.demuxerWasmUrl ?? defaultUrl;
+      const wasmUrl = rawUrl.startsWith('http') ? rawUrl : new URL(rawUrl, self.location.href).href;
+      
+      demuxer = new WebDemuxer({ wasmFilePath: wasmUrl });
 
       // Read the file back from OPFS so demuxer has a stable reference
       const root = await navigator.storage.getDirectory();
