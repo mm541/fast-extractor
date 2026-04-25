@@ -799,12 +799,22 @@ async function extractVideoChunks(worker: Worker, options: FastExtractorOptions,
       const reader = demuxer.read('video', 0, endTime).getReader();
       let packetCount = 0;
 
+      // Chrome throttles setTimeout to 1000ms in background tabs, which kills
+      // the pipeline. MessageChannel.postMessage fires as a macrotask that is
+      // NOT subject to timer throttling, so extraction runs at full speed
+      // even when the user switches tabs.
+      const yieldToEventLoop = (): Promise<void> => new Promise(resolve => {
+        const ch = new MessageChannel();
+        ch.port1.onmessage = () => resolve();
+        ch.port2.postMessage(null);
+      });
+
       while (true) {
         // Cross-thread backpressure: Wait if the worker has too many chunks queued up.
         // This prevents the main thread from reading a 6-hour video into RAM instantly
         // and flooding the worker's message queue, which would crash the pipeline.
         while (getUnacked() >= 15) {
-          await new Promise(r => setTimeout(r, 5));
+          await yieldToEventLoop();
         }
 
         const { done, value } = await reader.read();
@@ -826,7 +836,7 @@ async function extractVideoChunks(worker: Worker, options: FastExtractorOptions,
 
         // Yield to browser every 50 packets so React can paint UI updates
         if (++packetCount % 50 === 0) {
-          await new Promise(r => setTimeout(r, 0));
+          await yieldToEventLoop();
         }
       }
 
