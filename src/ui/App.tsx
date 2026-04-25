@@ -96,9 +96,7 @@ const App: React.FC = () => {
         densityThresholdPct: 4,
         minSlideDuration: 3,
         dhashDuplicateThreshold: 4,
-        // Drift detection
         blankBrightnessThreshold: 8,
-        cumulativeSettledFrames: 2,
         imageQuality: 0.8,
         exportResolution: 0,
     });
@@ -540,15 +538,6 @@ const App: React.FC = () => {
                                         value={config.blankBrightnessThreshold} onChange={e => setConfig({...config, blankBrightnessThreshold: Number(e.target.value)})} 
                                         disabled={isExtracting}
                                         aria-label="Blank frame brightness threshold"
-                                    />
-                                </div>
-                                <div className="setting-item">
-                                    <label>Settled Frames: <strong>{config.cumulativeSettledFrames}</strong></label>
-                                    <input 
-                                        type="range" min="1" max="10" step="1" 
-                                        value={config.cumulativeSettledFrames} onChange={e => setConfig({...config, cumulativeSettledFrames: Number(e.target.value)})} 
-                                        disabled={isExtracting}
-                                        aria-label="Frames of stability before drift emit"
                                     />
                                 </div>
                             </div>
