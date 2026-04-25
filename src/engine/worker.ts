@@ -564,8 +564,63 @@ async function processMedia(fileName: string, options: any = {}) {
             );
 
             memLog('8-BEFORE-VIDEO-EXTRACT');
-            await slideExtractor.extract(file, webDemuxerWasmUrl);
-            memLog('9-AFTER-VIDEO-EXTRACT');
+
+            // ── Demuxer setup ──
+            let extractionMetrics: any = null;
+            // Pre-fetch the WASM binary and convert to data: URL.
+            // web-demuxer spawns a nested blob: worker that can't access same-origin URLs.
+            // NOTE: This Base64 hack breaks Safari. Will be removed in Phase 3 when
+            // the demuxer moves to the WorkspaceManager on the main thread.
+            self.postMessage({ type: 'STATUS', status: 'Initializing Demuxer...' });
+            let wasmDataUrl: string;
+            try {
+                const resp = await fetch(webDemuxerWasmUrl);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const wasmBytes = new Uint8Array(await resp.arrayBuffer());
+                let binary = '';
+                const chunkSize = 32768;
+                for (let i = 0; i < wasmBytes.length; i += chunkSize) {
+                    binary += String.fromCharCode.apply(null, wasmBytes.subarray(i, i + chunkSize) as any);
+                }
+                wasmDataUrl = 'data:application/wasm;base64,' + btoa(binary);
+            } catch (e: any) {
+                throw new Error(`Failed to fetch demuxer WASM: ${e.message}`);
+            }
+
+            const { WebDemuxer } = await import('web-demuxer');
+            const demuxer = new WebDemuxer({ wasmFilePath: wasmDataUrl });
+            try {
+                await demuxer.load(file);
+                const mediaInfo = await demuxer.getMediaInfo();
+                const duration = mediaInfo.duration || 0;
+                const decoderConfig = await demuxer.getDecoderConfig('video');
+
+                // Configure the extractor's internal decoder
+                await slideExtractor.configure(decoderConfig as VideoDecoderConfig, duration);
+
+                // ── Demuxer read loop → feedChunk() ──
+                const endTime = duration > 0 ? duration * 2 : 999999;
+                const reader = demuxer.read('video', 0, endTime).getReader();
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done || !value) break;
+
+                    // In turbo mode, only feed keyframes. In sequential mode, feed all.
+                    if (finalOptions.mode === 'turbo' && value.type !== 'key') continue;
+
+                    // Copy the packet data to an ArrayBuffer for feedChunk
+                    const chunkData = new ArrayBuffer(value.byteLength);
+                    value.copyTo(chunkData);
+                    await slideExtractor.feedChunk(chunkData, Number(value.timestamp), value.type as 'key' | 'delta');
+                }
+
+                // Flush the decoder and emit final candidates
+                extractionMetrics = await slideExtractor.flush();
+                memLog('9-AFTER-VIDEO-EXTRACT');
+            } finally {
+                demuxer.destroy();
+            }
 
             // Drain any pending async onSlide callbacks (blob encoding + arrayBuffer)
             // that haven't resolved yet. Without this, the last slide from a fire-and-forget
@@ -578,7 +633,7 @@ async function processMedia(fileName: string, options: any = {}) {
             }
 
             // Flush the last buffered slide — use video duration for accurate endMs
-            const metrics = (slideExtractor as any).metrics;
+            const metrics = extractionMetrics ?? (slideExtractor as any).metrics;
             const ps = pendingSlide as { buffer: ArrayBuffer; startMs: number; timestamp: string } | null;
             const videoDurationMs = metrics?.videoDurationSec
                 ? Math.round(metrics.videoDurationSec * 1000)

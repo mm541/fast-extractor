@@ -168,7 +168,6 @@
  *     0.5 = one frame every 2 seconds (faster, less precise).
  *     Ignored in turbo mode (turbo always decodes every keyframe).
  */
-import { WebDemuxer } from 'web-demuxer';
 
 export interface SlideExtractorOptions {
   mode: 'sequential' | 'turbo';
@@ -303,6 +302,15 @@ export class SlideExtractor {
   // Turbo deferred-emit: buffers one candidate to filter transition frames
   private pendingCandidate: { bitmap: ImageBitmap; timestamp: number; hash: bigint } | null = null;
 
+  // Chunk-fed decoder state
+  private decoder: VideoDecoder | null = null;
+  private decoderConfig: VideoDecoderConfig | null = null;
+  private videoDuration = 0;
+  private chunkCount = 0;
+  private lastKeyframeTs = -1;
+  private lastReportTs = 0;
+  private pendingBackpressureResolve: (() => void) | null = null;
+
   private metrics: ExtractionMetrics = {
     startTime: 0, totalFrames: 0, totalSlides: 0, peakRamMb: 0, avgFrameProcessTimeMs: 0
   };
@@ -318,7 +326,17 @@ export class SlideExtractor {
     this.wasm.init_arena();
   }
 
-  public async extract(file: File, demuxerWasmUrl: string) {
+  /**
+   * Configure the internal VideoDecoder. Must be called before feedChunk().
+   * Accepts a VideoDecoderConfig from the demuxer (e.g., web-demuxer's getDecoderConfig).
+   *
+   * In turbo mode, attempts to use 'prefer-software' to avoid opaque GPU textures
+   * that render as black frames on OffscreenCanvas in workers.
+   *
+   * @param config - VideoDecoderConfig from the demuxer
+   * @param videoDuration - Total video duration in seconds (for progress reporting)
+   */
+  public async configure(config: VideoDecoderConfig, videoDuration: number = 0) {
     this.metrics = { startTime: performance.now(), totalFrames: 0, totalSlides: 0, peakRamMb: 0, avgFrameProcessTimeMs: 0 };
     this.hasBaseline = false;
     this.savedHashes = [];
@@ -335,299 +353,158 @@ export class SlideExtractor {
     this.driftFrames = 0;
     this.staticCount = 0;
 
-    this.options.onProgress(0, "Initializing Demuxer...");
+    this.videoWidth = config.codedWidth || 1920;
+    this.videoHeight = config.codedHeight || 1080;
+    this.videoDuration = videoDuration;
 
-    // Pre-fetch the WASM binary in OUR worker (correct origin) and convert to
-    // a data: URL. web-demuxer spawns a nested blob: worker that can't access
-    // blob: URLs or make same-origin fetches. A data: URL embeds the binary
-    // inline, so no network request or blob store lookup is needed.
-    let wasmDataUrl: string;
-    try {
-      const resp = await fetch(demuxerWasmUrl);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const wasmBytes = new Uint8Array(await resp.arrayBuffer());
-      // Convert to base64 in chunks to avoid call stack overflow
-      let binary = '';
-      const chunkSize = 32768;
-      for (let i = 0; i < wasmBytes.length; i += chunkSize) {
-        binary += String.fromCharCode.apply(null, wasmBytes.subarray(i, i + chunkSize) as any);
-      }
-      wasmDataUrl = 'data:application/wasm;base64,' + btoa(binary);
-    } catch (e: any) {
-      throw new Error(`Failed to fetch demuxer WASM (${demuxerWasmUrl}): ${e.message}`);
+    // Build decoder config — turbo tries prefer-software, sequential uses default
+    const baseConfig = { ...config, optimizeForLatency: true };
+    let decoderConfig: VideoDecoderConfig = baseConfig;
+    if (this.options.mode === 'turbo') {
+      try {
+        const swConfig = { ...baseConfig, hardwareAcceleration: 'prefer-software' as const };
+        const supported = await VideoDecoder.isConfigSupported(swConfig);
+        if (supported.supported) decoderConfig = swConfig;
+      } catch { /* browser doesn't support isConfigSupported — use default */ }
+    }
+    this.decoderConfig = decoderConfig;
+
+    // Create the decoder
+    this.decoder = this.makeDecoder();
+  }
+
+  /**
+   * Feed one encoded video chunk into the decoder pipeline.
+   * The chunk will be decoded and processed via processFrameSync().
+   *
+   * In turbo mode: caller should only feed keyframes.
+   * In sequential mode: caller feeds all frames at sampleFps rate.
+   *
+   * Handles backpressure internally — will block if decode queue is full.
+   */
+  public async feedChunk(data: ArrayBuffer, timestamp: number, type: 'key' | 'delta') {
+    if (!this.decoder || !this.decoderConfig) {
+      throw new Error('SlideExtractor.configure() must be called before feedChunk()');
     }
 
-    const demuxer = new WebDemuxer({ wasmFilePath: wasmDataUrl });
-    try {
-      await demuxer.load(file);
-      const mediaInfo = await demuxer.getMediaInfo();
-      const duration = mediaInfo.duration || 0;
+    this.chunkCount++;
+    const tsSec = timestamp / 1e6;
 
-      const interval = this.options.mode === 'turbo'
-        ? 2
-        : (1 / (this.options.sampleFps || 1));
+    // Skip duplicate keyframes in turbo mode
+    if (this.options.mode === 'turbo' && type === 'key') {
+      if (tsSec === this.lastKeyframeTs) return;
+      this.lastKeyframeTs = tsSec;
+    }
 
-      await this.extractKeyframes(demuxer, duration, interval);
+    // If previous error killed the decoder, spin up a fresh one
+    if (this.decoder.state === 'closed') {
+      this.decoder = this.makeDecoder();
+    }
 
-      // Flush last buffered candidate (turbo deferred-emit)
-      // MUST await here — fire-and-forget would race against worker termination,
-      // causing the last slide's convertToBlob to resolve after ALL_DONE kills the worker.
-      const lc = this.pendingCandidate as { bitmap: ImageBitmap; timestamp: number; hash: bigint } | null;
-      if (lc) {
-        this.savedHashes.push(lc.hash);
-        await this.emitBitmapAsync(lc.bitmap, lc.timestamp);
-        this.pendingCandidate = null;
+    // Backpressure: prevent memory blowout
+    const maxQueue = this.options.mode === 'turbo' ? 12 : 3;
+    if (this.options.mode === 'turbo') {
+      while (this.decoder.state !== 'closed' && this.decoder.decodeQueueSize > maxQueue) {
+        await new Promise(r => setTimeout(r, 5));
       }
+    } else {
+      // Sequential: use Promise.race with 5s timeout as deadlock safety net
+      while (this.decoder.state !== 'closed' && this.decoder.decodeQueueSize >= maxQueue) {
+        await Promise.race([
+          new Promise<void>(r => { this.pendingBackpressureResolve = r; }),
+          new Promise<void>(r => setTimeout(r, 5000))
+        ]);
+      }
+    }
 
-      this.metrics.videoDurationSec = duration;
-      this.metrics.endTime = performance.now();
-      this.options.onProgress(100, "Done", this.metrics);
-    } finally {
-      demuxer.destroy();
+    // Decode
+    if (this.decoder.state === 'closed') {
+      this.decoder = this.makeDecoder();
+    }
+    try {
+      const chunk = new EncodedVideoChunk({
+        type,
+        timestamp,
+        data,
+      });
+      this.decoder.decode(chunk);
+    } catch (e: any) {
+      console.warn(`${this.options.mode} decode error (skipping chunk):`, e);
+    }
+
+    // Progress reporting
+    if (tsSec >= this.lastReportTs + 1 && this.videoDuration > 0) {
+      this.updateMetrics(this.decoder.decodeQueueSize);
+      this.options.onProgress(
+        Math.min((tsSec / this.videoDuration) * 100, 99.9),
+        `${this.options.mode === 'turbo' ? 'Turbo' : 'Sequential'}: ${Math.floor(tsSec)}s / ${Math.floor(this.videoDuration)}s`,
+        this.metrics
+      );
+      this.lastReportTs = tsSec;
     }
   }
 
   /**
-   * Stream all packets. Only decode keyframes at interval boundaries.
-   * Skip everything else — no decode cost, no GPU allocation.
-   *
-   * One VideoDecoder lives for the entire extraction.
-   * Keyframes are self-contained (IDR) so the decoder doesn't accumulate
-   * reference frames between them.
+   * Flush the decoder pipeline and emit the final pending candidate.
+   * Must be called when the demuxer has no more chunks to send.
+   * Returns the final extraction metrics.
    */
-  private async extractKeyframes(demuxer: WebDemuxer, duration: number, interval: number) {
-    const config = await demuxer.getDecoderConfig('video');
-    this.videoWidth = config.codedWidth || 1920;
-    this.videoHeight = config.codedHeight || 1080;
-    
-    let packetCount = 0;
-    let decodedCount = 0;
-    let lastReport = 0;
-
-    if (this.options.mode === 'turbo') {
-      // TURBO: Decode ALL keyframes via streaming.
-      // Keyframes are IDR (self-contained) so pipelining them is 100% safe.
-      // We keep 'prefer-software' because hardware decoders output opaque GPU
-      // textures that render as black frames on OffscreenCanvas in Web Workers.
-      // Software decoding returns CPU-backed frames that drawImage can read.
-      const baseConfig = { ...config as VideoDecoderConfig, optimizeForLatency: true };
-      let turboDecoderConfig: VideoDecoderConfig = baseConfig;
-      try {
-        const swConfig = { ...baseConfig, hardwareAcceleration: 'prefer-software' as const };
-        const supported = await VideoDecoder.isConfigSupported(swConfig);
-        if (supported.supported) turboDecoderConfig = swConfig;
-      } catch { /* browser doesn't support isConfigSupported — use default */ }
-
-      const makeTurboDecoder = () => {
-        const d = new VideoDecoder({
-          output: (frame) => {
-            decodedCount++;
-            const ts = frame.timestamp / 1e6;
-            const t0 = performance.now();
-            try {
-              this.processFrameSync(frame, ts);
-              this.metrics.avgFrameProcessTimeMs =
-                (this.metrics.avgFrameProcessTimeMs * (this.metrics.totalFrames - 1) + (performance.now() - t0))
-                / this.metrics.totalFrames;
-            } catch (e) {
-              // Gracefully skip bad frames instead of crashing the entire worker.
-              // processFrameSync closes the frame in its own finally{} block.
-              console.warn('Turbo: processFrameSync threw (skipping frame):', e);
-            }
-          },
-          error: (e) => {
-            console.warn('Turbo decode pipeline error:', e);
-            // Decoder state becomes 'closed', main loop spins up a fresh one on next frame
-          }
-        });
-        d.configure(turboDecoderConfig);
-        return d;
-      };
-
-      let decoder = makeTurboDecoder();
-
-      try {
-        const endTime = duration > 0 ? duration * 2 : 999999;
-        const reader = demuxer.read('video', 0, endTime).getReader();
-        let lastKeyframeTs = -1;
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done || !value) break;
-
-          packetCount++;
-          const ts = Number(value.timestamp) / 1e6;
-
-          // Decode every keyframe — no interval gating
-          if (value.type === 'key') {
-            if (ts === lastKeyframeTs) continue;
-            lastKeyframeTs = ts;
-
-            // If previous error killed the decoder, spin up a fresh one
-            if (decoder.state === 'closed') {
-              decoder = makeTurboDecoder();
-            }
-
-            // Backpressure: prevent memory blowout if demuxer vastly outpaces decoding.
-            // Also gives the browser event loop time to fire output callbacks.
-            while (decoder.state !== 'closed' && decoder.decodeQueueSize > 12) {
-              await new Promise(r => setTimeout(r, 5));
-            }
-
-            try {
-              // ⚠️ CRITICAL PERFORMANCE WARNING ⚠️
-              // DO NOT add `await decoder.flush()` or synchronous `Promise.race()` calls here!
-              //
-              // History: In commit 1c3de0f, per-frame flush() was added. Paired with 4bb3d27 
-              // ('prefer-software'), this destroyed turbo mode performance, taking a 25s run 
-              // to 48s because it forced the multi-threaded software decoder to run 100% 
-              // sequentially, stalling the pipeline on every single frame.
-              //
-              // Let the decoder run freely. `decodeQueueSize` handles backpressure above.
-              // A dropped frame simply skips the callback and continues normally.
-              decoder.decode(value);
-            } catch (e: any) {
-              console.warn('Turbo decode error (skipping keyframe):', e);
-              continue;
-            }
-          }
-
-          if (ts >= lastReport + 1) {
-            this.updateMetrics(decoder.decodeQueueSize);
-            this.options.onProgress(
-              Math.min((ts / duration) * 100, 99.9),
-              `Turbo: ${Math.floor(ts)}s / ${Math.floor(duration)}s`,
-              this.metrics
-            );
-            lastReport = ts;
-          }
-        }
-        
-        // Wait for all remaining queued frames in the pipeline to be outputted
-        if (decoder.state !== 'closed') {
-          await decoder.flush();
-        }
-      } finally {
-        if (decoder.state !== 'closed') decoder.close();
-      }
-
-    } else {
-      // ACCURATE: Full decode of EVERY frame. ~120-150s for 1-hour video.
-      // Catches 100% of transitions including between keyframes.
-      // Chunked: 300s (5-minute) segments with decoder recycling to bound RAM.
-      const CHUNK_SIZE = 300;
-      let nextCaptureTime = 0;
-      let pendingResolve: (() => void) | null = null;
-      // Don't specify hardwareAcceleration — let the browser pick the best strategy.
-      // Forcing 'prefer-hardware' breaks on browsers that don't support this option.
-      const seqDecoderConfig = { ...config as VideoDecoderConfig, optimizeForLatency: true };
-
-      const makeSeqDecoder = () => {
-        const d = new VideoDecoder({
-          output: (frame) => {
-            const ts = frame.timestamp / 1e6;
-            decodedCount++;
-
-            if (ts >= nextCaptureTime) {
-              const t0 = performance.now();
-              try {
-                this.processFrameSync(frame, ts);
-                this.metrics.avgFrameProcessTimeMs =
-                  (this.metrics.avgFrameProcessTimeMs * (this.metrics.totalFrames - 1) + (performance.now() - t0))
-                  / this.metrics.totalFrames;
-              } catch (e) {
-                // Gracefully skip bad frames instead of crashing the entire worker.
-                // processFrameSync closes the frame in its own finally{} block.
-                console.warn('Sequential: processFrameSync threw (skipping frame):', e);
-              }
-              nextCaptureTime = ts + interval;
-            } else {
-              frame.close();
-            }
-
-            if (pendingResolve) { const r = pendingResolve; pendingResolve = null; r(); }
-          },
-          error: (e) => {
-            console.warn('Sequential decode error callback:', e);
-            if (pendingResolve) { const r = pendingResolve; pendingResolve = null; r(); }
-          }
-        });
-        d.configure(seqDecoderConfig);
-        return d;
-      };
-
-      for (let chunkStart = 0; chunkStart < duration; chunkStart += CHUNK_SIZE) {
-        const chunkEnd = Math.min(chunkStart + CHUNK_SIZE, duration);
-        pendingResolve = null;
-
-        let decoder = makeSeqDecoder();
-
-        try {
-          const reader = demuxer.read('video', chunkStart, chunkEnd).getReader();
-
-          let seenKeyframe = false;
-
-          while (true) {
-            // Backpressure: don't overwhelm decoder queue.
-            // Race against a 5s timeout — if the hardware decoder silently drops
-            // a frame (common on mobile), the output callback never fires and
-            // pendingResolve hangs forever. The timeout breaks the deadlock.
-            while (decoder.state !== 'closed' && decoder.decodeQueueSize >= 3) {
-              await Promise.race([
-                new Promise<void>(r => { pendingResolve = r; }),
-                new Promise<void>(r => setTimeout(r, 5000))
-              ]);
-            }
-
-            const { done, value } = await reader.read();
-            if (done || !value) break;
-
-            // Wait for the first keyframe after configure()
-            if (!seenKeyframe) {
-              if (value.type !== 'key') continue;
-              seenKeyframe = true;
-            }
-
-            packetCount++;
-            try {
-              // If decoder died, spawn a fresh one and wait for next keyframe
-              if (decoder.state === 'closed') {
-                console.warn('Sequential: decoder died, spawning fresh instance...');
-                decoder = makeSeqDecoder();
-                seenKeyframe = false;
-                continue;
-              }
-              decoder.decode(value);
-            } catch (e: any) {
-              console.warn('Sequential decode error:', e);
-              if (decoder.state === 'closed') {
-                decoder = makeSeqDecoder();
-                seenKeyframe = false;
-                continue;
-              }
-              if (e?.message && e.message.includes('key frame is required')) {
-                seenKeyframe = false;
-              }
-            }
-
-            const ts = Number(value.timestamp) / 1e6;
-            if (ts >= lastReport + 1) {
-              this.updateMetrics(decoder.decodeQueueSize);
-              this.options.onProgress(
-                Math.min((ts / duration) * 100, 99.9),
-                `Sequential: ${Math.floor(ts)}s / ${Math.floor(duration)}s`,
-                this.metrics
-              );
-              lastReport = ts;
-            }
-          }
-
-          if (decoder.state !== 'closed') await decoder.flush();
-        } finally {
-          if (decoder.state !== 'closed') decoder.close();
-        }
-      }
+  public async flush(): Promise<ExtractionMetrics> {
+    // Flush remaining queued frames
+    if (this.decoder && this.decoder.state !== 'closed') {
+      await this.decoder.flush();
+      this.decoder.close();
     }
+    this.decoder = null;
+
+    // Flush last buffered candidate (turbo deferred-emit)
+    // MUST await here — fire-and-forget would race against worker termination.
+    const lc = this.pendingCandidate as { bitmap: ImageBitmap; timestamp: number; hash: bigint } | null;
+    if (lc) {
+      this.savedHashes.push(lc.hash);
+      await this.emitBitmapAsync(lc.bitmap, lc.timestamp);
+      this.pendingCandidate = null;
+    }
+
+    this.metrics.videoDurationSec = this.videoDuration;
+    this.metrics.endTime = performance.now();
+    this.options.onProgress(100, "Done", this.metrics);
+    return this.metrics;
+  }
+
+  // ─── Internal decoder management ───
+
+  private makeDecoder(): VideoDecoder {
+    const d = new VideoDecoder({
+      output: (frame) => {
+        const ts = frame.timestamp / 1e6;
+        const t0 = performance.now();
+        try {
+          this.processFrameSync(frame, ts);
+          this.metrics.avgFrameProcessTimeMs =
+            (this.metrics.avgFrameProcessTimeMs * (this.metrics.totalFrames - 1) + (performance.now() - t0))
+            / this.metrics.totalFrames;
+        } catch (e) {
+          console.warn(`${this.options.mode}: processFrameSync threw (skipping frame):`, e);
+        }
+        // Resolve backpressure waiter (sequential mode)
+        if (this.pendingBackpressureResolve) {
+          const r = this.pendingBackpressureResolve;
+          this.pendingBackpressureResolve = null;
+          r();
+        }
+      },
+      error: (e) => {
+        console.warn(`${this.options.mode} decode pipeline error:`, e);
+        if (this.pendingBackpressureResolve) {
+          const r = this.pendingBackpressureResolve;
+          this.pendingBackpressureResolve = null;
+          r();
+        }
+      }
+    });
+    d.configure(this.decoderConfig!);
+    return d;
   }
 
 
