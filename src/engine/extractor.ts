@@ -410,18 +410,6 @@ export class SlideExtractor {
       this.lastKeyframeTs = tsSec;
     }
 
-    // Gate: after configure() or decoder reset, skip delta frames until a keyframe
-    // arrives. Without this, every delta frame triggers "A key frame is required
-    // after configure() or flush()", the decoder closes, gets recreated, and the
-    // next delta errors again — an infinite loop that stalls the entire pipeline.
-    if (this.needsKeyframe && type !== 'key') return;
-    if (type === 'key') this.needsKeyframe = false;
-
-    // If previous error killed the decoder, spin up a fresh one
-    if (this.decoder.state === 'closed') {
-      this.decoder = this.makeDecoder();
-    }
-
     // Backpressure: prevent memory blowout
     const maxQueue = this.options.mode === 'turbo' ? 12 : 3;
     if (this.options.mode === 'turbo') {
@@ -441,6 +429,15 @@ export class SlideExtractor {
       }
     }
 
+    // Gate: after configure() or decoder reset, skip delta frames until a keyframe
+    // arrives. Without this, every delta frame triggers "A key frame is required
+    // after configure() or flush()", the decoder closes, gets recreated, and the
+    // next delta errors again — an infinite loop that stalls the entire pipeline.
+    // ⚠️ CRITICAL: We check this AFTER backpressure, because the decoder might
+    // have crashed asynchronously while we were waiting!
+    if (this.needsKeyframe && type !== 'key') return;
+    if (type === 'key') this.needsKeyframe = false;
+
     // Decode
     if (this.decoder.state === 'closed') {
       this.decoder = this.makeDecoder();
@@ -454,6 +451,10 @@ export class SlideExtractor {
       this.decoder.decode(chunk);
     } catch (e: any) {
       console.warn(`${this.options.mode} decode error (skipping chunk):`, e);
+      // If decode() throws synchronously (e.g. malformed chunk), the decoder
+      // is immediately closed, but the async error callback is NOT fired.
+      // We MUST set needsKeyframe = true here to prevent the infinite error loop.
+      this.needsKeyframe = true;
     }
 
     // Progress reporting
