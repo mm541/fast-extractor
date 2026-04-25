@@ -274,10 +274,6 @@ export class SlideExtractor {
   // Three-pointer stability tracking
   private staticCount = 0;       // consecutive frames with zero drift
 
-  // Adaptive noise floor — calibrates blockThreshold from video noise level
-  private noiseFloor = 0;
-  private calibrationSamples: number[] = [];
-  private isCalibrated = false;
 
   // Color-aware detection — tracks average RGB to detect color-only changes
   private prevColorSig: [number, number, number] | null = null;
@@ -305,10 +301,6 @@ export class SlideExtractor {
     this.hasBaseline = false;
     this.savedHashes = [];
     this.lastSlideTime = -10;
-    // Reset robustness state
-    this.noiseFloor = 0;
-    this.calibrationSamples = [];
-    this.isCalibrated = false;
     this.prevColorSig = null;
 
     this.staticCount = 0;
@@ -648,8 +640,7 @@ export class SlideExtractor {
     }
 
     // === THREE-POINTER COMPARISON (both modes) ===
-    const { edgeThreshold, densityThresholdPct } = this.options;
-    const blockThreshold = this.getEffectiveBlockThreshold();
+    const { edgeThreshold, densityThresholdPct, blockThreshold } = this.options;
 
     // Pointer 1→3: Baseline (A) vs Current (B)
     const mask = this.options.ignoreMask;
@@ -657,20 +648,6 @@ export class SlideExtractor {
 
     // Pointer 2→3: Previous (Prev) vs Current (B) — consecutive drift
     const driftBlocks = this.wasm.compare_prev_current(edgeThreshold, densityThresholdPct, mask);
-
-    // --- Adaptive Noise Floor Calibration ---
-    // Collect drift samples during the first 10 frames where content is stable
-    // (drift > 0 but no big change = codec noise, not a real transition)
-    if (!this.isCalibrated && driftBlocks > 0 && mainChanges < this.options.blockThreshold) {
-      this.calibrationSamples.push(driftBlocks);
-      if (this.calibrationSamples.length >= 10) {
-        // Use median (robust against outliers from transitions)
-        const sorted = [...this.calibrationSamples].sort((a, b) => a - b);
-        this.noiseFloor = sorted[Math.floor(sorted.length / 2)];
-        this.isCalibrated = true;
-        console.log(`[NoiseFloor] Calibrated: ${this.noiseFloor} blocks (effective threshold: ${this.getEffectiveBlockThreshold()})`);
-      }
-    }
 
     // Track stability
     if (driftBlocks > 0) {
@@ -788,18 +765,6 @@ export class SlideExtractor {
   /** Convert RGBA buffer to grayscale into buffer B. Call after captureFrameToRgba. */
   private convertRgbaToGray() {
     this.wasm.copy_rgba_to_gray(true);
-  }
-
-  /**
-   * Get effective blockThreshold, adjusted for video noise level.
-   * After calibration (10 samples), if the median noise per-frame exceeds
-   * the configured threshold / 3, the threshold is raised.
-   * For clean videos (noise ~1), returns the configured blockThreshold unchanged.
-   */
-  private getEffectiveBlockThreshold(): number {
-    if (!this.isCalibrated) return this.options.blockThreshold;
-    // Raise threshold if noise is high, never lower it
-    return Math.max(this.options.blockThreshold, this.noiseFloor * 3);
   }
 
   private copyBufferBToA() {
