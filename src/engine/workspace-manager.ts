@@ -33,6 +33,10 @@ export class WorkspaceManager {
         // Trigger audio extraction on the worker
         // The worker will read the OPFS file synchronously using createSyncAccessHandle
         if (this.options.extractAudio !== false) {
+          const root = await navigator.storage.getDirectory();
+          const feDir = await root.getDirectoryHandle('.fast_extractor');
+          const fileHandle = await feDir.getFileHandle(this.tempFileName);
+
           await new Promise<void>((resolve, reject) => {
             const handleAudioMessage = (e: MessageEvent) => {
               if (e.data.type === 'AUDIO_DONE') {
@@ -44,7 +48,7 @@ export class WorkspaceManager {
               }
             };
             this.worker.addEventListener('message', handleAudioMessage);
-            this.worker.postMessage({ type: 'EXTRACT_AUDIO', fileName: this.file.name, tempFileName: this.tempFileName });
+            this.worker.postMessage({ type: 'EXTRACT_AUDIO', fileName: this.file.name, fileHandle });
           });
         }
 

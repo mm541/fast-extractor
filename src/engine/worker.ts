@@ -82,7 +82,7 @@ import type { SlideExtractorOptions } from './extractor';
 // These are module-scoped because the worker lives for the entire extraction session.
 //
 let wasmBuffer: ArrayBuffer | undefined;    // Transferred from main thread, freed after init
-let root: FileSystemDirectoryHandle;         // OPFS root directory handle
+
 let syncHandle: FileSystemSyncAccessHandle | undefined;  // Exclusive lock on temp video file
 let shouldExtractAudio = true;               // Controlled via CONFIG
 let shouldExtractSlides = true;              // Controlled via CONFIG
@@ -119,18 +119,7 @@ async function ensureWasm(wasmBuffer?: ArrayBuffer) {
     }
 }
 
-/**
- * Initialize OPFS handle inside a dedicated `.fast_extractor/` subfolder.
- * All temp files live here — never in the consumer's OPFS root.
- * Requires Secure Context (HTTPS or localhost) — will throw on HTTP.
- */
-async function initStorage() {
-    if (!navigator.storage || !navigator.storage.getDirectory) {
-        throw new Error("Secure Context Required: extraction requires HTTPS or Localhost.");
-    }
-    const opfsRoot = await navigator.storage.getDirectory();
-    root = await opfsRoot.getDirectoryHandle('.fast_extractor', { create: true });
-}
+
 
 /**
  * Remove leftover temp files from previous sessions.
@@ -183,19 +172,13 @@ self.onmessage = async (e: MessageEvent) => {
 
         if (type === 'INIT') {
             wasmBuffer = wb;
-            try {
-                await initStorage();
-            } catch (err: any) {
-                self.postMessage({ type: 'ERROR', code: 'ERR_OPFS_NOT_SUPPORTED', error: 'OPFS not available: ' + err.message });
-                return;
-            }
             self.postMessage({ type: 'STATUS', status: 'Worker Initialized. Ready.' });
             self.postMessage({ type: 'INIT_COMPLETE' });
             return;
         }
 
         if (type === 'EXTRACT_AUDIO') {
-            const { fileName, tempFileName } = e.data;
+            const { fileName, fileHandle } = e.data;
             
             // Wait up to 30s for background WASM fetch to arrive
             let retries = 0;
@@ -205,10 +188,7 @@ self.onmessage = async (e: MessageEvent) => {
             }
             await ensureWasm(wasmBuffer);
             
-            if (!root) await initStorage();
-
             try {
-                const fileHandle = await root.getFileHandle(tempFileName);
                 syncHandle = await createSyncAccessHandleWithTimeout(fileHandle, 5000);
             } catch (err: any) {
                 self.postMessage({ type: 'ERROR', code: 'ERR_OPFS_STALE_LOCK', error: 'File handle failed: ' + err.message });
