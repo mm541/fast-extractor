@@ -762,11 +762,29 @@ async function extractVideoChunks(worker: Worker, options: FastExtractorOptions,
     try {
       worker.postMessage({ type: 'STATUS', status: 'Initializing Demuxer...' });
 
-      // Demuxer internally spawns its own worker — workers can't resolve
-      // relative URLs, so we must pass an absolute URL.
+      // ⚠️ WebDemuxer ALWAYS spawns an internal data: URL worker (null origin).
+      // A null-origin worker CANNOT fetch() from http://192.168.x.x on Android.
+      // We MUST pre-fetch the WASM on the main thread and pass it as a data: URL
+      // so the internal worker never makes a network request.
       const rawUrl = options.demuxerWasmUrl ?? '/wasm-files/web-demuxer.wasm';
-      const wasmUrl = rawUrl.startsWith('http') ? rawUrl : new URL(rawUrl, self.location.origin).href;
-      demuxer = new WebDemuxer({ wasmFilePath: wasmUrl });
+      const fetchUrl = rawUrl.startsWith('http') ? rawUrl : new URL(rawUrl, self.location.origin).href;
+      
+      let wasmDataUrl: string;
+      try {
+        const resp = await fetch(fetchUrl);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const wasmBytes = new Uint8Array(await resp.arrayBuffer());
+        let binary = '';
+        const chunkSize = 32768;
+        for (let i = 0; i < wasmBytes.length; i += chunkSize) {
+          binary += String.fromCharCode.apply(null, wasmBytes.subarray(i, i + chunkSize) as any);
+        }
+        wasmDataUrl = 'data:application/wasm;base64,' + btoa(binary);
+      } catch (e: any) {
+        throw new Error(`Failed to fetch demuxer WASM: ${e.message}`);
+      }
+      
+      demuxer = new WebDemuxer({ wasmFilePath: wasmDataUrl });
 
       // Read the file back from OPFS so demuxer has a stable reference
       const root = await navigator.storage.getDirectory();
