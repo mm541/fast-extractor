@@ -80,13 +80,21 @@
  *   further, consider switching to `decodeQueueSize`-only polling (like
  *   turbo mode) — but test thoroughly on mobile hardware first.
  *
- * 💡 CONSIDERATION: EMIT MODEL (fire-and-forget)
- *   Emissions use fire-and-forget emitBitmap() — it calls
+ * 💡 CONSIDERATION: DUAL-EMIT MODEL (emitBitmap + emitBitmapAsync)
+ *   Hot-loop emissions use fire-and-forget emitBitmap() — it calls
  *   renderBitmapToBlob().then() without awaiting. This is safe because:
  *   (1) the ImageBitmap is .close()'d synchronously inside renderBitmapToBlob,
  *   so GPU memory is freed immediately, and (2) minSlideDuration (default 3s)
  *   guarantees a minimum gap between emissions, so WebP encodes (50-200ms)
- *   never overlap.
+ *   never overlap. If you ever reduce minSlideDuration to 0, this assumption
+ *   breaks and you'd need to serialize the encode calls.
+ *
+ *   The FINAL candidate uses emitBitmapAsync() — an awaitable version that
+ *   ensures the blob is fully encoded before extract() returns. Without this,
+ *   worker.terminate() (triggered by ALL_DONE) would kill the worker while
+ *   convertToBlob is still pending, silently dropping the last slide.
+ *   The worker also drains any in-flight fire-and-forget onSlide callbacks
+ *   via a pendingSlideEncodes counter before sending ALL_DONE.
  *
  * 💡 CONSIDERATION: DUPLICATE DETECTION — LAST HASH ONLY
  *   isDuplicate() only compares against the LAST saved hash, not all of
@@ -183,6 +191,11 @@ export interface SlideExtractorOptions {
   shakeFilterStrictMultiplier: number;  // density multiplier for shake confirmation (0=disabled)
   // Region-of-interest masking
   ignoreMask: bigint;                   // 64-bit bitmask: bit (row*8+col)=1 skips that grid block
+  // Turbo deferred-emit confirmation
+  /** Max dHash hamming distance to confirm a candidate as real (not a transition blend). Default: 10.
+   *  Lower = stricter (more transition frames filtered, but might drop fast slides).
+   *  Higher = looser (more slides captured, but more transition frames leak through). */
+  confirmThreshold: number;
   
   /** Encoded WebP quality (0.01 - 1.0). Default: 0.8 */
   imageQuality?: number;
@@ -223,7 +236,8 @@ export const DEFAULT_OPTIONS: SlideExtractorOptions = {
   shakeFilterStrictMultiplier: 3,
   // Grid masking: 0n = compare all 64 blocks (no masking)
   ignoreMask: 0n,
-  imageQuality: 0.8,
+  // Turbo confirmation: 10 = moderate strictness
+  confirmThreshold: 10,
   onProgress: () => {}, onSlide: () => {},
 };
 
@@ -284,6 +298,8 @@ export class SlideExtractor {
   private prevColorSig: [number, number, number] | null = null;
 
 
+  // Turbo deferred-emit: buffers one candidate to filter transition frames
+  private pendingCandidate: { bitmap: ImageBitmap; timestamp: number; hash: bigint } | null = null;
 
   private metrics: ExtractionMetrics = {
     startTime: 0, totalFrames: 0, totalSlides: 0, peakRamMb: 0, avgFrameProcessTimeMs: 0
@@ -304,7 +320,8 @@ export class SlideExtractor {
     this.metrics = { startTime: performance.now(), totalFrames: 0, totalSlides: 0, peakRamMb: 0, avgFrameProcessTimeMs: 0 };
     this.hasBaseline = false;
     this.savedHashes = [];
-
+    if (this.pendingCandidate) { this.pendingCandidate.bitmap.close(); }
+    this.pendingCandidate = null;
     this.lastSlideTime = -10;
     // Reset robustness state
     this.noiseFloor = 0;
@@ -349,6 +366,16 @@ export class SlideExtractor {
         : (1 / (this.options.sampleFps || 1));
 
       await this.extractKeyframes(demuxer, duration, interval);
+
+      // Flush last buffered candidate (turbo deferred-emit)
+      // MUST await here — fire-and-forget would race against worker termination,
+      // causing the last slide's convertToBlob to resolve after ALL_DONE kills the worker.
+      const lc = this.pendingCandidate as { bitmap: ImageBitmap; timestamp: number; hash: bigint } | null;
+      if (lc) {
+        this.savedHashes.push(lc.hash);
+        await this.emitBitmapAsync(lc.bitmap, lc.timestamp);
+        this.pendingCandidate = null;
+      }
 
       this.metrics.videoDurationSec = duration;
       this.metrics.endTime = performance.now();
@@ -638,7 +665,22 @@ export class SlideExtractor {
     const brightness = this.wasm.get_avg_brightness();
     if (brightness < this.options.blankBrightnessThreshold) return;
 
-
+    // Turbo deferred-emit: confirm or discard the pending candidate
+    // by checking if the current frame is similar (real slide persisted)
+    // or different (candidate was a transition frame).
+    if (this.options.mode === 'turbo' && this.pendingCandidate) {
+      const currentHash = this.wasm.compute_dhash(true);
+      const dist = SlideExtractor.hammingDistance(this.pendingCandidate.hash, currentHash);
+      if (dist <= this.options.confirmThreshold) {
+        // Next frame is similar → candidate was a real slide, emit it
+        this.savedHashes.push(this.pendingCandidate.hash);
+        this.emitBitmap(this.pendingCandidate.bitmap, this.pendingCandidate.timestamp);
+      } else {
+        // Next frame is different → candidate was a transition frame, discard
+        this.pendingCandidate.bitmap.close();
+      }
+      this.pendingCandidate = null;
+    }
 
     if (!this.hasBaseline) {
       this.copyBufferBToA();
@@ -748,8 +790,18 @@ export class SlideExtractor {
     if (shouldEmit) {
       const dhash = this.wasm.compute_dhash(true);
       if (!this.isDuplicate(dhash)) {
-        this.savedHashes.push(dhash);
-        this.emitSlideFromCanvas(timestamp);
+        if (this.options.mode === 'turbo') {
+          // Turbo: defer emit — buffer as candidate for confirmation on next keyframe.
+          // Transition frames (crossfades, dissolves) will be discarded when the
+          // next frame doesn't match. Real slides persist across keyframes.
+          const bitmap = this.captureCanvasBitmap();
+          if (this.pendingCandidate) this.pendingCandidate.bitmap.close();
+          this.pendingCandidate = { bitmap, timestamp, hash: dhash };
+        } else {
+          // Accurate: emit immediately (has frame-level temporal resolution)
+          this.savedHashes.push(dhash);
+          this.emitSlideFromCanvas(timestamp);
+        }
         this.copyBufferBToA();
         this.lastSlideTime = timestamp;
       }
@@ -774,7 +826,8 @@ export class SlideExtractor {
   private static readonly CMP_W = 424;
   private static readonly CMP_H = 240;
 
-
+  // Deferred-emit: max hamming distance to confirm a candidate is real (not a transition blend)
+  // Now configurable via options.confirmThreshold (default: 10)
 
   /**
    * Copy VideoFrame pixels into the WASM RGBA buffer.
@@ -858,7 +911,21 @@ export class SlideExtractor {
     });
   }
 
-
+  /**
+   * Awaitable version of emitBitmap — used ONLY for the final candidate flush
+   * at extraction end. This ensures the blob is fully encoded and delivered to
+   * onSlide before extract() returns, preventing the worker from being terminated
+   * while convertToBlob is still pending.
+   */
+  private async emitBitmapAsync(bitmap: ImageBitmap, timestamp: number): Promise<void> {
+    try {
+      const blob = await this.renderBitmapToBlob(bitmap);
+      this.options.onSlide(blob, timestamp);
+      this.metrics.totalSlides++;
+    } catch (e) {
+      console.warn('emitBitmapAsync: WebP encode failed (skipping slide):', e);
+    }
+  }
 
   private async renderBitmapToBlob(bitmap: ImageBitmap): Promise<Blob> {
     const w = bitmap.width, h = bitmap.height;
