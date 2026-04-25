@@ -416,7 +416,7 @@ export class FastExtractor {
             config: { ...detectionConfig, mode },
           });
 
-          // 4. Wire up message → stream translation
+          // 5. Wire up message → stream translation
           const debugMode = this.options.debug ?? false;
           worker.onmessage = (e: MessageEvent) => {
             const { type } = e.data;
@@ -521,20 +521,15 @@ export class FastExtractor {
 
           // =========================================================================================
           // ⚠️ CRITICAL ANDROID SAF WARNING ⚠️
-          // DO NOT REORDER THE INITIALIZATION HANDSHAKE!
-          // On Android (ColorOS/OxygenOS), Storage Access Framework (SAF) permissions expire
-          // within ~2 seconds of the user picking the DOM `File` if it is not immediately read.
-          // We MUST NOT perform any slow asynchronous operations (like `await fetch(wasm)`) 
-          // before sending 'START_INGEST'. The file MUST be ingested instantly.
-          // WASM fetching must occur in the background concurrently.
+          // Android SAF requires immediate reading of the File object.
+          // We delegate to WorkspaceManager which calls File.stream() immediately.
+          // WASM fetching happens concurrently in the background.
           // =========================================================================================
-
-          // 5. Send START_INGEST immediately so Android SAF permission doesn't expire
-          worker.postMessage({ type: 'START_INGEST', fileName: file.name, file });
 
           // 6. Fetch WASM asynchronously in the background and send INIT when ready
           const resolvedWasmUrl = this.options.wasmUrl
             ?? new URL(defaultWasmUrl, self.location?.origin ?? 'https://localhost').href;
+          
           fetch(resolvedWasmUrl)
             .then(res => {
               if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -544,11 +539,33 @@ export class FastExtractor {
               worker?.postMessage({ type: 'INIT', wasmBuffer }, [wasmBuffer]);
             })
             .catch(err => {
-              // If file ingestion succeeds but WASM fails, cleanly crash
               try { controller.error(new Error(`Failed to fetch WASM engine: ${err.message}`)); } catch {}
               worker?.terminate();
               worker = null;
             });
+
+          // 7. Instantiate WorkspaceManager and run the extraction pipeline
+          const { WorkspaceManager } = await import('./workspace-manager');
+          const workspaceManager = new WorkspaceManager(file, worker, this.options);
+
+          workspaceManager.extract().catch(err => {
+            // WorkspaceManager will throw if SAF permissions expire or pipeline fails
+            const isRecoverable = err.message.includes('File ingest failed') || err.message.includes('could not be read');
+            this._extracting = false;
+            
+            if (isRecoverable) {
+              controller.enqueue({
+                type: 'error',
+                message: err.message,
+                recoverable: true,
+              });
+              worker = null;
+              controller.close();
+            } else {
+              worker = null;
+              controller.error(err);
+            }
+          });
 
         } catch (err) {
           controller.error(err);

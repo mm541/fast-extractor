@@ -78,20 +78,21 @@ import init, { AudioExtractor, compare_frames, compare_prev_current, compute_dha
 import { SlideExtractor } from './extractor';
 import type { SlideExtractorOptions } from './extractor';
 
-// Default URL for web-demuxer's FFmpeg WASM — overridable via CONFIG message
-let webDemuxerWasmUrl = new URL('/wasm-files/web-demuxer.wasm', self.location.origin).href;
-
 // ─── WORKER STATE ───
 // These are module-scoped because the worker lives for the entire extraction session.
 //
 let wasmBuffer: ArrayBuffer | undefined;    // Transferred from main thread, freed after init
 let root: FileSystemDirectoryHandle;         // OPFS root directory handle
 let syncHandle: FileSystemSyncAccessHandle | undefined;  // Exclusive lock on temp video file
-let originalFile: File | undefined;          // DOM File from <input> (may expire on mobile!)
 let shouldExtractAudio = true;               // Controlled via CONFIG
 let shouldExtractSlides = true;              // Controlled via CONFIG
-let shouldCleanup = true;                    // Controlled via CONFIG (cleanupAfterExtraction)
+let shouldCleanup = true;
 
+// Slide extraction state
+let slideExtractor: SlideExtractor | null = null;
+let pendingSlide: { buffer: ArrayBuffer; startMs: number; timestamp: string } | null = null;
+let pendingSlideEncodes = 0;
+let drainResolve: (() => void) | null = null;
 /**
  * Detection config — updated via CONFIG message before extraction starts.
  * Merged with per-extraction options in processMedia().
@@ -202,11 +203,10 @@ function createSyncAccessHandleWithTimeout(
 }
 
 self.onmessage = async (e: MessageEvent) => {
-    const { type, data, fileName, config, wasmBuffer: wb } = e.data;
+    const { type, data, config, wasmBuffer: wb } = e.data;
     
     try {
         if (type === 'CONFIG') {
-            if (data?.demuxerWasmUrl) webDemuxerWasmUrl = data.demuxerWasmUrl;
             if (data?.extractAudio !== undefined) shouldExtractAudio = data.extractAudio;
             if (data?.extractSlides !== undefined) shouldExtractSlides = data.extractSlides;
             if (data?.cleanupAfterExtraction !== undefined) shouldCleanup = data.cleanupAfterExtraction;
@@ -239,186 +239,39 @@ self.onmessage = async (e: MessageEvent) => {
             return;
         }
 
-        if (type === 'START_INGEST') {
-            originalFile = e.data.file;
+        if (type === 'EXTRACT_AUDIO') {
+            const { fileName, tempFileName } = e.data;
+            
+            // Wait up to 30s for background WASM fetch to arrive
+            let retries = 0;
+            while (!wasmInitialized && !wasmBuffer && retries < 300) {
+                await new Promise(r => setTimeout(r, 100));
+                retries++;
+            }
+            await ensureWasm(wasmBuffer);
+            
+            if (!root) await initStorage();
 
-            // ── CRITICAL: Minimize async gaps before reading the File ──
-            // On Android Chrome (OxygenOS, ColorOS), the File object's SAF
-            // permission can expire within seconds. We must:
-            //   1. Create OPFS handle (fast, ~50ms)
-            //   2. Read file IMMEDIATELY
-            //   3. Cleanup old files AFTER (non-critical, can wait)
-            // DO NOT add any slow async operations (cleanup, timeouts) before the file read!
-
-            if (syncHandle) try { syncHandle.close(); } catch (e) {}
-
-            if (!root) {
-                try { await initStorage(); } catch (err: any) {
-                    self.postMessage({ type: 'ERROR', code: 'ERR_OPFS_NOT_SUPPORTED', error: 'Storage init failed: ' + err.message });
-                    return;
-                }
+            try {
+                const fileHandle = await root.getFileHandle(tempFileName);
+                syncHandle = await createSyncAccessHandleWithTimeout(fileHandle, 5000);
+            } catch (err: any) {
+                self.postMessage({ type: 'ERROR', code: 'ERR_OPFS_STALE_LOCK', error: 'File handle failed: ' + err.message });
+                return;
             }
 
-            const currentTempFile = `extract_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.mp4`;
-
-            // Wrap the entire extraction in a Web Lock keyed on the temp filename.
-            // This prevents cleanupOldFiles() in other tabs from deleting our file mid-extraction.
-            // Lock acquisition is instant (unique name, no contention) — no Android SAF delay risk.
-            const runExtraction = async () => {
-                try {
-                    const fileHandle = await root.getFileHandle(currentTempFile, { create: true });
-                    (self as any).currentTempFile = currentTempFile;
-                    syncHandle = await createSyncAccessHandleWithTimeout(fileHandle, 5000);
-                } catch (err: any) {
-                    self.postMessage({ type: 'ERROR', code: 'ERR_OPFS_STALE_LOCK', error: 'File handle failed: ' + err.message });
-                    return;
-                }
-
-                // ── Read file NOW — SAF permission is still fresh ──
-                // Use file.stream() — it opens the file descriptor ONCE.
-                // file.slice().arrayBuffer() re-opens it per chunk, which fails on Android
-                // because each open re-checks SAF permissions that may have expired.
-                const ingestFile = originalFile!;
-                self.postMessage({ type: 'STATUS', status: 'Ingesting Media: 0%' });
-
-                const doIngest = async (f: File): Promise<void> => {
-                    const stream = f.stream();
-                    const reader = stream.getReader();
-                    let offset = 0;
-                    let lastReportTime = Date.now();
-
-                    while (true) {
-                        const { done, value } = await reader.read();
-                        if (done) break;
-
-                        syncHandle!.write(value);
-                        offset += value.byteLength;
-
-                        if (Date.now() - lastReportTime > 250) {
-                            const pct = Math.floor((offset / f.size) * 100);
-                            self.postMessage({ type: 'STATUS', status: `Ingesting Media: ${pct}%`, progress: pct });
-                            lastReportTime = Date.now();
-                        }
-                    }
-                    syncHandle!.flush();
-                };
-
-                try {
-                    await doIngest(ingestFile);
-                } catch (firstErr: any) {
-                    // Retry once — some Android devices transiently fail the first stream open
-                    console.warn('[Ingest] First attempt failed, retrying:', firstErr.message);
-                    try {
-                        // Reset the sync handle write position to 0 for the retry
-                        syncHandle!.truncate(0);
-                        await doIngest(ingestFile);
-                    } catch (retryErr: any) {
-                        console.error('[Ingest] Second attempt failed:', retryErr.message);
-                        if (syncHandle) {
-                            try { syncHandle.close(); } catch (e) {}
-                            syncHandle = undefined;
-                        }
-                        self.postMessage({ type: 'ERROR', code: 'ERR_FILE_INGEST', error: 'File ingest failed: ' + retryErr.message });
-                        return;
-                    }
-                }
-
-                // ── Cleanup old temp files AFTER ingestion (non-critical) ──
-                if (shouldCleanup) {
-                    try {
-                        await Promise.race([
-                            cleanupOldFiles(),
-                            new Promise((_, reject) => setTimeout(() => reject(new Error('cleanup timeout')), 3000))
-                        ]);
-                    } catch (e) {
-                        console.warn('[Worker] Post-ingest cleanup timed out, continuing anyway');
-                    }
-                }
-                
-                // File fully ingested — proceed to extraction
-                await processMedia(fileName, config);
-            };
-
-            // Hold Web Lock for the entire extraction lifecycle
-            if (navigator.locks) {
-                await navigator.locks.request(`fe_${currentTempFile}`, runExtraction);
-            } else {
-                await runExtraction();
-            }
-            return;
-        }
-    } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        self.postMessage({ type: 'ERROR', code: 'ERR_WORKER_GENERIC', error: message });
-    }
-};
-
-/**
- * Phase 2+3: Audio extraction then slide extraction.
- * 
- * PIPELINE:
- *   1. Init WASM (if not already loaded)
- *   2. Audio: Symphonia reads OPFS sync handle → pulls AAC chunks → writes to second OPFS file
- *   3. Close syncHandle (releases exclusive lock) but KEEP the OPFS file
- *   4. Re-read OPFS file as regular File for demuxer (mobile-safe, no permission expiry)
- *   5. Slides: web-demuxer + WebCodecs + WASM three-pointer diffing
- *   6. Finally: cleanup OPFS temp files
- *
- * ⚠️ DO NOT reorder steps 3-4. The syncHandle MUST be closed before getFile()
- *    (can't have both a sync handle and a read handle on the same file).
- *    But the OPFS FILE must NOT be deleted until after the demuxer finishes.
- */
-async function processMedia(fileName: string, options: any = {}) {
-    try {
-        // ========== MEMORY PROFILER ==========
-        const memLog = (label: string) => {
-            const mem = (performance as any).memory;
-            const wasmPages = wasmModule?.memory?.buffer?.byteLength;
-            console.log(`[MEM ${label}]`, {
-                jsHeapMB: mem ? (mem.usedJSHeapSize / 1e6).toFixed(1) : 'N/A',
-                jsHeapTotalMB: mem ? (mem.totalJSHeapSize / 1e6).toFixed(1) : 'N/A',
-                jsHeapLimitMB: mem ? (mem.jsHeapSizeLimit / 1e6).toFixed(1) : 'N/A',
-                wasmHeapMB: wasmPages ? (wasmPages / 1e6).toFixed(1) : 'N/A',
-            });
-        };
-
-        memLog('1-START');
-
-        self.postMessage({ type: 'STATUS', status: 'Initializing WASM...' });
-        
-        // Wait up to 30 seconds for the background WASM fetch to arrive if we ingested extremely fast
-        let retries = 0;
-        while (!wasmInitialized && !wasmBuffer && retries < 300) {
-            await new Promise(r => setTimeout(r, 100));
-            retries++;
-        }
-        
-        await ensureWasm(wasmBuffer);
-        memLog('2-WASM-INIT');
-
-        // 1. Audio Extraction — stream chunks to main thread via postMessage.
-        // The consumer (App.tsx, or a future library user) decides what to do:
-        //   - Accumulate in RAM → new Blob(chunks)
-        //   - Stream to disk   → showSaveFilePicker → writable.write(chunk)
-        //   - Stream to network → fetch upload
-        // This eliminates the second OPFS temp file and its createSyncAccessHandle
-        // call (which was a potential deadlock point on mobile).
-        if (shouldExtractAudio) {
             let audioExtractor: any = null;
             try {
-                audioExtractor = new AudioExtractor(syncHandle!);
-                memLog('3-AUDIO-EXTRACTOR-CREATED');
+                audioExtractor = new AudioExtractor(syncHandle);
 
                 let lastReport = 0;
                 while (true) {
                     const chunk = audioExtractor.pull_chunk(1024 * 1024);
                     if (chunk.length === 0) break;
-                    // SECURITY & PERF: `chunk` points to WebAssembly.Memory.
-                    // DO NOT use `chunk.buffer.slice(0)`! That clones the ENTIRE WASM 
-                    // heap (potentially hundreds of MBs) on every single chunk, causing 
-                    // massive lag/OOM on mobile. `chunk.slice()` copies ONLY the 1MB chunk.
+                    
                     const ab = chunk.slice().buffer as ArrayBuffer;
                     postMessage({ type: 'AUDIO_CHUNK', buffer: ab }, [ab]);
+                    
                     const progress = Math.floor(audioExtractor.get_progress());
                     if (progress >= lastReport + 5 || progress === 100) {
                         postMessage({ type: 'STATUS', status: `Extracting Audio...`, progress });
@@ -426,91 +279,34 @@ async function processMedia(fileName: string, options: any = {}) {
                     }
                 }
                 postMessage({ type: 'AUDIO_DONE', fileName: fileName.replace(/\.[^/.]+$/, "") + ".aac" });
-                memLog('4-AUDIO-DONE');
             } catch (e: any) {
-                // Audio extraction failed (e.g. no AAC track in WebM/Opus, unsupported codec).
                 const reason = e?.message ?? 'unsupported format';
                 console.warn('[Worker] Audio extraction failed:', reason);
-
-                if (shouldExtractSlides) {
-                    // Non-fatal — warn and proceed to slide extraction.
-                    postMessage({ type: 'STATUS', status: `⚠️ Audio unavailable: ${reason}. Extracting slides only...` });
-                } else {
-                    // Fatal — audio was the ONLY thing requested and it failed.
-                    postMessage({ type: 'ERROR', code: 'ERR_AUDIO_EXTRACTION', error: `Audio extraction failed: ${reason}. This file does not contain an AAC audio track (common with WebM/Opus). Try an MP4 file instead.` });
-                    return;
-                }
+                postMessage({ type: 'STATUS', status: `⚠️ Audio unavailable: ${reason}. Extracting slides only...` });
             } finally {
                 if (audioExtractor) try { audioExtractor.free(); } catch(_) {}
-                memLog('5-AUDIO-FREED');
-            }
-        } else {
-            console.log('[Worker] Skipping audio extraction (disabled)');
-            memLog('3-5-AUDIO-SKIPPED');
-        }
-
-        // --- Release the OPFS exclusive lock (but keep file for demuxer) ---
-        if (syncHandle) {
-            console.log("Releasing OPFS exclusive lock for Video Extraction...");
-            syncHandle.close();
-            syncHandle = undefined;
-        }
-
-        memLog('6-OPFS-LOCK-RELEASED');
-
-        // Release wasmBuffer reference — it's already loaded into the module
-        wasmBuffer = undefined;
-        memLog('7-WASMBUF-RELEASED');
-
-        // Get a fresh File reference from OPFS (mobile DOM File permissions expire)
-        const tempFileName = (self as any).currentTempFile;
-        let file: File;
-        if (tempFileName && originalFile) {
-            try {
-                const opfsHandle = await root.getFileHandle(tempFileName);
-                const opfsFile = await opfsHandle.getFile();
-                if (opfsFile.size > 0 && opfsFile.size === originalFile.size) {
-                    file = opfsFile;
-                    console.log("Using validated OPFS copy for demuxer (mobile-safe)");
-                } else {
-                    file = originalFile;
-                    console.warn("OPFS copy is empty or incomplete, falling back to original DOM File");
+                if (syncHandle) {
+                    try { syncHandle.close(); } catch (e) {}
+                    syncHandle = undefined;
                 }
-            } catch {
-                file = originalFile;
-                console.warn("OPFS read failed, falling back to original DOM File");
             }
-        } else {
-            if (!originalFile) throw new Error("Original file handle missing in worker.");
-            file = originalFile;
+            return;
         }
-        if (shouldExtractSlides) {
-            // --- Slide buffering for timestamp ranges ---
-            // We buffer ONE slide so that when the next slide arrives, we can
-            // fill in endMs (= next slide's startMs) on the previous slide.
-            // RAM cost: one WebP ArrayBuffer (~50-200KB) held briefly.
-            let pendingSlide: { buffer: ArrayBuffer; startMs: number; timestamp: string } | null = null;
 
-            const flushPendingSlide = (endMs: number) => {
-                if (!pendingSlide) return;
-                self.postMessage({
-                    type: 'SLIDE',
-                    buffer: pendingSlide.buffer,
-                    timestamp: pendingSlide.timestamp,
-                    startMs: pendingSlide.startMs,
-                    endMs: Math.round(endMs),
-                }, [pendingSlide.buffer]);
-                pendingSlide = null;
-            };
+        if (type === 'CONFIG_DECODER') {
+            const { config: decoderConfig, duration } = e.data;
+            
+            // Wait for WASM if needed
+            let retries = 0;
+            while (!wasmInitialized && !wasmBuffer && retries < 300) {
+                await new Promise(r => setTimeout(r, 100));
+                retries++;
+            }
+            await ensureWasm(wasmBuffer);
 
-            // Track pending async onSlide callbacks so we can drain before ALL_DONE
-            let pendingSlideEncodes = 0;
-            let drainResolve: (() => void) | null = null;
-
-            // Merge passed options with persistent detectionConfig
+            // Set up slide extractor
             const finalOptions = {
                 ...detectionConfig,
-                ...options,
                 onProgress: (percent: number, message: string, metrics?: any) => {
                     self.postMessage({ type: 'STATUS', status: message, progress: Math.round(percent), metrics });
                 },
@@ -520,13 +316,19 @@ async function processMedia(fileName: string, options: any = {}) {
                         const ab = await blob.arrayBuffer();
                         const startMs = Math.round(timestamp * 1000);
 
-                        // Emit the PREVIOUS slide with endMs = this slide's start
-                        flushPendingSlide(startMs);
+                        if (pendingSlide) {
+                            self.postMessage({
+                                type: 'SLIDE',
+                                buffer: pendingSlide.buffer,
+                                timestamp: pendingSlide.timestamp,
+                                startMs: pendingSlide.startMs,
+                                endMs: startMs,
+                            }, [pendingSlide.buffer]);
+                        }
 
-                        // Buffer this slide (will be emitted when next slide arrives or on ALL_DONE)
                         pendingSlide = { buffer: ab, startMs, timestamp: formatTime(timestamp) };
                     } catch (e: any) {
-                        console.warn('[Worker] onSlide buffer read failed (skipping):', e.message);
+                        console.warn('[Worker] onSlide buffer read failed:', e.message);
                     } finally {
                         pendingSlideEncodes--;
                         if (pendingSlideEncodes === 0 && drainResolve) {
@@ -537,12 +339,7 @@ async function processMedia(fileName: string, options: any = {}) {
                 }
             };
 
-            console.log("Starting Video Extraction with options:", {
-                mode: finalOptions.mode,
-                sampleFps: finalOptions.sampleFps
-            });
-
-            const slideExtractor = new SlideExtractor(
+            slideExtractor = new SlideExtractor(
                 { 
                     init_arena, 
                     get_buffer_a_ptr, 
@@ -558,142 +355,64 @@ async function processMedia(fileName: string, options: any = {}) {
                     get_avg_brightness,
                     memory: wasmModule.memory
                 } as any,
-                {
-                    ...finalOptions
-                }
+                finalOptions
             );
 
-            memLog('8-BEFORE-VIDEO-EXTRACT');
+            await slideExtractor.configure(decoderConfig, duration);
+            return;
+        }
 
-            // ── Demuxer setup ──
-            let extractionMetrics: any = null;
-            // Pre-fetch the WASM binary and convert to data: URL.
-            // web-demuxer spawns a nested blob: worker that can't access same-origin URLs.
-            // NOTE: This Base64 hack breaks Safari. Will be removed in Phase 3 when
-            // the demuxer moves to the WorkspaceManager on the main thread.
-            self.postMessage({ type: 'STATUS', status: 'Initializing Demuxer...' });
-            let wasmDataUrl: string;
-            try {
-                const resp = await fetch(webDemuxerWasmUrl);
-                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-                const wasmBytes = new Uint8Array(await resp.arrayBuffer());
-                let binary = '';
-                const chunkSize = 32768;
-                for (let i = 0; i < wasmBytes.length; i += chunkSize) {
-                    binary += String.fromCharCode.apply(null, wasmBytes.subarray(i, i + chunkSize) as any);
-                }
-                wasmDataUrl = 'data:application/wasm;base64,' + btoa(binary);
-            } catch (e: any) {
-                throw new Error(`Failed to fetch demuxer WASM: ${e.message}`);
+        if (type === 'VIDEO_CHUNK') {
+            const { chunk, timestamp, chunkType } = e.data;
+            if (slideExtractor) {
+                await slideExtractor.feedChunk(chunk, timestamp, chunkType);
+            }
+            return;
+        }
+
+        if (type === 'VIDEO_DONE') {
+            const { skipped } = e.data;
+            let metrics: any = {};
+            
+            if (!skipped && slideExtractor) {
+                metrics = await slideExtractor.flush();
             }
 
-            const { WebDemuxer } = await import('web-demuxer');
-            const demuxer = new WebDemuxer({ wasmFilePath: wasmDataUrl });
-            try {
-                await demuxer.load(file);
-                const mediaInfo = await demuxer.getMediaInfo();
-                const duration = mediaInfo.duration || 0;
-                const decoderConfig = await demuxer.getDecoderConfig('video');
-
-                // Configure the extractor's internal decoder
-                await slideExtractor.configure(decoderConfig as VideoDecoderConfig, duration);
-
-                // ── Demuxer read loop → feedChunk() ──
-                const endTime = duration > 0 ? duration * 2 : 999999;
-                const reader = demuxer.read('video', 0, endTime).getReader();
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done || !value) break;
-
-                    // In turbo mode, only feed keyframes. In sequential mode, feed all.
-                    if (finalOptions.mode === 'turbo' && value.type !== 'key') continue;
-
-                    // Copy the packet data to an ArrayBuffer for feedChunk
-                    const chunkData = new ArrayBuffer(value.byteLength);
-                    value.copyTo(chunkData);
-                    await slideExtractor.feedChunk(chunkData, Number(value.timestamp), value.type as 'key' | 'delta');
-                }
-
-                // Flush the decoder and emit final candidates
-                extractionMetrics = await slideExtractor.flush();
-                memLog('9-AFTER-VIDEO-EXTRACT');
-            } finally {
-                demuxer.destroy();
-            }
-
-            // Drain any pending async onSlide callbacks (blob encoding + arrayBuffer)
-            // that haven't resolved yet. Without this, the last slide from a fire-and-forget
-            // emitBitmap could still be encoding when we send ALL_DONE and get terminated.
+            // Drain any pending async onSlide callbacks
             if (pendingSlideEncodes > 0) {
                 await Promise.race([
                     new Promise<void>(r => { drainResolve = r; }),
-                    new Promise<void>(r => setTimeout(r, 3000)) // safety timeout
+                    new Promise<void>(r => setTimeout(r, 3000))
                 ]);
             }
 
-            // Flush the last buffered slide — use video duration for accurate endMs
-            const metrics = extractionMetrics ?? (slideExtractor as any).metrics;
-            const ps = pendingSlide as { buffer: ArrayBuffer; startMs: number; timestamp: string } | null;
-            const videoDurationMs = metrics?.videoDurationSec
-                ? Math.round(metrics.videoDurationSec * 1000)
-                : metrics?.lastFrameTimestamp
-                    ? Math.round(metrics.lastFrameTimestamp * 1000)
-                    : (ps?.startMs ?? 0);
-            flushPendingSlide(videoDurationMs);
-
-            // ⚠ CRITICAL: Clean up OPFS temp file BEFORE posting ALL_DONE.
-            // The main thread calls worker.terminate() immediately on ALL_DONE,
-            // which kills the worker before the `finally` block can run.
-            // If the file isn't removed here, it accumulates as dead storage.
-            // NOTE: syncHandle is already closed and undefined at this point
-            // (released on line ~418 before video extraction started).
-            if (shouldCleanup) {
-                const toRemove = (self as any).currentTempFile;
-                if (toRemove) {
-                    try {
-                        await root.removeEntry(toRemove);
-                        console.log("Cleaned up temp file:", toRemove);
-                    } catch (e) {}
-                    (self as any).currentTempFile = null;
-                }
+            // Flush the last buffered slide
+            if (pendingSlide) {
+                const videoDurationMs = metrics?.videoDurationSec
+                    ? Math.round(metrics.videoDurationSec * 1000)
+                    : metrics?.lastFrameTimestamp
+                        ? Math.round(metrics.lastFrameTimestamp * 1000)
+                        : pendingSlide.startMs;
+                
+                self.postMessage({
+                    type: 'SLIDE',
+                    buffer: pendingSlide.buffer,
+                    timestamp: pendingSlide.timestamp,
+                    startMs: pendingSlide.startMs,
+                    endMs: videoDurationMs,
+                }, [pendingSlide.buffer]);
+                pendingSlide = null;
             }
 
             postMessage({ type: 'ALL_DONE', metrics });
-        } else {
-            console.log('[Worker] Skipping slide extraction (disabled)');
-            postMessage({ type: 'ALL_DONE', metrics: {} });
+            return;
         }
+
     } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        const code = message.includes('WASM') ? 'ERR_WASM_INIT' : 'ERR_VIDEO_DECODE';
-        postMessage({ type: 'ERROR', code, error: 'Extraction Error: ' + message });
-    } finally {
-        // Safety net for error paths where the eager cleanup above didn't run.
-        // Use local ref to bypass TS control flow narrowing on module-scoped syncHandle.
-        const handle = syncHandle;
-        if (handle) {
-            try { handle.close(); } catch (e) {}
-            syncHandle = undefined;
-        }
-        if (shouldCleanup) {
-            const toRemove = (self as any).currentTempFile;
-            if (toRemove) {
-                try {
-                    await root.removeEntry(toRemove);
-                    console.log("Cleaned up temp file:", toRemove);
-                } catch (e) {}
-                (self as any).currentTempFile = null;
-            }
-        } else {
-            console.log('[Worker] Skipping OPFS cleanup (cleanupAfterExtraction=false)');
-        }
-        // Self-terminate AFTER cleanup is guaranteed complete.
-        // This prevents the main thread's worker.terminate() from killing us
-        // before finally{} runs, which would leave stale OPFS locks.
-        self.close();
+        self.postMessage({ type: 'ERROR', code: 'ERR_WORKER_GENERIC', error: message });
     }
-}
+};
 
 
 
