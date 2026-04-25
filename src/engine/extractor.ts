@@ -406,6 +406,12 @@ export class SlideExtractor {
         ]);
       }
     }
+    
+    // Encoder backpressure: prevent GPU memory OOM from concurrent canvas allocations
+    // and prevent the UI from racing to 100% and hanging while the background queue drains.
+    while (this.pendingEncodes.length > 5) {
+      await new Promise(r => setTimeout(r, 10));
+    }
 
     // Decode
     if (this.decoder.state === 'closed') {
@@ -442,7 +448,15 @@ export class SlideExtractor {
   public async flush(): Promise<ExtractionMetrics> {
     // Flush remaining queued frames
     if (this.decoder && this.decoder.state !== 'closed') {
-      await this.decoder.flush();
+      try {
+        // Wrap in a timeout to prevent infinite hangs caused by browser WebCodecs driver bugs
+        await Promise.race([
+          this.decoder.flush(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('decoder flush timeout')), 5000))
+        ]);
+      } catch (e) {
+        console.warn('VideoDecoder flush timeout or error (ignoring):', e);
+      }
       this.decoder.close();
     }
     this.decoder = null;
