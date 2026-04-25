@@ -641,7 +641,7 @@ export class FastExtractor {
           pipelinePromise.catch((err: any) => {
             // Pipeline will throw if SAF permissions expire or pipeline fails
             const msg = err?.message ?? String(err ?? 'Unknown pipeline error');
-            const isRecoverable = msg.includes('File ingest failed') || msg.includes('could not be read');
+            const isRecoverable = msg.includes('File ingest failed') || msg.includes('could not be read') || msg.includes('FILE_ACCESS_EXPIRED');
             this._extracting = false;
             
             if (isRecoverable) {
@@ -766,20 +766,25 @@ async function ingestFile(file: File, tempFileName: string, onProgress: (status:
     onProgress('Ingesting Media: 0%', 0);
     let lastReportTime = Date.now();
 
-    while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        
-        await writable.write(value);
-        offset += value.byteLength;
-        
-        if (Date.now() - lastReportTime > 250) {
-            const pct = Math.floor((offset / file.size) * 100);
-            onProgress(`Ingesting Media: ${pct}%`, pct);
-            lastReportTime = Date.now();
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            await writable.write(value);
+            offset += value.byteLength;
+            
+            if (Date.now() - lastReportTime > 250) {
+                const pct = Math.floor((offset / file.size) * 100);
+                onProgress(`Ingesting Media: ${pct}%`, pct);
+                lastReportTime = Date.now();
+            }
         }
+    } catch (err: any) {
+        throw new Error(`FILE_ACCESS_EXPIRED: ${err.message}`);
+    } finally {
+        await writable.close();
     }
-    await writable.close();
   }
 
 // No module-level cache needed. The browser's HTTP cache handles WASM fetching.
