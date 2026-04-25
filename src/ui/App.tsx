@@ -92,10 +92,10 @@ const App: React.FC = () => {
     const [config, setConfig] = useState({
         sampleFps: 1,
         edgeThreshold: 30,
-        blockThreshold: 12,
-        densityThresholdPct: 5,
+        blockThreshold: 8,
+        densityThresholdPct: 4,
         minSlideDuration: 3,
-        dhashDuplicateThreshold: 10,
+        dhashDuplicateThreshold: 4,
         confirmThreshold: 10,
         // Drift detection
         blankBrightnessThreshold: 8,
@@ -384,14 +384,20 @@ const App: React.FC = () => {
                         <p className="hint">Tip: Use <b>"Turbo"</b> mode for 10x faster sampling of long videos.</p>
                         
                         <div className="mode-toggle">
-                            <select
-                                className="form-select text-sm w-full bg-slate-900 border-slate-700 text-slate-300 rounded"
-                                value={extractionMode}
-                                onChange={(e) => setExtractionMode(e.target.value as 'turbo' | 'sequential')}
+                            <button 
+                                className={`mode-btn ${extractionMode === 'sequential' ? 'active' : ''}`}
+                                onClick={() => setExtractionMode('sequential')}
+                                disabled={isExtracting}
                             >
-                                <option value="turbo">Turbo (Keyframes)</option>
-                                <option value="sequential">Sequential (Every frame)</option>
-                            </select>
+                                🎯 Sequential
+                            </button>
+                            <button 
+                                className={`mode-btn ${extractionMode === 'turbo' ? 'active' : ''}`}
+                                onClick={() => setExtractionMode('turbo')}
+                                disabled={isExtracting}
+                            >
+                                🚀 Turbo
+                            </button>
                         </div>
 
                         <div className="extract-toggles">
