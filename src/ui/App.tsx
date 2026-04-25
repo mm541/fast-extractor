@@ -127,6 +127,9 @@ const App: React.FC = () => {
     const urlsToCleanup = useRef<string[]>([]);
     
     useEffect(() => {
+        // Wipe out any orphaned temp files from previously crashed/closed tabs
+        FastExtractor.cleanupStorage().catch(console.warn);
+
         FastExtractor.checkBrowserSupport().then(support => {
             const caps: DeviceCapabilities = {
                 webCodecs: support.webCodecs,

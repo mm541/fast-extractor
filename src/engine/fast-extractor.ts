@@ -633,6 +633,8 @@ export class FastExtractor {
         // Consumer cancelled the stream (e.g. user navigated away)
         worker?.terminate();
         worker = null;
+        // Clean up the OPFS file immediately
+        FastExtractor.cleanupStorage().catch(e => console.warn('Cancel cleanup failed:', e));
       },
     });
 
