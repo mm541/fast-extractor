@@ -80,21 +80,13 @@
  *   further, consider switching to `decodeQueueSize`-only polling (like
  *   turbo mode) — but test thoroughly on mobile hardware first.
  *
- * 💡 CONSIDERATION: DUAL-EMIT MODEL (emitBitmap + emitBitmapAsync)
- *   Hot-loop emissions use fire-and-forget emitBitmap() — it calls
+ * 💡 CONSIDERATION: EMIT MODEL (fire-and-forget)
+ *   Emissions use fire-and-forget emitBitmap() — it calls
  *   renderBitmapToBlob().then() without awaiting. This is safe because:
  *   (1) the ImageBitmap is .close()'d synchronously inside renderBitmapToBlob,
  *   so GPU memory is freed immediately, and (2) minSlideDuration (default 3s)
  *   guarantees a minimum gap between emissions, so WebP encodes (50-200ms)
- *   never overlap. If you ever reduce minSlideDuration to 0, this assumption
- *   breaks and you'd need to serialize the encode calls.
- *
- *   The FINAL candidate uses emitBitmapAsync() — an awaitable version that
- *   ensures the blob is fully encoded before extract() returns. Without this,
- *   worker.terminate() (triggered by ALL_DONE) would kill the worker while
- *   convertToBlob is still pending, silently dropping the last slide.
- *   The worker also drains any in-flight fire-and-forget onSlide callbacks
- *   via a pendingSlideEncodes counter before sending ALL_DONE.
+ *   never overlap.
  *
  * 💡 CONSIDERATION: DUPLICATE DETECTION — LAST HASH ONLY
  *   isDuplicate() only compares against the LAST saved hash, not all of
@@ -252,19 +244,18 @@ export interface WasmModule {
 }
 
 /**
- * ARCHITECTURE: Two Pipeline Modes
+ * ARCHITECTURE: Stream + selective keyframe decode.
  *
- * 1. Turbo Mode (Keyframes only)
- *    Stream packets from demuxer. Only pass `type === 'key'` chunks to the VideoDecoder.
- *    Reduces decode workload by dropping all P and B packets before decoding.
- *    Tradeoff: Can land on blurry crossfades (mitigated by Deferred Emit).
+ * Stream ALL packets from demuxer (fast sequential I/O, zero round-trips).
+ * Only DECODE packets that are keyframes near our sample times.
+ * Everything else is skipped at zero cost.
  *
- * 2. Sequential Mode (Sampled FPS)
- *    Stream packets and decode every frame, but only send frames to WASM at `sampleFps`.
- *    Slower, but perfectly accurate for live-coding and fast transitions.
+ * For a 1-hour video at 1fps with keyframes every 5s:
+ *   Packets streamed: ~108,000 (cheap — just checking timestamp)
+ *   Frames decoded:   ~720 (only keyframes, self-contained)
+ *   Expected time:    ~15-30s
+ *   Expected RAM:     ~150-250MB (one decoder, no ref frame buildup)
  */
-
-
 export class SlideExtractor {
   private wasm: WasmModule;
   private options: SlideExtractorOptions;
@@ -294,7 +285,6 @@ export class SlideExtractor {
 
 
 
-
   private metrics: ExtractionMetrics = {
     startTime: 0, totalFrames: 0, totalSlides: 0, peakRamMb: 0, avgFrameProcessTimeMs: 0
   };
@@ -314,6 +304,7 @@ export class SlideExtractor {
     this.metrics = { startTime: performance.now(), totalFrames: 0, totalSlides: 0, peakRamMb: 0, avgFrameProcessTimeMs: 0 };
     this.hasBaseline = false;
     this.savedHashes = [];
+
     this.lastSlideTime = -10;
     // Reset robustness state
     this.noiseFloor = 0;
@@ -490,7 +481,6 @@ export class SlideExtractor {
       } finally {
         if (decoder.state !== 'closed') decoder.close();
       }
-      this.metrics.totalFrames = packetCount;
 
     } else {
       // ACCURATE: Full decode of EVERY frame. ~120-150s for 1-hour video.
@@ -608,7 +598,6 @@ export class SlideExtractor {
           if (decoder.state !== 'closed') decoder.close();
         }
       }
-      this.metrics.totalFrames = packetCount;
     }
   }
 
@@ -648,6 +637,8 @@ export class SlideExtractor {
     // Edge case: Skip near-black/blank frames (transitions, fades)
     const brightness = this.wasm.get_avg_brightness();
     if (brightness < this.options.blankBrightnessThreshold) return;
+
+
 
     if (!this.hasBaseline) {
       this.copyBufferBToA();
@@ -783,8 +774,7 @@ export class SlideExtractor {
   private static readonly CMP_W = 424;
   private static readonly CMP_H = 240;
 
-  // Deferred-emit: max hamming distance to confirm a candidate is real (not a transition blend)
-  // Now configurable via options.confirmThreshold (default: 10)
+
 
   /**
    * Copy VideoFrame pixels into the WASM RGBA buffer.
@@ -867,6 +857,8 @@ export class SlideExtractor {
       console.warn('emitBitmap: WebP encode failed (skipping slide):', e);
     });
   }
+
+
 
   private async renderBitmapToBlob(bitmap: ImageBitmap): Promise<Blob> {
     const w = bitmap.width, h = bitmap.height;
