@@ -316,6 +316,8 @@ export class FastExtractor {
 
   /**
    * Manually clean up OPFS temp files left from previous extractions.
+   * Only cleans files inside the `.fast_extractor/` subfolder — never touches
+   * the consumer's own OPFS data.
    * Only needed when `cleanupAfterExtraction: false` was used.
    * Safe to call at any time — it's a no-op if no temp files exist.
    *
@@ -326,16 +328,31 @@ export class FastExtractor {
   static async cleanupStorage(): Promise<void> {
     if (!navigator.storage?.getDirectory) return;
     try {
-      const root = await navigator.storage.getDirectory();
+      const opfsRoot = await navigator.storage.getDirectory();
+      let feDir: FileSystemDirectoryHandle;
+      try {
+        feDir = await opfsRoot.getDirectoryHandle('.fast_extractor');
+      } catch {
+        return; // folder doesn't exist — nothing to clean
+      }
       const entries: string[] = [];
       // @ts-ignore — OPFS entries()
-      for await (const [name] of (root as any).entries()) {
-        if (name.startsWith('extract_') || name.startsWith('audio_') || name.startsWith('__cap_test_')) {
-          entries.push(name);
-        }
+      for await (const [name] of (feDir as any).entries()) {
+        entries.push(name);
       }
       for (const name of entries) {
-        try { await root.removeEntry(name); } catch {}
+        try {
+          if (navigator.locks) {
+            await navigator.locks.request(
+              `fe_${name}`, { ifAvailable: true },
+              async (lock) => {
+                if (lock) await feDir.removeEntry(name);
+              }
+            );
+          } else {
+            await feDir.removeEntry(name);
+          }
+        } catch {}
       }
     } catch (e) {
       console.warn('[FastExtractor] cleanupStorage failed:', e);

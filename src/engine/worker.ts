@@ -119,21 +119,26 @@ async function ensureWasm(wasmBuffer?: ArrayBuffer) {
 }
 
 /**
- * Initialize OPFS root handle.
+ * Initialize OPFS handle inside a dedicated `.fast_extractor/` subfolder.
+ * All temp files live here — never in the consumer's OPFS root.
  * Requires Secure Context (HTTPS or localhost) — will throw on HTTP.
  */
 async function initStorage() {
     if (!navigator.storage || !navigator.storage.getDirectory) {
         throw new Error("Secure Context Required: extraction requires HTTPS or Localhost.");
     }
-    root = await navigator.storage.getDirectory();
+    const opfsRoot = await navigator.storage.getDirectory();
+    root = await opfsRoot.getDirectoryHandle('.fast_extractor', { create: true });
 }
 
 /**
  * Remove leftover temp files from previous sessions.
  * Uses two-phase approach: collect names first, then delete.
  * This avoids iterator invalidation and works reliably on mobile Chrome.
- * 
+ *
+ * SAFETY: Uses Web Locks API to skip files actively used by other tabs.
+ * All files live inside `.fast_extractor/` — no risk to consumer's OPFS data.
+ *
  * ⚠️ The for-await on OPFS entries() can hang on mobile if stale locks exist.
  * That's why the caller wraps this in a Promise.race() with a 3s timeout.
  */
@@ -143,12 +148,31 @@ async function cleanupOldFiles() {
         const entries: string[] = [];
         // @ts-ignore — collect names first, then delete (avoids iterator issues)
         for await (const [name] of (root as any).entries()) {
-            if (name.startsWith('extract_') || name.startsWith('audio_') || name.startsWith('__cap_test_')) {
-                entries.push(name);
-            }
+            entries.push(name);
         }
         for (const name of entries) {
-            try { await root.removeEntry(name); } catch {}
+            // Use Web Locks to check if another tab is actively using this file.
+            // ifAvailable: true → returns null immediately if lock is held.
+            try {
+                if (navigator.locks) {
+                    const result = await navigator.locks.request(
+                        `fe_${name}`, { ifAvailable: true },
+                        async (lock) => {
+                            if (lock) {
+                                await root.removeEntry(name);
+                                return true;
+                            }
+                            return false; // another tab holds the lock
+                        }
+                    );
+                    if (!result) {
+                        console.log(`[Cleanup] Skipping ${name} — locked by another tab`);
+                    }
+                } else {
+                    // Fallback: no Web Locks API (older browsers) — delete anyway
+                    await root.removeEntry(name);
+                }
+            } catch {}
         }
     } catch (e) {
         console.warn('[Worker] cleanupOldFiles failed:', e);
@@ -236,78 +260,91 @@ self.onmessage = async (e: MessageEvent) => {
             }
 
             const currentTempFile = `extract_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.mp4`;
-            try {
-                const fileHandle = await root.getFileHandle(currentTempFile, { create: true });
-                (self as any).currentTempFile = currentTempFile;
-                syncHandle = await createSyncAccessHandleWithTimeout(fileHandle, 5000);
-            } catch (err: any) {
-                self.postMessage({ type: 'ERROR', code: 'ERR_OPFS_STALE_LOCK', error: 'File handle failed: ' + err.message });
-                return;
-            }
 
-            // ── Read file NOW — SAF permission is still fresh ──
-            // Use file.stream() — it opens the file descriptor ONCE.
-            // file.slice().arrayBuffer() re-opens it per chunk, which fails on Android
-            // because each open re-checks SAF permissions that may have expired.
-            const ingestFile = originalFile!;
-            self.postMessage({ type: 'STATUS', status: 'Ingesting Media: 0%' });
-
-            const doIngest = async (f: File): Promise<void> => {
-                const stream = f.stream();
-                const reader = stream.getReader();
-                let offset = 0;
-                let lastReportTime = Date.now();
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-
-                    syncHandle!.write(value);
-                    offset += value.byteLength;
-
-                    if (Date.now() - lastReportTime > 250) {
-                        const pct = Math.floor((offset / f.size) * 100);
-                        self.postMessage({ type: 'STATUS', status: `Ingesting Media: ${pct}%`, progress: pct });
-                        lastReportTime = Date.now();
-                    }
-                }
-                syncHandle!.flush();
-            };
-
-            try {
-                await doIngest(ingestFile);
-            } catch (firstErr: any) {
-                // Retry once — some Android devices transiently fail the first stream open
-                console.warn('[Ingest] First attempt failed, retrying:', firstErr.message);
+            // Wrap the entire extraction in a Web Lock keyed on the temp filename.
+            // This prevents cleanupOldFiles() in other tabs from deleting our file mid-extraction.
+            // Lock acquisition is instant (unique name, no contention) — no Android SAF delay risk.
+            const runExtraction = async () => {
                 try {
-                    // Reset the sync handle write position to 0 for the retry
-                    syncHandle!.truncate(0);
-                    await doIngest(ingestFile);
-                } catch (retryErr: any) {
-                    console.error('[Ingest] Second attempt failed:', retryErr.message);
-                    if (syncHandle) {
-                        try { syncHandle.close(); } catch (e) {}
-                        syncHandle = undefined;
-                    }
-                    self.postMessage({ type: 'ERROR', code: 'ERR_FILE_INGEST', error: 'File ingest failed: ' + retryErr.message });
+                    const fileHandle = await root.getFileHandle(currentTempFile, { create: true });
+                    (self as any).currentTempFile = currentTempFile;
+                    syncHandle = await createSyncAccessHandleWithTimeout(fileHandle, 5000);
+                } catch (err: any) {
+                    self.postMessage({ type: 'ERROR', code: 'ERR_OPFS_STALE_LOCK', error: 'File handle failed: ' + err.message });
                     return;
                 }
-            }
 
-            // ── Cleanup old temp files AFTER ingestion (non-critical) ──
-            if (shouldCleanup) {
+                // ── Read file NOW — SAF permission is still fresh ──
+                // Use file.stream() — it opens the file descriptor ONCE.
+                // file.slice().arrayBuffer() re-opens it per chunk, which fails on Android
+                // because each open re-checks SAF permissions that may have expired.
+                const ingestFile = originalFile!;
+                self.postMessage({ type: 'STATUS', status: 'Ingesting Media: 0%' });
+
+                const doIngest = async (f: File): Promise<void> => {
+                    const stream = f.stream();
+                    const reader = stream.getReader();
+                    let offset = 0;
+                    let lastReportTime = Date.now();
+
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+
+                        syncHandle!.write(value);
+                        offset += value.byteLength;
+
+                        if (Date.now() - lastReportTime > 250) {
+                            const pct = Math.floor((offset / f.size) * 100);
+                            self.postMessage({ type: 'STATUS', status: `Ingesting Media: ${pct}%`, progress: pct });
+                            lastReportTime = Date.now();
+                        }
+                    }
+                    syncHandle!.flush();
+                };
+
                 try {
-                    await Promise.race([
-                        cleanupOldFiles(),
-                        new Promise((_, reject) => setTimeout(() => reject(new Error('cleanup timeout')), 3000))
-                    ]);
-                } catch (e) {
-                    console.warn('[Worker] Post-ingest cleanup timed out, continuing anyway');
+                    await doIngest(ingestFile);
+                } catch (firstErr: any) {
+                    // Retry once — some Android devices transiently fail the first stream open
+                    console.warn('[Ingest] First attempt failed, retrying:', firstErr.message);
+                    try {
+                        // Reset the sync handle write position to 0 for the retry
+                        syncHandle!.truncate(0);
+                        await doIngest(ingestFile);
+                    } catch (retryErr: any) {
+                        console.error('[Ingest] Second attempt failed:', retryErr.message);
+                        if (syncHandle) {
+                            try { syncHandle.close(); } catch (e) {}
+                            syncHandle = undefined;
+                        }
+                        self.postMessage({ type: 'ERROR', code: 'ERR_FILE_INGEST', error: 'File ingest failed: ' + retryErr.message });
+                        return;
+                    }
                 }
+
+                // ── Cleanup old temp files AFTER ingestion (non-critical) ──
+                if (shouldCleanup) {
+                    try {
+                        await Promise.race([
+                            cleanupOldFiles(),
+                            new Promise((_, reject) => setTimeout(() => reject(new Error('cleanup timeout')), 3000))
+                        ]);
+                    } catch (e) {
+                        console.warn('[Worker] Post-ingest cleanup timed out, continuing anyway');
+                    }
+                }
+                
+                // File fully ingested — proceed to extraction
+                await processMedia(fileName, config);
+            };
+
+            // Hold Web Lock for the entire extraction lifecycle
+            if (navigator.locks) {
+                await navigator.locks.request(`fe_${currentTempFile}`, runExtraction);
+            } else {
+                await runExtraction();
             }
-            
-            // File fully ingested — proceed to extraction
-            await processMedia(fileName, config);
             return;
         }
     } catch (err: unknown) {
