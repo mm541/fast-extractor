@@ -273,8 +273,6 @@ export class SlideExtractor {
   private compareCtx: OffscreenCanvasRenderingContext2D | null = null;
   private exportCanvas: OffscreenCanvas | null = null;
   private exportCtx: OffscreenCanvasRenderingContext2D | null = null;
-  private blobCanvas: OffscreenCanvas | null = null;
-  private blobCtx: OffscreenCanvasRenderingContext2D | null = null;
 
   // Three-pointer cumulative drift tracking
   private cumulativeDrift = 0;   // accumulated block changes (Prev vs B)
@@ -331,7 +329,7 @@ export class SlideExtractor {
     this.metrics = { startTime: performance.now(), totalFrames: 0, totalSlides: 0, peakRamMb: 0, avgFrameProcessTimeMs: 0 };
     this.hasBaseline = false;
     this.savedHashes = [];
-    this.lastEmitPromise = Promise.resolve();
+    this.pendingEncodes = [];
     if (this.pendingCandidate) { this.pendingCandidate.bitmap.close(); }
     this.pendingCandidate = null;
     this.lastSlideTime = -10;
@@ -460,7 +458,8 @@ export class SlideExtractor {
 
     // Await all queued background encodes to prevent dropping slides
     // when the worker terminates
-    await this.lastEmitPromise;
+    await Promise.allSettled(this.pendingEncodes);
+    this.pendingEncodes = [];
 
     this.metrics.videoDurationSec = this.videoDuration;
     this.metrics.endTime = performance.now();
@@ -775,13 +774,14 @@ export class SlideExtractor {
     this.emitBitmap(this.captureCanvasBitmap(), timestamp);
   }
 
-  private lastEmitPromise: Promise<void> = Promise.resolve();
+  private pendingEncodes: Promise<void>[] = [];
 
   private emitBitmap(bitmap: ImageBitmap, timestamp: number) {
-    // Chain encodes sequentially to prevent concurrent access to the shared
-    // OffscreenCanvas, ensuring strict timestamp ordering and preventing
-    // OOM spikes from massive concurrent convertToBlob calls.
-    this.lastEmitPromise = this.lastEmitPromise.then(async () => {
+    // Isolated canvas enables safe, highly parallel background encoding.
+    // The total concurrent encodes are naturally bounded by the cross-thread
+    // demuxer backpressure (max 15 chunks), preventing memory spikes while
+    // eliminating the massive sequential bottleneck that stalled the UI at 100%.
+    const encodePromise = (async () => {
       try {
         const blob = await this.renderBitmapToBlob(bitmap);
         this.options.onSlide(blob, timestamp);
@@ -789,30 +789,33 @@ export class SlideExtractor {
       } catch (e) {
         console.warn('emitBitmap: image encode failed (skipping slide):', e);
       }
+    })();
+    
+    this.pendingEncodes.push(encodePromise);
+    encodePromise.finally(() => {
+      this.pendingEncodes = this.pendingEncodes.filter(p => p !== encodePromise);
     });
   }
 
   /**
    * Awaitable version of emitBitmap — used ONLY for the final candidate flush
-   * at extraction end. Enqueues the final candidate and returns the promise
-   * for the entire chain.
+   * at extraction end. Enqueues the final candidate and returns the promise.
    */
   private emitBitmapAsync(bitmap: ImageBitmap, timestamp: number): Promise<void> {
     this.emitBitmap(bitmap, timestamp);
-    return this.lastEmitPromise;
+    return this.pendingEncodes[this.pendingEncodes.length - 1];
   }
 
   private async renderBitmapToBlob(bitmap: ImageBitmap): Promise<Blob> {
-    const w = bitmap.width, h = bitmap.height;
-    if (!this.blobCanvas || this.blobCanvas.width !== w || this.blobCanvas.height !== h) {
-      this.blobCanvas = new OffscreenCanvas(w, h);
-      this.blobCtx = this.blobCanvas.getContext('2d')!;
-    }
-    this.blobCtx!.drawImage(bitmap, 0, 0);
+    // Use a fresh canvas per image to allow concurrent encoding without race conditions
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const ctx = canvas.getContext('2d')!;
+    ctx.drawImage(bitmap, 0, 0);
     // Draw is synchronous, we can safely close the bitmap immediately freeing GPU RAM.
     bitmap.close();
+    
     const fmt = this.options.imageFormat === 'webp' ? 'image/webp' : 'image/jpeg';
-    return this.blobCanvas.convertToBlob({ 
+    return canvas.convertToBlob({ 
         type: fmt, 
         quality: this.options.imageQuality ?? 0.8 
     });
