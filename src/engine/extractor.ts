@@ -302,6 +302,16 @@ export class SlideExtractor {
   private lastReportTs = 0;
   private pendingBackpressureResolve: (() => void) | null = null;
 
+  // VideoDecoder requires a keyframe after configure() or flush().
+  // Without this gate, delta frames after a decoder reset trigger an infinite
+  // error → close → recreate → error loop that floods the console and stalls the pipeline.
+  private needsKeyframe = true;
+
+  // processedFrames tracks only frames that pass the sampleFps gate and run
+  // through the WASM pipeline — used for accurate avgFrameProcessTimeMs.
+  // totalFrames (in metrics) counts ALL decoded frames including skipped ones.
+  private processedFrames = 0;
+
   private metrics: ExtractionMetrics = {
     startTime: 0, totalFrames: 0, totalSlides: 0, peakRamMb: 0, avgFrameProcessTimeMs: 0
   };
@@ -329,12 +339,14 @@ export class SlideExtractor {
    */
   public async configure(config: VideoDecoderConfig, videoDuration: number = 0) {
     this.metrics = { startTime: performance.now(), totalFrames: 0, totalSlides: 0, peakRamMb: 0, avgFrameProcessTimeMs: 0 };
+    this.processedFrames = 0;
     this.hasBaseline = false;
     this.savedHashes = [];
     this.lastEmitPromise = Promise.resolve();
     if (this.pendingCandidate) { this.pendingCandidate.bitmap.close(); }
     this.pendingCandidate = null;
     this.lastSlideTime = -10;
+    this.needsKeyframe = true;
     // Reset robustness state
     this.noiseFloor = 0;
     this.calibrationSamples = [];
@@ -349,7 +361,10 @@ export class SlideExtractor {
     this.videoHeight = config.codedHeight || 1080;
     this.videoDuration = videoDuration;
 
-    // Build decoder config — turbo tries prefer-software, sequential uses default
+    // Turbo: prefer-software decoder to avoid opaque GPU textures that
+    // drawImage() reads as black frames on OffscreenCanvas in workers.
+    // Sequential: uses default (hardware) acceleration since it decodes
+    // every frame and needs the throughput.
     const baseConfig = { ...config, optimizeForLatency: true };
     let decoderConfig: VideoDecoderConfig = baseConfig;
     if (this.options.mode === 'turbo') {
@@ -388,6 +403,13 @@ export class SlideExtractor {
       this.lastKeyframeTs = tsSec;
     }
 
+    // Gate: after configure() or decoder reset, skip delta frames until a keyframe
+    // arrives. Without this, every delta frame triggers "A key frame is required
+    // after configure() or flush()", the decoder closes, gets recreated, and the
+    // next delta errors again — an infinite loop that stalls the entire pipeline.
+    if (this.needsKeyframe && type !== 'key') return;
+    if (type === 'key') this.needsKeyframe = false;
+
     // If previous error killed the decoder, spin up a fresh one
     if (this.decoder.state === 'closed') {
       this.decoder = this.makeDecoder();
@@ -400,11 +422,14 @@ export class SlideExtractor {
         await new Promise(r => setTimeout(r, 5));
       }
     } else {
-      // Sequential: use Promise.race with 5s timeout as deadlock safety net
+      // Sequential backpressure with 500ms deadlock safety net.
+      // Hardware decoders on mobile can silently drop frames, causing
+      // pendingBackpressureResolve to hang forever. 500ms is long enough
+      // for normal decode latency but short enough to not stall the pipeline.
       while (this.decoder.state !== 'closed' && this.decoder.decodeQueueSize >= maxQueue) {
         await Promise.race([
           new Promise<void>(r => { this.pendingBackpressureResolve = r; }),
-          new Promise<void>(r => setTimeout(r, 5000))
+          new Promise<void>(r => setTimeout(r, 500))
         ]);
       }
     }
@@ -477,11 +502,18 @@ export class SlideExtractor {
         const t0 = performance.now();
         try {
           this.processFrameSync(frame, ts);
-          this.metrics.avgFrameProcessTimeMs =
-            (this.metrics.avgFrameProcessTimeMs * (this.metrics.totalFrames - 1) + (performance.now() - t0))
-            / this.metrics.totalFrames;
+          // Only update avg for frames that actually ran through the WASM pipeline
+          // (processedFrames excludes sampleFps-skipped frames)
+          if (this.processedFrames > 0) {
+            this.metrics.avgFrameProcessTimeMs =
+              (this.metrics.avgFrameProcessTimeMs * (this.processedFrames - 1) + (performance.now() - t0))
+              / this.processedFrames;
+          }
         } catch (e) {
           console.warn(`${this.options.mode}: processFrameSync threw (skipping frame):`, e);
+          // Safety net: close the frame if processFrameSync threw before its
+          // own frame.close() path ran. Double-close is a harmless no-op.
+          try { frame.close(); } catch {}
         }
         // Resolve backpressure waiter (sequential mode)
         if (this.pendingBackpressureResolve) {
@@ -492,6 +524,8 @@ export class SlideExtractor {
       },
       error: (e) => {
         console.warn(`${this.options.mode} decode pipeline error:`, e);
+        // Re-engage keyframe gate so the next decoder doesn't get fed delta frames
+        this.needsKeyframe = true;
         if (this.pendingBackpressureResolve) {
           const r = this.pendingBackpressureResolve;
           this.pendingBackpressureResolve = null;
@@ -514,10 +548,15 @@ export class SlideExtractor {
   private processFrameSync(frame: VideoFrame, timestamp: number) {
     this.metrics.totalFrames++;
     this.metrics.lastFrameTimestamp = timestamp;
-    this.wasm.shift_current_to_prev();
 
-    // Step 1: Copy frame pixels → WASM RGBA buffer
+    // Track frames that actually run through the WASM pipeline (for accurate metrics)
+    this.processedFrames++;
+
+    // ⚠️ CRITICAL: frame.close() MUST be called on every path.
+    // Wrapping in try/finally guarantees no GPU memory leak even if
+    // shift_current_to_prev() or captureFrameToRgba() throws.
     try {
+      this.wasm.shift_current_to_prev();
       this.captureFrameToRgba(frame);
     } finally {
       frame.close();
