@@ -541,7 +541,7 @@ export class FastExtractor {
 
           worker.onerror = (event) => {
             try {
-              controller.error(new Error(event.message || 'Worker crashed'));
+              controller.error(new Error(`Worker Script Error: ${event.message || 'Failed to load worker (possible network drop)'}`));
             } catch { /* stream already closed */ }
             this._extracting = false;
             worker?.terminate();
@@ -568,7 +568,7 @@ export class FastExtractor {
               worker?.postMessage({ type: 'INIT', wasmBuffer }, [wasmBuffer]);
             })
             .catch(err => {
-              try { controller.error(new Error(`Failed to fetch WASM engine: ${err.message}`)); } catch {}
+              try { controller.error(new Error(`Rust WASM Fetch Error: ${err.message}`)); } catch {}
               worker?.terminate();
               worker = null;
             });
@@ -803,15 +803,19 @@ async function extractVideoChunks(
       const rawUrl = options.demuxerWasmUrl ?? defaultUrl;
       const wasmUrl = rawUrl.startsWith('http') ? rawUrl : new URL(rawUrl, self.location.href).href;
       
-      demuxer = new WebDemuxer({ wasmFilePath: wasmUrl });
+      try {
+        demuxer = new WebDemuxer({ wasmFilePath: wasmUrl });
 
-      // Read the file back from OPFS so demuxer has a stable reference
-      const root = await navigator.storage.getDirectory();
-      const feDir = await root.getDirectoryHandle('.fast_extractor');
-      const fileHandle = await feDir.getFileHandle(tempFileName);
-      const opfsFile = await fileHandle.getFile();
+        // Read the file back from OPFS so demuxer has a stable reference
+        const root = await navigator.storage.getDirectory();
+        const feDir = await root.getDirectoryHandle('.fast_extractor');
+        const fileHandle = await feDir.getFileHandle(tempFileName);
+        const opfsFile = await fileHandle.getFile();
 
-      await demuxer.load(opfsFile);
+        await demuxer.load(opfsFile);
+      } catch (err: any) {
+        throw new Error(`Demuxer WASM Error: ${err.message}`);
+      }
       
       const mediaInfo = await demuxer.getMediaInfo();
       const duration = mediaInfo.duration || 0;
