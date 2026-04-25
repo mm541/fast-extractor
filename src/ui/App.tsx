@@ -96,7 +96,6 @@ const App: React.FC = () => {
         densityThresholdPct: 4,
         minSlideDuration: 3,
         dhashDuplicateThreshold: 4,
-        confirmThreshold: 10,
         // Drift detection
         blankBrightnessThreshold: 8,
         cumulativeDriftMultiplier: 2,
@@ -500,15 +499,6 @@ const App: React.FC = () => {
                                     value={config.dhashDuplicateThreshold} onChange={e => setConfig({...config, dhashDuplicateThreshold: Number(e.target.value)})} 
                                     disabled={isExtracting}
                                     aria-label="DHash duplicate threshold"
-                                />
-                            </div>
-                            <div className="setting-item">
-                                <label>Transition Filter: <strong>{config.confirmThreshold}</strong></label>
-                                <input 
-                                    type="range" min="3" max="20" step="1" 
-                                    value={config.confirmThreshold} onChange={e => setConfig({...config, confirmThreshold: Number(e.target.value)})} 
-                                    disabled={isExtracting}
-                                    aria-label="Turbo transition filter strictness"
                                 />
                             </div>
                             <div className="setting-item">

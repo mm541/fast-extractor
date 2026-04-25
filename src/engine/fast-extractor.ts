@@ -197,10 +197,6 @@ export interface FastExtractorOptions {
   densityThresholdPct?: number;
   /** Perceptual hash hamming distance for duplicate detection. Default: 10 */
   dhashDuplicateThreshold?: number;
-  /** Max dHash distance to confirm a turbo candidate as real (not a transition blend).
-   *  Lower = stricter filtering (5-8 for crossfade-heavy videos).
-   *  Higher = more permissive (12-15 for clean-cut transitions). Default: 10 */
-  confirmThreshold?: number;
   /** 64-bit bitmask: bit (row*8 + col) = 1 skips that 8×8 grid block. Default: 0n (no masking). */
   ignoreMask?: bigint;
 
