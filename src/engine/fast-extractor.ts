@@ -2,6 +2,17 @@
  * ============================================================================
  * fast-extractor.ts — Public Library API
  * ============================================================================
+ * 
+ * ⚠️ CRITICAL ARCHITECTURE HAZARD: THE 100% CPU BURN SPINLOOP
+ * When yielding to the browser to bypass background tab throttling, DO NOT use
+ * 0ms `MessageChannel` loops inside `while` loops (e.g. backpressure polling).
+ * A 0ms `while` loop busy-waits 10,000+ times per second, pinning the main thread
+ * to 100% CPU, melting the user's device, and starving the worker thread.
+ * Backpressure MUST be resolved via explicit cross-thread Promises (e.g., `waitForAck`)
+ * tied directly to the worker's `CHUNK_PROCESSED` event to suspend the main thread
+ * at 0% CPU. See `docs/WEBCODECS_HAZARDS.md` for details.
+ *
+ * ============================================================================
  *
  * This is the clean, consumer-facing API that wraps the raw Worker internals.
  * It exposes a single class with a single method:

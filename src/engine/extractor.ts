@@ -2,6 +2,20 @@
  * ============================================================================
  * extractor.ts — Slide Extraction Engine (Three-Pointer Drift Detection)
  * ============================================================================
+ * 
+ * ⚠️ CRITICAL ARCHITECTURE HAZARDS: WEBCODECS DECODER INVARIANTS
+ * 1. OOM Hazard: Mobile hardware decoders crash if fed too many chunks. `maxQueue`
+ *    MUST be kept low (e.g. 5) in sequential mode.
+ * 2. Dropped-Frame Deadlock: Mobile decoders silently drop frames under load.
+ *    Wiring backpressure to the `output` callback causes deadlocks. You MUST use
+ *    `ondequeue` to instantly resolve backpressure regardless of dropped frames.
+ * 3. Batching Starvation: Hardware decoders batch frames (B-frame reordering).
+ *    If `maxQueue` is 5, but the decoder waits for 10 frames before outputting, 
+ *    the pipeline starves and locks up. You MUST use `optimizeForLatency: true` 
+ *    to force strict 1-in-1-out processing.
+ * See `docs/WEBCODECS_HAZARDS.md` for detailed explanations.
+ *
+ * ============================================================================
  *
  * This class consumes decoded video frames and determines where slide
  * transitions occur, using a WASM-accelerated frame comparison engine.
