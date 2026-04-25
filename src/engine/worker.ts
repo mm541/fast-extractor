@@ -1,64 +1,30 @@
 /**
  * ============================================================================
- * worker.ts — Extraction Worker (runs in a dedicated Web Worker thread)
+ * worker.ts — Stateless Compute Worker
  * ============================================================================
  *
- * This worker receives a video File from the main thread and performs:
- *   Phase 1: File Ingestion — copy File → OPFS via SyncAccessHandle
- *   Phase 2: Audio Extraction — Rust/WASM (Symphonia) reads OPFS sync → outputs AAC
- *   Phase 3: Video Slide Extraction — web-demuxer + WebCodecs + WASM diffing
+ * This worker is a pure decoder/extractor. It receives pre-prepared data from
+ * the main thread (FastExtractor) and performs:
+ *   Phase 1: Audio Extraction — receives a FileSystemFileHandle, reads it
+ *            synchronously via SyncAccessHandle, runs Rust/WASM Symphonia.
+ *   Phase 2: Video Slide Extraction — receives pre-demuxed video chunks,
+ *            decodes via WebCodecs, diffs via WASM perceptual hashing.
  *
- * WHY OPFS (Origin Private File System)?
- *   The Rust Symphonia audio library requires synchronous Read + Seek (like fread/fseek).
- *   Browser File APIs are all async (file.arrayBuffer() returns a Promise).
- *   OPFS's SyncAccessHandle is the ONLY browser API that provides blocking reads,
- *   making it the bridge between async JS world and sync Rust world.
- *
- * ⚠️ CRITICAL: OPFS LIFECYCLE RULES
- *   1. SyncAccessHandle is an EXCLUSIVE lock. Only ONE handle can exist per file
- *      across ALL tabs. If a previous tab crashed without closing its handle,
- *      createSyncAccessHandle() will hang FOREVER.
- *      → Solution: createSyncAccessHandleWithTimeout() enforces a 5s timeout.
- *
- *   2. cleanupOldFiles() runs with a 3s timeout on startup. It removes stale
- *      temp files from previous crashed sessions. Uses name prefixes:
- *      "extract_*", "audio_*", "__cap_test_*"
- *
- *   3. The OPFS temp file MUST be kept alive until AFTER video extraction.
- *      The demuxer (web-demuxer) needs the file, and the original DOM File
- *      from <input> expires on mobile (permission revoked after async gaps).
- *      → DO NOT delete the OPFS file early. The finally{} block handles cleanup.
+ * The worker has ZERO knowledge of:
+ *   - OPFS directory structure (no navigator.storage calls)
+ *   - WebDemuxer (runs on the main thread)
+ *   - File ingestion (handled by FastExtractor)
+ *   - Cleanup (handled by FastExtractor)
  *
  * ⚠️ CRITICAL: MEMORY MANAGEMENT RULES
  *   1. ALWAYS close VideoFrames immediately after copying pixels to WASM buffers.
- *      An unclosed VideoFrame holds GPU memory (~1-4MB each). 10 unclosed = OOM.
- *
  *   2. Call AudioExtractor.free() explicitly after audio extraction.
- *      Rust/wasm-bindgen destructors don't run automatically in JS.
- *
- *   3. Set wasmBuffer = undefined after WASM init. The ArrayBuffer is ~560KB
- *      and is fully copied into WebAssembly.Memory — keeping the JS reference wastes RAM.
- *
- *   4. Use ArrayBuffer transfer (postMessage with transferList) for slide images.
- *      This moves the buffer to main thread at zero cost (no copy).
- *
- * ⚠️ CRITICAL: MOBILE COMPATIBILITY RULES
- *   1. File ingestion MUST happen inside the worker, not the main thread.
- *      Mobile Chrome revokes File permissions from <input type="file"> after
- *      async delays (WASM fetch, OPFS init). By the time the main thread tries
- *      to read the file, it's already dead. Worker receives the File via
- *      structured clone in START_INGEST and reads it immediately.
- *
- *   2. For the demuxer, use the OPFS copy (root.getFileHandle → getFile()),
- *      NOT the original DOM File. Same permission expiry issue.
- *
- *   3. The `onmessage` handler is async, but the browser event loop does NOT
- *      await async handlers. Two postMessage() calls fire concurrently.
- *      → INIT and START_INGEST are sequenced via INIT_COMPLETE handshake.
+ *   3. Set wasmBuffer = undefined after WASM init to free ~560KB.
+ *   4. Use ArrayBuffer transfer (postMessage with transferList) for slides.
  *
  * MESSAGE FLOW:
- *   Main → Worker: CONFIG → INIT → (INIT_COMPLETE) → START_INGEST
- *   Worker internally: readFile → OPFS → audio → slides → ALL_DONE
+ *   Main → Worker: CONFIG → INIT → EXTRACT_AUDIO → CONFIG_DECODER → VIDEO_CHUNK* → VIDEO_DONE
+ *   Worker → Main: STATUS | AUDIO_CHUNK | AUDIO_DONE | SLIDE | ALL_DONE | ERROR
  */
 
 // 1. Send immediate heartbeat to confirm worker execution
@@ -119,19 +85,6 @@ async function ensureWasm(wasmBuffer?: ArrayBuffer) {
     }
 }
 
-
-
-/**
- * Remove leftover temp files from previous sessions.
- * Uses two-phase approach: collect names first, then delete.
- * This avoids iterator invalidation and works reliably on mobile Chrome.
- *
- * SAFETY: Uses Web Locks API to skip files actively used by other tabs.
- * All files live inside `.fast_extractor/` — no risk to consumer's OPFS data.
- *
- * ⚠️ The for-await on OPFS entries() can hang on mobile if stale locks exist.
- * That's why the caller wraps this in a Promise.race() with a 3s timeout.
- */
 
 
 /** createSyncAccessHandle with timeout — prevents infinite deadlock from stale OPFS locks */

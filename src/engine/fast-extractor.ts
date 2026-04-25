@@ -557,7 +557,11 @@ export class FastExtractor {
           
           const runPipeline = async () => {
             try {
-              await ingestFile(file, worker!, tempFileName);
+              await ingestFile(file, tempFileName, (status, progress) => {
+                try {
+                  controller.enqueue({ type: 'progress', percent: progress, message: status });
+                } catch { /* stream closed */ }
+              });
 
               // Trigger audio extraction on the worker
               if (this.options.extractAudio !== false) {
@@ -707,7 +711,7 @@ export default FastExtractor;
 
 // ─── Pipeline Helper Functions ───
 
-async function ingestFile(file: File, worker: Worker, tempFileName: string): Promise<void> {
+async function ingestFile(file: File, tempFileName: string, onProgress: (status: string, progress: number) => void): Promise<void> {
     if (!navigator.storage?.getDirectory) {
       throw new Error('OPFS is not supported in this browser.');
     }
@@ -724,7 +728,7 @@ async function ingestFile(file: File, worker: Worker, tempFileName: string): Pro
     const reader = stream.getReader();
     let offset = 0;
     
-    worker.postMessage({ type: 'STATUS', status: 'Ingesting Media: 0%', progress: 0 });
+    onProgress('Ingesting Media: 0%', 0);
     let lastReportTime = Date.now();
 
     while (true) {
@@ -736,7 +740,7 @@ async function ingestFile(file: File, worker: Worker, tempFileName: string): Pro
         
         if (Date.now() - lastReportTime > 250) {
             const pct = Math.floor((offset / file.size) * 100);
-            worker.postMessage({ type: 'STATUS', status: `Ingesting Media: ${pct}%`, progress: pct });
+            onProgress(`Ingesting Media: ${pct}%`, pct);
             lastReportTime = Date.now();
         }
     }
