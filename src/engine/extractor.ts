@@ -331,6 +331,7 @@ export class SlideExtractor {
     this.metrics = { startTime: performance.now(), totalFrames: 0, totalSlides: 0, peakRamMb: 0, avgFrameProcessTimeMs: 0 };
     this.hasBaseline = false;
     this.savedHashes = [];
+    this.lastEmitPromise = Promise.resolve();
     if (this.pendingCandidate) { this.pendingCandidate.bitmap.close(); }
     this.pendingCandidate = null;
     this.lastSlideTime = -10;
@@ -456,6 +457,10 @@ export class SlideExtractor {
       await this.emitBitmapAsync(lc.bitmap, lc.timestamp);
       this.pendingCandidate = null;
     }
+
+    // Await all queued background encodes to prevent dropping slides
+    // when the worker terminates
+    await this.lastEmitPromise;
 
     this.metrics.videoDurationSec = this.videoDuration;
     this.metrics.endTime = performance.now();
@@ -770,31 +775,31 @@ export class SlideExtractor {
     this.emitBitmap(this.captureCanvasBitmap(), timestamp);
   }
 
+  private lastEmitPromise: Promise<void> = Promise.resolve();
+
   private emitBitmap(bitmap: ImageBitmap, timestamp: number) {
-    this.renderBitmapToBlob(bitmap).then(blob => {
-      this.options.onSlide(blob, timestamp);
-      this.metrics.totalSlides++;
-    }).catch(e => {
-      // Prevent unhandled promise rejection from crashing the worker.
-      // convertToBlob can fail under mobile memory pressure or unsupported formats.
-      console.warn('emitBitmap: image encode failed (skipping slide):', e);
+    // Chain encodes sequentially to prevent concurrent access to the shared
+    // OffscreenCanvas, ensuring strict timestamp ordering and preventing
+    // OOM spikes from massive concurrent convertToBlob calls.
+    this.lastEmitPromise = this.lastEmitPromise.then(async () => {
+      try {
+        const blob = await this.renderBitmapToBlob(bitmap);
+        this.options.onSlide(blob, timestamp);
+        this.metrics.totalSlides++;
+      } catch (e) {
+        console.warn('emitBitmap: image encode failed (skipping slide):', e);
+      }
     });
   }
 
   /**
    * Awaitable version of emitBitmap — used ONLY for the final candidate flush
-   * at extraction end. This ensures the blob is fully encoded and delivered to
-   * onSlide before extract() returns, preventing the worker from being terminated
-   * while convertToBlob is still pending.
+   * at extraction end. Enqueues the final candidate and returns the promise
+   * for the entire chain.
    */
-  private async emitBitmapAsync(bitmap: ImageBitmap, timestamp: number): Promise<void> {
-    try {
-      const blob = await this.renderBitmapToBlob(bitmap);
-      this.options.onSlide(blob, timestamp);
-      this.metrics.totalSlides++;
-    } catch (e) {
-      console.warn('emitBitmapAsync: image encode failed (skipping slide):', e);
-    }
+  private emitBitmapAsync(bitmap: ImageBitmap, timestamp: number): Promise<void> {
+    this.emitBitmap(bitmap, timestamp);
+    return this.lastEmitPromise;
   }
 
   private async renderBitmapToBlob(bitmap: ImageBitmap): Promise<Blob> {
