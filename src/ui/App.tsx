@@ -98,11 +98,7 @@ const App: React.FC = () => {
         dhashDuplicateThreshold: 4,
         // Drift detection
         blankBrightnessThreshold: 8,
-        cumulativeDriftMultiplier: 2,
         cumulativeSettledFrames: 2,
-        partialThresholdRatio: 0.5,
-        noiseResetFrames: 30,
-        noiseMainRatio: 0.25,
         imageQuality: 0.8,
         exportResolution: 0,
     });
@@ -547,48 +543,12 @@ const App: React.FC = () => {
                                     />
                                 </div>
                                 <div className="setting-item">
-                                    <label>Drift Multiplier: <strong>{config.cumulativeDriftMultiplier}×</strong></label>
-                                    <input 
-                                        type="range" min="1" max="5" step="0.5" 
-                                        value={config.cumulativeDriftMultiplier} onChange={e => setConfig({...config, cumulativeDriftMultiplier: Number(e.target.value)})} 
-                                        disabled={isExtracting}
-                                        aria-label="Cumulative drift multiplier"
-                                    />
-                                </div>
-                                <div className="setting-item">
                                     <label>Settled Frames: <strong>{config.cumulativeSettledFrames}</strong></label>
                                     <input 
                                         type="range" min="1" max="10" step="1" 
                                         value={config.cumulativeSettledFrames} onChange={e => setConfig({...config, cumulativeSettledFrames: Number(e.target.value)})} 
                                         disabled={isExtracting}
                                         aria-label="Frames of stability before drift emit"
-                                    />
-                                </div>
-                                <div className="setting-item">
-                                    <label>Partial Ratio: <strong>{config.partialThresholdRatio}</strong></label>
-                                    <input 
-                                        type="range" min="0.1" max="1" step="0.1" 
-                                        value={config.partialThresholdRatio} onChange={e => setConfig({...config, partialThresholdRatio: Number(e.target.value)})} 
-                                        disabled={isExtracting}
-                                        aria-label="Partial threshold ratio"
-                                    />
-                                </div>
-                                <div className="setting-item">
-                                    <label>Noise Reset: <strong>{config.noiseResetFrames}</strong></label>
-                                    <input 
-                                        type="range" min="10" max="100" step="5" 
-                                        value={config.noiseResetFrames} onChange={e => setConfig({...config, noiseResetFrames: Number(e.target.value)})} 
-                                        disabled={isExtracting}
-                                        aria-label="Noise reset frame count"
-                                    />
-                                </div>
-                                <div className="setting-item">
-                                    <label>Noise Ratio: <strong>{config.noiseMainRatio}</strong></label>
-                                    <input 
-                                        type="range" min="0.05" max="0.5" step="0.05" 
-                                        value={config.noiseMainRatio} onChange={e => setConfig({...config, noiseMainRatio: Number(e.target.value)})} 
-                                        disabled={isExtracting}
-                                        aria-label="Noise main change ratio"
                                     />
                                 </div>
                             </div>

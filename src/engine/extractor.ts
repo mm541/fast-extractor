@@ -180,11 +180,7 @@ export interface SlideExtractorOptions {
   dhashDuplicateThreshold: number;
   // Three-pointer drift detection
   blankBrightnessThreshold: number;     // skip frames darker than this (0-255)
-  cumulativeDriftMultiplier: number;    // cumulative drift must reach blockThreshold * this
   cumulativeSettledFrames: number;      // frames of stability before emitting on drift or partial match
-  partialThresholdRatio: number;        // fraction of blockThreshold for partial match (0-1)
-  noiseResetFrames: number;             // reset drift after this many drift frames if no trigger
-  noiseMainRatio: number;               // reset only if mainChanges < blockThreshold * this (0-1)
   // Color-aware detection
   colorChangeThreshold: number;         // max(|ΔR|,|ΔG|,|ΔB|) to trigger color-only slide (0=disabled)
   // Camera shake filter
@@ -220,11 +216,7 @@ export const DEFAULT_OPTIONS: SlideExtractorOptions = {
   minSlideDuration: 3, dhashDuplicateThreshold: 4,
   // Three-pointer defaults
   blankBrightnessThreshold: 8,
-  cumulativeDriftMultiplier: 2,
   cumulativeSettledFrames: 2,
-  partialThresholdRatio: 0.5,
-  noiseResetFrames: 30,
-  noiseMainRatio: 0.25,
   // Color detection: 25 = detect shifts where any channel moves >25/255
   colorChangeThreshold: 25,
   // Shake filter: 3 = confirm with 3× density. 0 = disabled
@@ -279,9 +271,7 @@ export class SlideExtractor {
   private blobCanvas: OffscreenCanvas | null = null;
   private blobCtx: OffscreenCanvasRenderingContext2D | null = null;
 
-  // Three-pointer cumulative drift tracking
-  private cumulativeDrift = 0;   // accumulated block changes (Prev vs B)
-  private driftFrames = 0;       // how many frames contributed drift
+  // Three-pointer stability tracking
   private staticCount = 0;       // consecutive frames with zero drift
 
   // Adaptive noise floor — calibrates blockThreshold from video noise level
@@ -321,8 +311,6 @@ export class SlideExtractor {
     this.isCalibrated = false;
     this.prevColorSig = null;
 
-    this.cumulativeDrift = 0;
-    this.driftFrames = 0;
     this.staticCount = 0;
 
     this.options.onProgress(0, "Initializing Demuxer...");
@@ -684,10 +672,8 @@ export class SlideExtractor {
       }
     }
 
-    // Track cumulative drift
+    // Track stability
     if (driftBlocks > 0) {
-      this.cumulativeDrift += driftBlocks;
-      this.driftFrames++;
       this.staticCount = 0;
     } else {
       this.staticCount++;
@@ -712,41 +698,27 @@ export class SlideExtractor {
 
     let shouldEmit = false;
 
-    // Condition 1: Direct threshold — A vs B shows big change
-    if (mainChanges >= blockThreshold) {
+    // Condition 1: Immediate Emit (Fast transition / Completely new slide)
+    if (mainChanges >= blockThreshold * 1.5) {
       // --- Camera Shake Filter ---
-      // If the change is diffuse (all blocks changed a little), it's shake, not a slide.
-      // Confirm with a stricter density check: if few blocks pass 3× density, it's shake.
       if (this.options.shakeFilterStrictMultiplier > 0) {
         const strictDensity = Math.min(densityThresholdPct * this.options.shakeFilterStrictMultiplier, 100);
         const strictChanges = this.wasm.compare_frames(edgeThreshold, strictDensity, mask);
         if (strictChanges >= blockThreshold * 0.3) {
-          // Concentrated change → real slide transition
-          shouldEmit = true;
+          shouldEmit = true; // Concentrated change → real slide
         }
-        // else: diffuse change → camera shake, suppress
       } else {
         shouldEmit = true;
       }
     }
-    // Condition 2: Cumulative drift — small changes piled up AND content settled
+    // Condition 2: Stable Emit (Live coding / Slow transition)
     else if (
-      this.cumulativeDrift >= blockThreshold * this.options.cumulativeDriftMultiplier &&
+      mainChanges >= blockThreshold &&
       this.staticCount >= this.options.cumulativeSettledFrames
     ) {
       shouldEmit = true;
     }
-    // Condition 3: Partial main + partial drift — combined signal
-    else if (
-      mainChanges >= Math.floor(blockThreshold * this.options.partialThresholdRatio) &&
-      this.cumulativeDrift >= blockThreshold &&
-      this.staticCount >= this.options.cumulativeSettledFrames
-    ) {
-      shouldEmit = true;
-    }
-    // Condition 4: Color-only change — grayscale missed it but color shifted significantly
-    // Note: color signature is computed over the ENTIRE frame (not per-block), so it
-    // does not respect the grid mask. Skip this condition if all blocks are masked.
+    // Condition 3: Color-only change
     else if (
       mask !== 0xFFFFFFFFFFFFFFFFn &&
       colorDelta >= this.options.colorChangeThreshold
@@ -762,18 +734,7 @@ export class SlideExtractor {
         this.copyBufferBToA();
         this.lastSlideTime = timestamp;
       }
-      // Reset drift regardless (baseline updated or duplicate skipped)
-      this.cumulativeDrift = 0;
-      this.driftFrames = 0;
       this.staticCount = 0;
-    }
-    // Reset drift if too long without trigger (prevents webcam noise buildup)
-    else if (
-      this.driftFrames > this.options.noiseResetFrames &&
-      mainChanges < Math.floor(blockThreshold * this.options.noiseMainRatio)
-    ) {
-      this.cumulativeDrift = 0;
-      this.driftFrames = 0;
     }
   }
 
