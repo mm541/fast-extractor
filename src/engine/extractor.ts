@@ -273,6 +273,8 @@ export class SlideExtractor {
   private compareCtx: OffscreenCanvasRenderingContext2D | null = null;
   private exportCanvas: OffscreenCanvas | null = null;
   private exportCtx: OffscreenCanvasRenderingContext2D | null = null;
+  private blobCanvas: OffscreenCanvas | null = null;
+  private blobCtx: OffscreenCanvasRenderingContext2D | null = null;
 
   // Three-pointer cumulative drift tracking
   private cumulativeDrift = 0;   // accumulated block changes (Prev vs B)
@@ -330,6 +332,7 @@ export class SlideExtractor {
     this.hasBaseline = false;
     this.savedHashes = [];
     this.pendingEncodes = [];
+    this.lastEmitPromise = Promise.resolve();
     if (this.pendingCandidate) { this.pendingCandidate.bitmap.close(); }
     this.pendingCandidate = null;
     this.lastSlideTime = -10;
@@ -789,13 +792,14 @@ export class SlideExtractor {
   }
 
   private pendingEncodes: Promise<void>[] = [];
+  private lastEmitPromise: Promise<void> = Promise.resolve();
 
   private emitBitmap(bitmap: ImageBitmap, timestamp: number) {
-    // Isolated canvas enables safe, highly parallel background encoding.
-    // The total concurrent encodes are naturally bounded by the cross-thread
-    // demuxer backpressure (max 15 chunks), preventing memory spikes while
-    // eliminating the massive sequential bottleneck that stalled the UI at 100%.
-    const encodePromise = (async () => {
+    // We use a single, reused OffscreenCanvas to prevent lazy GC from exhausting GPU memory.
+    // To prevent race conditions on the single canvas, we must chain them sequentially.
+    // The massive sequential bottleneck is avoided because feedChunk applies backpressure
+    // to keep pendingEncodes.length < 5, perfectly syncing demux speed with encode speed.
+    const encodePromise = this.lastEmitPromise.then(async () => {
       try {
         const blob = await this.renderBitmapToBlob(bitmap);
         this.options.onSlide(blob, timestamp);
@@ -803,8 +807,9 @@ export class SlideExtractor {
       } catch (e) {
         console.warn('emitBitmap: image encode failed (skipping slide):', e);
       }
-    })();
-    
+    });
+
+    this.lastEmitPromise = encodePromise;
     this.pendingEncodes.push(encodePromise);
     encodePromise.finally(() => {
       this.pendingEncodes = this.pendingEncodes.filter(p => p !== encodePromise);
@@ -821,15 +826,17 @@ export class SlideExtractor {
   }
 
   private async renderBitmapToBlob(bitmap: ImageBitmap): Promise<Blob> {
-    // Use a fresh canvas per image to allow concurrent encoding without race conditions
-    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-    const ctx = canvas.getContext('2d')!;
-    ctx.drawImage(bitmap, 0, 0);
+    const w = bitmap.width, h = bitmap.height;
+    if (!this.blobCanvas || this.blobCanvas.width !== w || this.blobCanvas.height !== h) {
+      this.blobCanvas = new OffscreenCanvas(w, h);
+      this.blobCtx = this.blobCanvas.getContext('2d')!;
+    }
+    this.blobCtx!.drawImage(bitmap, 0, 0);
     // Draw is synchronous, we can safely close the bitmap immediately freeing GPU RAM.
     bitmap.close();
     
     const fmt = this.options.imageFormat === 'webp' ? 'image/webp' : 'image/jpeg';
-    return canvas.convertToBlob({ 
+    return this.blobCanvas.convertToBlob({ 
         type: fmt, 
         quality: this.options.imageQuality ?? 0.8 
     });
