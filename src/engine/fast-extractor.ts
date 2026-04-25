@@ -475,6 +475,10 @@ export class FastExtractor {
 
                 case 'CHUNK_PROCESSED':
                   unackedChunks--;
+                  if (unblockMainThread && unackedChunks < 15) {
+                    unblockMainThread();
+                    unblockMainThread = null;
+                  }
                   break;
 
                 case 'ALL_DONE':
@@ -561,6 +565,7 @@ export class FastExtractor {
           // 7. Instantiate WorkspaceManager and run the extraction pipeline
           const tempFileName = `extract_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.mp4`;
           let unackedChunks = 0;
+          let unblockMainThread: (() => void) | null = null;
           
           const runPipeline = async () => {
             try {
@@ -593,7 +598,14 @@ export class FastExtractor {
 
               // Run video extraction pipeline
               if (this.options.extractSlides !== false) {
-                  await extractVideoChunks(worker!, this.options, tempFileName, () => unackedChunks, () => { unackedChunks++; });
+                  await extractVideoChunks(
+                    worker!, 
+                    this.options, 
+                    tempFileName, 
+                    () => unackedChunks, 
+                    () => { unackedChunks++; },
+                    () => new Promise<void>(r => { unblockMainThread = r; })
+                  );
               } else {
                   worker!.postMessage({ type: 'VIDEO_DONE', skipped: true });
               }
@@ -761,7 +773,14 @@ async function ingestFile(file: File, tempFileName: string, onProgress: (status:
 
 // No module-level cache needed. The browser's HTTP cache handles WASM fetching.
 
-async function extractVideoChunks(worker: Worker, options: FastExtractorOptions, tempFileName: string, getUnacked: () => number, incUnacked: () => void): Promise<void> {
+async function extractVideoChunks(
+  worker: Worker, 
+  options: FastExtractorOptions, 
+  tempFileName: string, 
+  getUnacked: () => number, 
+  incUnacked: () => void,
+  waitForAck: () => Promise<void>
+): Promise<void> {
     let demuxer: WebDemuxer | null = null;
     try {
       worker.postMessage({ type: 'STATUS', status: 'Initializing Demuxer...' });
@@ -811,10 +830,10 @@ async function extractVideoChunks(worker: Worker, options: FastExtractorOptions,
 
       while (true) {
         // Cross-thread backpressure: Wait if the worker has too many chunks queued up.
-        // This prevents the main thread from reading a 6-hour video into RAM instantly
-        // and flooding the worker's message queue, which would crash the pipeline.
+        // We explicitly await a Promise resolved by the worker's onmessage handler
+        // to completely suspend the main thread (0% CPU) instead of busy-waiting.
         while (getUnacked() >= 15) {
-          await yieldToEventLoop();
+          await waitForAck();
         }
 
         const { done, value } = await reader.read();
