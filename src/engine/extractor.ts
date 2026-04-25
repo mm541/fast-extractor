@@ -832,14 +832,23 @@ export class SlideExtractor {
       this.blobCtx = this.blobCanvas.getContext('2d')!;
     }
     this.blobCtx!.drawImage(bitmap, 0, 0);
-    // Draw is synchronous, we can safely close the bitmap immediately freeing GPU RAM.
-    bitmap.close();
     
     const fmt = this.options.imageFormat === 'webp' ? 'image/webp' : 'image/jpeg';
-    return this.blobCanvas.convertToBlob({ 
-        type: fmt, 
-        quality: this.options.imageQuality ?? 0.8 
-    });
+    
+    try {
+      // Wrap convertToBlob in a safety timeout. If the GPU driver ever deadlocks,
+      // this ensures the pipeline recovers instead of permanently freezing at 100%.
+      const blob = await Promise.race([
+        this.blobCanvas.convertToBlob({ type: fmt, quality: this.options.imageQuality ?? 0.8 }),
+        new Promise<Blob>((_, reject) => setTimeout(() => reject(new Error('convertToBlob GPU timeout')), 10000))
+      ]);
+      return blob;
+    } finally {
+      // CRITICAL: Only close the bitmap AFTER the blob is generated.
+      // drawImage is lazily evaluated on the GPU. Closing the bitmap beforehand
+      // destroys the texture before the GPU can encode it, causing silent deadlocks.
+      bitmap.close();
+    }
   }
 
   private static hammingDistance(a: bigint, b: bigint): number {
