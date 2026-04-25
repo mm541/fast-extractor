@@ -258,17 +258,16 @@ export interface WasmModule {
 }
 
 /**
- * ARCHITECTURE: Stream + selective keyframe decode.
+ * ARCHITECTURE: Two Pipeline Modes
  *
- * Stream ALL packets from demuxer (fast sequential I/O, zero round-trips).
- * Only DECODE packets that are keyframes near our sample times.
- * Everything else is skipped at zero cost.
+ * 1. Turbo Mode (Keyframes only)
+ *    Stream ALL packets from demuxer. Only DECODE packets that are keyframes.
+ *    Extremely fast (~100x real-time) because P/B frames are skipped.
+ *    Tradeoff: Can land on blurry crossfades (mitigated by Deferred Emit).
  *
- * For a 1-hour video at 1fps with keyframes every 5s:
- *   Packets streamed: ~108,000 (cheap — just checking timestamp)
- *   Frames decoded:   ~720 (only keyframes, self-contained)
- *   Expected time:    ~15-30s
- *   Expected RAM:     ~150-250MB (one decoder, no ref frame buildup)
+ * 2. Sequential Mode (Sampled FPS)
+ *    Stream packets and decode every frame, but only send frames to WASM at `sampleFps`.
+ *    Slower, but perfectly accurate for live-coding and fast transitions.
  */
 export class SlideExtractor {
   private wasm: WasmModule;
