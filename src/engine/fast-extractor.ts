@@ -51,10 +51,8 @@
  *      a standard URL or a blob URL.
  */
 
-// Vite-specific imports — used as defaults when consumer doesn't provide URLs.
-// Library consumers using other bundlers will override these via options.
-import MediaWorker from './worker?worker';
-import defaultWasmUrl from './wasm/wasm_extractor_bg.wasm?url';
+// Proprietary ?worker and ?url syntax removed to decouple from Vite.
+// We now use the standard Web API `new URL(..., import.meta.url)` instead.
 import { WebDemuxer } from 'web-demuxer';
 
 // ─── Public Error Types ───
@@ -394,7 +392,7 @@ export class FastExtractor {
       start: async (controller) => {
         try {
           // 1. Create worker instantly
-          worker = this.options.worker ?? new MediaWorker();
+          worker = this.options.worker ?? new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' });
 
           // 2. Handle abort signal
           if (signal) {
@@ -540,6 +538,7 @@ export class FastExtractor {
           // =========================================================================================
 
           // 6. Fetch WASM asynchronously in the background and send INIT when ready
+          const defaultWasmUrl = new URL('./wasm/wasm_extractor_bg.wasm', import.meta.url).href;
           const resolvedWasmUrl = this.options.wasmUrl
             ?? new URL(defaultWasmUrl, self.location?.origin ?? 'https://localhost').href;
           
