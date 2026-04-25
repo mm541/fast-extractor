@@ -708,9 +708,12 @@ export class SlideExtractor {
       if (!this.isDuplicate(dhash)) {
         this.savedHashes.push(dhash);
         this.emitSlideFromCanvas(timestamp);
-        this.copyBufferBToA();
         this.lastSlideTime = timestamp;
       }
+      // CRITICAL: Always update baseline A to current B after a trigger,
+      // even if it was rejected as a duplicate. Otherwise, A vs B remains high
+      // and triggers an infinite loop of dhash computations on every frame!
+      this.copyBufferBToA();
       this.staticCount = 0;
     }
   }
