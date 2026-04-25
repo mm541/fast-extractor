@@ -483,9 +483,10 @@ export class FastExtractor {
                     });
                   }
                   this._extracting = false;
-                  // Don't terminate — worker self-closes after OPFS cleanup
                   worker = null;
                   controller.close();
+                  // Clean up OPFS temp file AFTER worker is fully done
+                  cleanupTempFile(this.options, tempFileName).catch(() => {});
                   break;
 
                 case 'ERROR': {
@@ -598,7 +599,9 @@ export class FastExtractor {
               // callback and deadlocking the pipeline forever.
 
             } finally {
-              await cleanupTempFile(this.options, tempFileName);
+              // NOTE: Do NOT clean up the OPFS file here.
+              // The worker may still be flushing the decoder and encoding
+              // the last slide. Cleanup happens in the ALL_DONE handler.
             }
           };
 
@@ -606,22 +609,25 @@ export class FastExtractor {
             ? navigator.locks.request(`fe_${tempFileName}`, runPipeline)
             : runPipeline();
 
-          pipelinePromise.catch(err => {
+          pipelinePromise.catch((err: any) => {
             // Pipeline will throw if SAF permissions expire or pipeline fails
-            const isRecoverable = err.message.includes('File ingest failed') || err.message.includes('could not be read');
+            const msg = err?.message ?? String(err ?? 'Unknown pipeline error');
+            const isRecoverable = msg.includes('File ingest failed') || msg.includes('could not be read');
             this._extracting = false;
             
             if (isRecoverable) {
-              controller.enqueue({
-                type: 'error',
-                message: err.message,
-                recoverable: true,
-              });
+              try {
+                controller.enqueue({
+                  type: 'error',
+                  message: msg,
+                  recoverable: true,
+                });
+                controller.close();
+              } catch { /* stream already closed */ }
               worker = null;
-              controller.close();
             } else {
               worker = null;
-              controller.error(err);
+              try { controller.error(err instanceof Error ? err : new Error(msg)); } catch { /* stream already closed */ }
             }
           });
 
