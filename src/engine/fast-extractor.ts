@@ -458,7 +458,7 @@ export class FastExtractor {
                     });
                   }
                   this._extracting = false;
-                  worker?.terminate();
+                  // Don't terminate — worker self-closes after OPFS cleanup
                   worker = null;
                   controller.close();
                   break;
@@ -477,13 +477,11 @@ export class FastExtractor {
                       message: customError.message,
                       recoverable: true,
                     });
-                    // Don't close the stream via error — close it cleanly or leave open?
-                    // Previous logic closed it.
-                    worker?.terminate();
+                    // Don't terminate — worker self-closes after OPFS cleanup
                     worker = null;
                     controller.close();
                   } else {
-                    worker?.terminate();
+                    // Don't terminate — worker self-closes after OPFS cleanup
                     worker = null;
                     controller.error(customError);
                   }

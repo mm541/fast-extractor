@@ -582,6 +582,7 @@ async function processMedia(fileName: string, options: any = {}) {
         const handle = syncHandle;
         if (handle) {
             try { handle.close(); } catch (e) {}
+            syncHandle = undefined;
         }
         if (shouldCleanup) {
             const toRemove = (self as any).currentTempFile;
@@ -590,10 +591,15 @@ async function processMedia(fileName: string, options: any = {}) {
                     await root.removeEntry(toRemove);
                     console.log("Cleaned up temp file:", toRemove);
                 } catch (e) {}
+                (self as any).currentTempFile = null;
             }
         } else {
             console.log('[Worker] Skipping OPFS cleanup (cleanupAfterExtraction=false)');
         }
+        // Self-terminate AFTER cleanup is guaranteed complete.
+        // This prevents the main thread's worker.terminate() from killing us
+        // before finally{} runs, which would leave stale OPFS locks.
+        self.close();
     }
 }
 
