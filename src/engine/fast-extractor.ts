@@ -587,19 +587,11 @@ export class FastExtractor {
                   worker!.postMessage({ type: 'VIDEO_DONE', skipped: true });
               }
 
-              // Wait for ALL_DONE from the worker
-              await new Promise<void>((resolve, reject) => {
-                const handleDone = (e: MessageEvent) => {
-                  if (e.data.type === 'ALL_DONE') {
-                    worker!.removeEventListener('message', handleDone);
-                    resolve();
-                  } else if (e.data.type === 'ERROR') {
-                    worker!.removeEventListener('message', handleDone);
-                    reject(new Error(e.data.error));
-                  }
-                };
-                worker!.addEventListener('message', handleDone);
-              });
+              // NOTE: Do NOT await ALL_DONE here.
+              // The stream's onmessage handler (line ~475) already catches ALL_DONE
+              // and calls controller.close(). If we also awaited here, the onmessage
+              // handler would set worker=null first, crashing our addEventListener
+              // callback and deadlocking the pipeline forever.
 
             } finally {
               await cleanupTempFile(this.options, tempFileName);
