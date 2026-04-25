@@ -786,6 +786,7 @@ async function extractVideoChunks(worker: Worker, options: FastExtractorOptions,
       // 2. Read packets and stream to worker
       const endTime = duration > 0 ? duration * 2 : 999999;
       const reader = demuxer.read('video', 0, endTime).getReader();
+      let packetCount = 0;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -803,6 +804,11 @@ async function extractVideoChunks(worker: Worker, options: FastExtractorOptions,
           timestamp: Number(value.timestamp),
           chunkType: value.type
         }, [chunkData]); // Zero-copy transfer!
+
+        // Yield to browser every 50 packets so React can paint UI updates
+        if (++packetCount % 50 === 0) {
+          await new Promise(r => setTimeout(r, 0));
+        }
       }
 
       // 3. Signal completion
