@@ -20,17 +20,18 @@
  *     4. Compare Prev↔B (driftBlocks): "did anything change since last frame?"
  *
  *   EMIT CONDITIONS (all require minSlideDuration to have elapsed):
- *     Condition 1: mainChanges ≥ blockThreshold  (big instant change)
- *     Condition 2: cumulativeDrift ≥ blockThreshold × multiplier AND settled
- *                  (many small changes that accumulated, e.g., scrolling text)
- *     Condition 3: partial main + partial drift  (combined weak signals)
- *     Condition 4: color-only change — edges identical but avg RGB shifted ≥ 50
+ *     Condition 1: mainChanges ≥ blockThreshold × 1.5  (immediate — big instant change)
+ *                  Optionally filtered by camera shake detector.
+ *     Condition 2: mainChanges ≥ blockThreshold AND staticCount ≥ settledFrames
+ *                  (absolute divergence has grown, and content has settled)
+ *     Condition 3: color-only change — edges identical but avg RGB shifted ≥ threshold
  *                  (dark mode toggle, background color swap)
  *
  *   NOISE SUPPRESSION:
  *     - Blank frames (brightness < blankBrightnessThreshold) are skipped
  *     - Duplicate slides are suppressed via 64-bit dHash comparison
- *     - Cumulative drift resets after noiseResetFrames without a trigger
+ *     - Baseline is always updated on trigger (even duplicate rejection) to prevent
+ *       infinite re-triggering
  *
  * TWO EXTRACTION MODES:
  *   TURBO:    Decode only keyframes (IDR). ~10-20s for a 1-hour video.
@@ -142,25 +143,10 @@
  *     Average pixel brightness below which a frame is considered blank/black.
  *     Skipped entirely to avoid emitting transition frames.
  *
- *   cumulativeDriftMultiplier (1-5, default 2)
- *     Factor applied to blockThreshold for cumulative drift trigger.
- *     2 = cumulative drift must reach 2× blockThreshold to trigger.
- *
  *   cumulativeSettledFrames (1-10, default 2)
- *     Frames of stability required after cumulative drift before emitting.
- *
- *   partialThresholdRatio (0.1-1, default 0.5)
- *     Fraction of blockThreshold for the partial main change component
- *     of Condition 3. 0.5 = main change must be at least half the threshold.
- *
- *   noiseResetFrames (10-100, default 30)
- *     Reset cumulative drift after this many drift frames without trigger.
- *     Prevents webcam noise or subtle video compression artifacts from
- *     accumulating into false positives.
- *
- *   noiseMainRatio (0.05-0.5, default 0.25)
- *     Reset drift only if mainChanges < blockThreshold × this ratio.
- *     Ensures we don't reset when there's a genuine slow transition in progress.
+ *     Consecutive frames of zero drift (Prev↔B = 0) required before
+ *     Condition 2 can trigger. Ensures the screen has fully settled
+ *     (e.g., presenter stopped typing) before capturing.
  *
  *   sampleFps (0.2-10, default 1) [sequential mode only]
  *     Frame sampling rate for sequential mode.
@@ -249,7 +235,7 @@ export interface WasmModule {
  * 1. Turbo Mode (Keyframes only)
  *    Stream packets from demuxer. Only pass `type === 'key'` chunks to the VideoDecoder.
  *    Reduces decode workload by dropping all P and B packets before decoding.
- *    Tradeoff: Can land on blurry crossfades (mitigated by Deferred Emit).
+ *    Tradeoff: Can land on blurry crossfades if a keyframe coincides with a transition.
  *
  * 2. Sequential Mode (Sampled FPS)
  *    Stream packets and decode every frame, but only send frames to WASM at `sampleFps`.
@@ -598,7 +584,7 @@ export class SlideExtractor {
    * Process a single decoded frame: extract pixels, compare, capture.
    * Frame is ALWAYS closed at the end.
    *
-   * Integrates: adaptive noise floor, color detection, camera shake filter.
+   * Integrates: color detection, camera shake filter.
    */
   private processFrameSync(frame: VideoFrame, timestamp: number) {
     this.metrics.totalFrames++;
@@ -724,8 +710,6 @@ export class SlideExtractor {
   private static readonly CMP_W = 424;
   private static readonly CMP_H = 240;
 
-  // Deferred-emit: max hamming distance to confirm a candidate is real (not a transition blend)
-  // Now configurable via options.confirmThreshold (default: 10)
 
   /**
    * Copy VideoFrame pixels into the WASM RGBA buffer.
