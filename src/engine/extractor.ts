@@ -331,7 +331,6 @@ export class SlideExtractor {
     this.metrics = { startTime: performance.now(), totalFrames: 0, totalSlides: 0, peakRamMb: 0, avgFrameProcessTimeMs: 0 };
     this.hasBaseline = false;
     this.savedHashes = [];
-    this.pendingEncodes = [];
     this.lastEmitPromise = Promise.resolve();
     if (this.pendingCandidate) { this.pendingCandidate.bitmap.close(); }
     this.pendingCandidate = null;
@@ -409,12 +408,6 @@ export class SlideExtractor {
         ]);
       }
     }
-    
-    // Encoder backpressure: prevent GPU memory OOM from concurrent canvas allocations
-    // and prevent the UI from racing to 100% and hanging while the background queue drains.
-    while (this.pendingEncodes.length > 5) {
-      await new Promise(r => setTimeout(r, 10));
-    }
 
     // Decode
     if (this.decoder.state === 'closed') {
@@ -451,15 +444,7 @@ export class SlideExtractor {
   public async flush(): Promise<ExtractionMetrics> {
     // Flush remaining queued frames
     if (this.decoder && this.decoder.state !== 'closed') {
-      try {
-        // Wrap in a timeout to prevent infinite hangs caused by browser WebCodecs driver bugs
-        await Promise.race([
-          this.decoder.flush(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('decoder flush timeout')), 5000))
-        ]);
-      } catch (e) {
-        console.warn('VideoDecoder flush timeout or error (ignoring):', e);
-      }
+      await this.decoder.flush();
       this.decoder.close();
     }
     this.decoder = null;
@@ -475,8 +460,7 @@ export class SlideExtractor {
 
     // Await all queued background encodes to prevent dropping slides
     // when the worker terminates
-    await Promise.allSettled(this.pendingEncodes);
-    this.pendingEncodes = [];
+    await this.lastEmitPromise;
 
     this.metrics.videoDurationSec = this.videoDuration;
     this.metrics.endTime = performance.now();
@@ -791,15 +775,13 @@ export class SlideExtractor {
     this.emitBitmap(this.captureCanvasBitmap(), timestamp);
   }
 
-  private pendingEncodes: Promise<void>[] = [];
   private lastEmitPromise: Promise<void> = Promise.resolve();
 
   private emitBitmap(bitmap: ImageBitmap, timestamp: number) {
-    // We use a single, reused OffscreenCanvas to prevent lazy GC from exhausting GPU memory.
-    // To prevent race conditions on the single canvas, we must chain them sequentially.
-    // The massive sequential bottleneck is avoided because feedChunk applies backpressure
-    // to keep pendingEncodes.length < 5, perfectly syncing demux speed with encode speed.
-    const encodePromise = this.lastEmitPromise.then(async () => {
+    // Chain encodes sequentially to prevent concurrent access to the shared
+    // OffscreenCanvas, ensuring strict timestamp ordering and preventing
+    // OOM spikes from massive concurrent convertToBlob calls.
+    this.lastEmitPromise = this.lastEmitPromise.then(async () => {
       try {
         const blob = await this.renderBitmapToBlob(bitmap);
         this.options.onSlide(blob, timestamp);
@@ -808,21 +790,16 @@ export class SlideExtractor {
         console.warn('emitBitmap: image encode failed (skipping slide):', e);
       }
     });
-
-    this.lastEmitPromise = encodePromise;
-    this.pendingEncodes.push(encodePromise);
-    encodePromise.finally(() => {
-      this.pendingEncodes = this.pendingEncodes.filter(p => p !== encodePromise);
-    });
   }
 
   /**
    * Awaitable version of emitBitmap — used ONLY for the final candidate flush
-   * at extraction end. Enqueues the final candidate and returns the promise.
+   * at extraction end. Enqueues the final candidate and returns the promise
+   * for the entire chain.
    */
   private emitBitmapAsync(bitmap: ImageBitmap, timestamp: number): Promise<void> {
     this.emitBitmap(bitmap, timestamp);
-    return this.pendingEncodes[this.pendingEncodes.length - 1];
+    return this.lastEmitPromise;
   }
 
   private async renderBitmapToBlob(bitmap: ImageBitmap): Promise<Blob> {
@@ -832,23 +809,13 @@ export class SlideExtractor {
       this.blobCtx = this.blobCanvas.getContext('2d')!;
     }
     this.blobCtx!.drawImage(bitmap, 0, 0);
-    
+    // Draw is synchronous, we can safely close the bitmap immediately freeing GPU RAM.
+    bitmap.close();
     const fmt = this.options.imageFormat === 'webp' ? 'image/webp' : 'image/jpeg';
-    
-    try {
-      // Wrap convertToBlob in a safety timeout. If the GPU driver ever deadlocks,
-      // this ensures the pipeline recovers instead of permanently freezing at 100%.
-      const blob = await Promise.race([
-        this.blobCanvas.convertToBlob({ type: fmt, quality: this.options.imageQuality ?? 0.8 }),
-        new Promise<Blob>((_, reject) => setTimeout(() => reject(new Error('convertToBlob GPU timeout')), 10000))
-      ]);
-      return blob;
-    } finally {
-      // CRITICAL: Only close the bitmap AFTER the blob is generated.
-      // drawImage is lazily evaluated on the GPU. Closing the bitmap beforehand
-      // destroys the texture before the GPU can encode it, causing silent deadlocks.
-      bitmap.close();
-    }
+    return this.blobCanvas.convertToBlob({ 
+        type: fmt, 
+        quality: this.options.imageQuality ?? 0.8 
+    });
   }
 
   private static hammingDistance(a: bigint, b: bigint): number {

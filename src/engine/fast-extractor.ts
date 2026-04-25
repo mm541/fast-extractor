@@ -487,7 +487,6 @@ export class FastExtractor {
                     });
                   }
                   this._extracting = false;
-                  if (worker) worker.terminate();
                   worker = null;
                   controller.close();
                   // Clean up OPFS temp file AFTER worker is fully done
@@ -508,11 +507,11 @@ export class FastExtractor {
                       message: customError.message,
                       recoverable: true,
                     });
-                    if (worker) worker.terminate();
+                    // Don't terminate — worker self-closes after OPFS cleanup
                     worker = null;
                     controller.close();
                   } else {
-                    if (worker) worker.terminate();
+                    // Don't terminate — worker self-closes after OPFS cleanup
                     worker = null;
                     controller.error(customError);
                   }
@@ -783,23 +782,10 @@ async function extractVideoChunks(worker: Worker, options: FastExtractorOptions,
       const decoderConfig = await demuxer.getDecoderConfig('video');
 
       // 1. Send config to worker
-      await new Promise<void>((resolve, reject) => {
-        const handleConfigDone = (e: MessageEvent) => {
-          if (e.data.type === 'CONFIG_DONE') {
-            worker.removeEventListener('message', handleConfigDone);
-            resolve();
-          } else if (e.data.type === 'ERROR') {
-            worker.removeEventListener('message', handleConfigDone);
-            reject(new Error(e.data.error));
-          }
-        };
-        worker.addEventListener('message', handleConfigDone);
-        
-        worker.postMessage({ 
-          type: 'CONFIG_DECODER', 
-          config: decoderConfig, 
-          duration
-        });
+      worker.postMessage({ 
+        type: 'CONFIG_DECODER', 
+        config: decoderConfig, 
+        duration 
       });
 
       // 2. Read packets and stream to worker
