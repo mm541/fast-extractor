@@ -641,13 +641,20 @@ export class SlideExtractor {
     // Condition 1: Absolute Divergence — enough blocks changed from baseline
     if (mainChanges >= blockThreshold) {
       // --- Camera Shake Filter (optional) ---
-      if (this.options.shakeFilterStrictMultiplier > 0) {
+      // If the change is diffuse (all blocks changed a little), it's shake, not a slide.
+      // Confirm with a stricter density check: if few blocks pass 3× density, it's shake.
+      if (this.options.shakeFilterStrictMultiplier > 0 && mainChanges < blockThreshold * 2) {
         const strictDensity = Math.min(densityThresholdPct * this.options.shakeFilterStrictMultiplier, 100);
         const strictChanges = this.wasm.compare_frames(edgeThreshold, strictDensity, mask);
         if (strictChanges >= blockThreshold * 0.3) {
           shouldEmit = true; // Concentrated change → real slide
+        } else {
+          // Shake filter rejected — update baseline anyway to prevent
+          // infinite re-evaluation on every subsequent frame.
+          this.copyBufferBToA();
         }
       } else {
+        // Shake filter disabled OR change is overwhelming (≥2× threshold) → bypass filter
         shouldEmit = true;
       }
     }
