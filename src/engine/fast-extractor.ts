@@ -782,10 +782,23 @@ async function extractVideoChunks(worker: Worker, options: FastExtractorOptions,
       const decoderConfig = await demuxer.getDecoderConfig('video');
 
       // 1. Send config to worker
-      worker.postMessage({ 
-        type: 'CONFIG_DECODER', 
-        config: decoderConfig, 
-        duration 
+      await new Promise<void>((resolve, reject) => {
+        const handleConfigDone = (e: MessageEvent) => {
+          if (e.data.type === 'CONFIG_DONE') {
+            worker.removeEventListener('message', handleConfigDone);
+            resolve();
+          } else if (e.data.type === 'ERROR') {
+            worker.removeEventListener('message', handleConfigDone);
+            reject(new Error(e.data.error));
+          }
+        };
+        worker.addEventListener('message', handleConfigDone);
+        
+        worker.postMessage({ 
+          type: 'CONFIG_DECODER', 
+          config: decoderConfig, 
+          duration
+        });
       });
 
       // 2. Read packets and stream to worker
