@@ -92,7 +92,7 @@ Multiple layers of filtering prevent false positive slide emissions.
 ### Turbo Mode
 - Decodes **only keyframes** (IDR frames) from the video.
 - Uses a single pipelined `VideoDecoder` with `prefer-software`.
-- **Deferred emit:** Doesn't emit immediately. Saves a "candidate" and confirms it on the next keyframe via dHash comparison. If the next frame is similar (Hamming distance ≤ confirmThreshold), the candidate was a real slide. If different, the candidate was a mid-transition blend frame and gets discarded.
+- **Debounce:** Enforces `minSlideDuration`. If two slides happen within 3 seconds, the second is ignored.
 - Speed: ~10-20s for a 1-hour video.
 
 ### Sequential Mode
