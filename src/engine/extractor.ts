@@ -938,7 +938,7 @@ export class SlideExtractor {
     this.blobCtx!.drawImage(bitmap, 0, 0);
     // Draw is synchronous, we can safely close the bitmap immediately freeing GPU RAM.
     bitmap.close();
-    const fmt = this.options.imageFormat === 'jpeg' ? 'image/jpeg' : 'image/webp';
+    const fmt = this.options.imageFormat === 'webp' ? 'image/webp' : 'image/jpeg';
     return this.blobCanvas.convertToBlob({ 
         type: fmt, 
         quality: this.options.imageQuality ?? 0.8 

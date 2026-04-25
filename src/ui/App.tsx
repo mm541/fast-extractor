@@ -105,7 +105,7 @@ const App: React.FC = () => {
         noiseResetFrames: 30,
         noiseMainRatio: 0.25,
         imageQuality: 0.8,
-        imageFormat: 'webp' as 'webp' | 'jpeg',
+        imageFormat: 'jpeg' as 'webp' | 'jpeg',
         exportResolution: 0,
     });
     
