@@ -300,7 +300,7 @@ export class SlideExtractor {
   private chunkCount = 0;
   private lastKeyframeTs = -1;
   private lastReportTs = 0;
-  private pendingBackpressureResolve: (() => void) | null = null;
+
 
   // VideoDecoder requires a keyframe after configure() or flush().
   // Without this gate, delta frames after a decoder reset trigger an infinite
@@ -412,22 +412,14 @@ export class SlideExtractor {
     }
 
     // Backpressure: prevent memory blowout
-    const maxQueue = 16
-    if (this.options.mode === 'turbo') {
-      while (this.decoder.state !== 'closed' && this.decoder.decodeQueueSize > maxQueue) {
-        await new Promise(r => setTimeout(r, 5));
-      }
-    } else {
-      // Sequential backpressure with 500ms deadlock safety net.
-      // Hardware decoders on mobile can silently drop frames, causing
-      // pendingBackpressureResolve to hang forever. 500ms is long enough
-      // for normal decode latency but short enough to not stall the pipeline.
-      while (this.decoder.state !== 'closed' && this.decoder.decodeQueueSize >= maxQueue) {
-        await Promise.race([
-          new Promise<void>(r => { this.pendingBackpressureResolve = r; }),
-          new Promise<void>(r => setTimeout(r, 500))
-        ]);
-      }
+    const maxQueue = this.options.mode === 'turbo' ? 12 : 3;
+    
+    // Polling decodeQueueSize is robust against dropped frames. If a hardware
+    // decoder silently drops a frame, the output callback never fires, but
+    // decodeQueueSize STILL drops. By polling, we avoid deadlocking or stalling
+    // when frames are dropped.
+    while (this.decoder.state !== 'closed' && this.decoder.decodeQueueSize > maxQueue) {
+      await new Promise(r => setTimeout(r, 5));
     }
 
     // Gate: after configure() or decoder reset, skip delta frames until a keyframe
@@ -514,12 +506,6 @@ export class SlideExtractor {
         // before the Phase 2 refactor accidentally dropped it.
         if (this.options.mode === 'sequential' && ts < this.nextCaptureTime) {
           frame.close();
-          // Still resolve backpressure so feedChunk doesn't stall
-          if (this.pendingBackpressureResolve) {
-            const r = this.pendingBackpressureResolve;
-            this.pendingBackpressureResolve = null;
-            r();
-          }
           return;
         }
 
@@ -543,23 +529,11 @@ export class SlideExtractor {
         if (this.options.mode === 'sequential') {
           this.nextCaptureTime = ts + (1 / (this.options.sampleFps || 1));
         }
-
-        // Resolve backpressure waiter (sequential mode)
-        if (this.pendingBackpressureResolve) {
-          const r = this.pendingBackpressureResolve;
-          this.pendingBackpressureResolve = null;
-          r();
-        }
       },
       error: (e) => {
         console.warn(`${this.options.mode} decode pipeline error:`, e);
         // Re-engage keyframe gate so the next decoder doesn't get fed delta frames
         this.needsKeyframe = true;
-        if (this.pendingBackpressureResolve) {
-          const r = this.pendingBackpressureResolve;
-          this.pendingBackpressureResolve = null;
-          r();
-        }
       }
     });
     d.configure(this.decoderConfig!);
