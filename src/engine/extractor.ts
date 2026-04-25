@@ -411,7 +411,7 @@ export class SlideExtractor {
     }
 
     // Backpressure: prevent memory blowout
-    const maxQueue = this.options.mode === 'turbo' ? 12 : 3;
+    const maxQueue = 12;
     if (this.options.mode === 'turbo') {
       while (this.decoder.state !== 'closed' && this.decoder.decodeQueueSize > maxQueue) {
         await new Promise(r => setTimeout(r, 5));
