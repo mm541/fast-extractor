@@ -487,6 +487,7 @@ export class FastExtractor {
                     });
                   }
                   this._extracting = false;
+                  if (worker) worker.terminate();
                   worker = null;
                   controller.close();
                   // Clean up OPFS temp file AFTER worker is fully done
@@ -507,11 +508,11 @@ export class FastExtractor {
                       message: customError.message,
                       recoverable: true,
                     });
-                    // Don't terminate — worker self-closes after OPFS cleanup
+                    if (worker) worker.terminate();
                     worker = null;
                     controller.close();
                   } else {
-                    // Don't terminate — worker self-closes after OPFS cleanup
+                    if (worker) worker.terminate();
                     worker = null;
                     controller.error(customError);
                   }
