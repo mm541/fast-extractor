@@ -108,6 +108,7 @@ function createSyncAccessHandleWithTimeout(
             });
     });
 }
+let chunkProcessingChain = Promise.resolve();
 
 self.onmessage = async (e: MessageEvent) => {
     const { type, data, config, wasmBuffer: wb } = e.data;
@@ -252,48 +253,60 @@ self.onmessage = async (e: MessageEvent) => {
 
         if (type === 'VIDEO_CHUNK') {
             const { chunk, timestamp, chunkType } = e.data;
-            if (slideExtractor) {
-                await slideExtractor.feedChunk(chunk, timestamp, chunkType);
-                self.postMessage({ type: 'CHUNK_PROCESSED' });
+            const currentExtractor = slideExtractor;
+            if (currentExtractor) {
+                // ⚠️ CRITICAL: Serialize chunk processing!
+                // If we don't chain these, the async onmessage handler will pick up 
+                // up to 15 chunks concurrently whenever feedChunk hits backpressure.
+                // Concurrent feedChunks overwrite the backpressure resolve promise,
+                // causing massive 500ms deadlocks for every batch of frames.
+                chunkProcessingChain = chunkProcessingChain.then(async () => {
+                    await currentExtractor.feedChunk(chunk, timestamp, chunkType);
+                    self.postMessage({ type: 'CHUNK_PROCESSED' });
+                });
             }
             return;
         }
 
         if (type === 'VIDEO_DONE') {
             const { skipped } = e.data;
-            let metrics: any = {};
+            const currentExtractor = slideExtractor;
             
-            if (!skipped && slideExtractor) {
-                metrics = await slideExtractor.flush();
-            }
-
-            // Drain any pending async onSlide callbacks
-            if (pendingSlideEncodes > 0) {
-                await Promise.race([
-                    new Promise<void>(r => { drainResolve = r; }),
-                    new Promise<void>(r => setTimeout(r, 3000))
-                ]);
-            }
-
-            // Flush the last buffered slide
-            if (pendingSlide) {
-                const videoDurationMs = metrics?.videoDurationSec
-                    ? Math.round(metrics.videoDurationSec * 1000)
-                    : metrics?.lastFrameTimestamp
-                        ? Math.round(metrics.lastFrameTimestamp * 1000)
-                        : pendingSlide.startMs;
+            chunkProcessingChain = chunkProcessingChain.then(async () => {
+                let metrics: any = {};
                 
-                self.postMessage({
-                    type: 'SLIDE',
-                    buffer: pendingSlide.buffer,
-                    timestamp: pendingSlide.timestamp,
-                    startMs: pendingSlide.startMs,
-                    endMs: videoDurationMs,
-                }, [pendingSlide.buffer]);
-                pendingSlide = null;
-            }
+                if (!skipped && currentExtractor) {
+                    metrics = await currentExtractor.flush();
+                }
 
-            postMessage({ type: 'ALL_DONE', metrics });
+                // Drain any pending async onSlide callbacks
+                if (pendingSlideEncodes > 0) {
+                    await Promise.race([
+                        new Promise<void>(r => { drainResolve = r; }),
+                        new Promise<void>(r => setTimeout(r, 3000))
+                    ]);
+                }
+
+                // Flush the last buffered slide
+                if (pendingSlide) {
+                    const videoDurationMs = metrics?.videoDurationSec
+                        ? Math.round(metrics.videoDurationSec * 1000)
+                        : metrics?.lastFrameTimestamp
+                            ? Math.round(metrics.lastFrameTimestamp * 1000)
+                            : pendingSlide.startMs;
+                    
+                    self.postMessage({
+                        type: 'SLIDE',
+                        buffer: pendingSlide.buffer,
+                        timestamp: pendingSlide.timestamp,
+                        startMs: pendingSlide.startMs,
+                        endMs: videoDurationMs,
+                    }, [pendingSlide.buffer]);
+                    pendingSlide = null;
+                }
+
+                postMessage({ type: 'ALL_DONE', metrics });
+            });
             return;
         }
 
