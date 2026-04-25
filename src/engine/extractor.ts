@@ -197,8 +197,10 @@ export interface SlideExtractorOptions {
    *  Higher = looser (more slides captured, but more transition frames leak through). */
   confirmThreshold: number;
   
-  /** Encoded WebP quality (0.01 - 1.0). Default: 0.8 */
+  /** Encoded image quality (0.01 - 1.0). Default: 0.8 */
   imageQuality?: number;
+  /** Output format for extracted slides. Default: 'webp' */
+  imageFormat?: 'webp' | 'jpeg';
   /** Max width of output slides (e.g. 1280 or 1920). 0 means original. Default: 0. */
   exportResolution?: number;
 
@@ -936,8 +938,9 @@ export class SlideExtractor {
     this.blobCtx!.drawImage(bitmap, 0, 0);
     // Draw is synchronous, we can safely close the bitmap immediately freeing GPU RAM.
     bitmap.close();
+    const fmt = this.options.imageFormat === 'jpeg' ? 'image/jpeg' : 'image/webp';
     return this.blobCanvas.convertToBlob({ 
-        type: 'image/webp', 
+        type: fmt, 
         quality: this.options.imageQuality ?? 0.8 
     });
   }

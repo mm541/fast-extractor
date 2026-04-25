@@ -209,8 +209,10 @@ export interface FastExtractorOptions {
   extractAudio?: boolean;
   /** Extract slide images from the video. Default: true */
   extractSlides?: boolean;
-  /** Encoded WebP quality of the extracted slides (0.01 - 1.0). Default: 0.8 */
+  /** Encoded image quality of the extracted slides (0.01 - 1.0). Default: 0.8 */
   imageQuality?: number;
+  /** Output format for extracted slides. /
+  imageFormat?: 'webp' | 'jpeg';
   /** Max width of output slides (e.g. 1280 or 1920). 0 means original. Default: 0. */
   exportResolution?: number;
 

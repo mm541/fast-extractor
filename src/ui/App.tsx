@@ -105,6 +105,7 @@ const App: React.FC = () => {
         noiseResetFrames: 30,
         noiseMainRatio: 0.25,
         imageQuality: 0.8,
+        imageFormat: 'webp' as 'webp' | 'jpeg',
         exportResolution: 0,
     });
     
@@ -519,6 +520,18 @@ const App: React.FC = () => {
                                     disabled={isExtracting}
                                     aria-label="Extracted slide WebP quality"
                                 />
+                            </div>
+                            <div className="setting-item">
+                                <label>Format: <strong>{config.imageFormat === 'jpeg' ? 'JPEG' : 'WebP'}</strong></label>
+                                <select
+                                    value={config.imageFormat}
+                                    onChange={e => setConfig({...config, imageFormat: e.target.value as 'webp' | 'jpeg'})}
+                                    disabled={isExtracting}
+                                    aria-label="Output image format"
+                                >
+                                    <option value="webp">WebP (smaller)</option>
+                                    <option value="jpeg">JPEG (faster)</option>
+                                </select>
                             </div>
                             <div className="setting-item">
                                 <label>Export Res: <strong>{config.exportResolution === 0 ? 'Original' : config.exportResolution + 'px'}</strong></label>
