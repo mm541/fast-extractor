@@ -146,6 +146,11 @@ export interface BrowserSupport {
   /** Device RAM in GB (if exposed by navigator.deviceMemory) */
   deviceMemoryGb: number | null;
   /** Whether mobile browser is detected */
+  /** Number of logical CPU cores */
+  hardwareConcurrency: number;
+  /** Whether WebGPU API is available for future hardware acceleration */
+  webGpu: boolean;
+  /** Whether mobile browser is detected */
   isMobile: boolean;
   /** Overall: can this browser run the extraction engine? */
   supported: boolean;
@@ -301,6 +306,8 @@ export class FastExtractor {
 
     const offscreenCanvas = typeof OffscreenCanvas !== 'undefined';
     const deviceMemoryGb = (navigator as any).deviceMemory ?? null;
+    const hardwareConcurrency = navigator.hardwareConcurrency || 1;
+    const webGpu = 'gpu' in navigator;
     const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
     const supported = webCodecs && opfs;
 
@@ -312,7 +319,7 @@ export class FastExtractor {
       reason = `Browser missing required APIs: ${missing.join(', ')}. Use Chrome 102+ on desktop or Android.`;
     }
 
-    return { webCodecs, opfs, offscreenCanvas, deviceMemoryGb, isMobile, supported, reason };
+    return { webCodecs, opfs, offscreenCanvas, deviceMemoryGb, hardwareConcurrency, webGpu, isMobile, supported, reason };
   }
 
   /**

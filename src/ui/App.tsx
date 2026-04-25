@@ -64,6 +64,8 @@ interface DeviceCapabilities {
     opfs: boolean;
     offscreenCanvas: boolean;
     deviceMemoryGb: number | null;
+    hardwareConcurrency: number;
+    webGpu: boolean;
     isMobile: boolean;
     canExtract: boolean;
 }
@@ -136,6 +138,8 @@ const App: React.FC = () => {
                 opfs: support.opfs,
                 offscreenCanvas: support.offscreenCanvas,
                 deviceMemoryGb: support.deviceMemoryGb,
+                hardwareConcurrency: support.hardwareConcurrency,
+                webGpu: support.webGpu,
                 isMobile: support.isMobile,
                 canExtract: support.supported,
             };
