@@ -191,6 +191,11 @@ export interface SlideExtractorOptions {
   shakeFilterStrictMultiplier: number;  // density multiplier for shake confirmation (0=disabled)
   // Region-of-interest masking
   ignoreMask: bigint;                   // 64-bit bitmask: bit (row*8+col)=1 skips that grid block
+  // Turbo deferred-emit confirmation
+  /** Max dHash hamming distance to confirm a candidate as real (not a transition blend). Default: 10.
+   *  Lower = stricter (more transition frames filtered, but might drop fast slides).
+   *  Higher = looser (more slides captured, but more transition frames leak through). */
+  confirmThreshold: number;
   
   /** Encoded WebP quality (0.01 - 1.0). Default: 0.8 */
   imageQuality?: number;
@@ -231,7 +236,8 @@ export const DEFAULT_OPTIONS: SlideExtractorOptions = {
   shakeFilterStrictMultiplier: 3,
   // Grid masking: 0n = compare all 64 blocks (no masking)
   ignoreMask: 0n,
-  imageQuality: 0.8,
+  // Turbo confirmation: 10 = moderate strictness
+  confirmThreshold: 10,
   onProgress: () => {}, onSlide: () => {},
 };
 
@@ -252,19 +258,18 @@ export interface WasmModule {
 }
 
 /**
- * ARCHITECTURE: Two Pipeline Modes
+ * ARCHITECTURE: Stream + selective keyframe decode.
  *
- * 1. Turbo Mode (Keyframes only)
- *    Stream packets from demuxer. Only pass `type === 'key'` chunks to the VideoDecoder.
- *    Reduces decode workload by dropping all P and B packets before decoding.
- *    Tradeoff: Can land on blurry crossfades (mitigated by Deferred Emit).
+ * Stream ALL packets from demuxer (fast sequential I/O, zero round-trips).
+ * Only DECODE packets that are keyframes near our sample times.
+ * Everything else is skipped at zero cost.
  *
- * 2. Sequential Mode (Sampled FPS)
- *    Stream packets and decode every frame, but only send frames to WASM at `sampleFps`.
- *    Slower, but perfectly accurate for live-coding and fast transitions.
+ * For a 1-hour video at 1fps with keyframes every 5s:
+ *   Packets streamed: ~108,000 (cheap — just checking timestamp)
+ *   Frames decoded:   ~720 (only keyframes, self-contained)
+ *   Expected time:    ~15-30s
+ *   Expected RAM:     ~150-250MB (one decoder, no ref frame buildup)
  */
-
-
 export class SlideExtractor {
   private wasm: WasmModule;
   private options: SlideExtractorOptions;
@@ -293,7 +298,8 @@ export class SlideExtractor {
   private prevColorSig: [number, number, number] | null = null;
 
 
-
+  // Turbo deferred-emit: buffers one candidate to filter transition frames
+  private pendingCandidate: { bitmap: ImageBitmap; timestamp: number; hash: bigint } | null = null;
 
   private metrics: ExtractionMetrics = {
     startTime: 0, totalFrames: 0, totalSlides: 0, peakRamMb: 0, avgFrameProcessTimeMs: 0
@@ -314,6 +320,8 @@ export class SlideExtractor {
     this.metrics = { startTime: performance.now(), totalFrames: 0, totalSlides: 0, peakRamMb: 0, avgFrameProcessTimeMs: 0 };
     this.hasBaseline = false;
     this.savedHashes = [];
+    if (this.pendingCandidate) { this.pendingCandidate.bitmap.close(); }
+    this.pendingCandidate = null;
     this.lastSlideTime = -10;
     // Reset robustness state
     this.noiseFloor = 0;
@@ -358,6 +366,16 @@ export class SlideExtractor {
         : (1 / (this.options.sampleFps || 1));
 
       await this.extractKeyframes(demuxer, duration, interval);
+
+      // Flush last buffered candidate (turbo deferred-emit)
+      // MUST await here — fire-and-forget would race against worker termination,
+      // causing the last slide's convertToBlob to resolve after ALL_DONE kills the worker.
+      const lc = this.pendingCandidate as { bitmap: ImageBitmap; timestamp: number; hash: bigint } | null;
+      if (lc) {
+        this.savedHashes.push(lc.hash);
+        await this.emitBitmapAsync(lc.bitmap, lc.timestamp);
+        this.pendingCandidate = null;
+      }
 
       this.metrics.videoDurationSec = duration;
       this.metrics.endTime = performance.now();
@@ -490,7 +508,6 @@ export class SlideExtractor {
       } finally {
         if (decoder.state !== 'closed') decoder.close();
       }
-      this.metrics.totalFrames = packetCount;
 
     } else {
       // ACCURATE: Full decode of EVERY frame. ~120-150s for 1-hour video.
@@ -608,7 +625,6 @@ export class SlideExtractor {
           if (decoder.state !== 'closed') decoder.close();
         }
       }
-      this.metrics.totalFrames = packetCount;
     }
   }
 
@@ -648,6 +664,23 @@ export class SlideExtractor {
     // Edge case: Skip near-black/blank frames (transitions, fades)
     const brightness = this.wasm.get_avg_brightness();
     if (brightness < this.options.blankBrightnessThreshold) return;
+
+    // Turbo deferred-emit: confirm or discard the pending candidate
+    // by checking if the current frame is similar (real slide persisted)
+    // or different (candidate was a transition frame).
+    if (this.options.mode === 'turbo' && this.pendingCandidate) {
+      const currentHash = this.wasm.compute_dhash(true);
+      const dist = SlideExtractor.hammingDistance(this.pendingCandidate.hash, currentHash);
+      if (dist <= this.options.confirmThreshold) {
+        // Next frame is similar → candidate was a real slide, emit it
+        this.savedHashes.push(this.pendingCandidate.hash);
+        this.emitBitmap(this.pendingCandidate.bitmap, this.pendingCandidate.timestamp);
+      } else {
+        // Next frame is different → candidate was a transition frame, discard
+        this.pendingCandidate.bitmap.close();
+      }
+      this.pendingCandidate = null;
+    }
 
     if (!this.hasBaseline) {
       this.copyBufferBToA();
@@ -757,8 +790,18 @@ export class SlideExtractor {
     if (shouldEmit) {
       const dhash = this.wasm.compute_dhash(true);
       if (!this.isDuplicate(dhash)) {
-        this.savedHashes.push(dhash);
-        this.emitSlideFromCanvas(timestamp);
+        if (this.options.mode === 'turbo') {
+          // Turbo: defer emit — buffer as candidate for confirmation on next keyframe.
+          // Transition frames (crossfades, dissolves) will be discarded when the
+          // next frame doesn't match. Real slides persist across keyframes.
+          const bitmap = this.captureCanvasBitmap();
+          if (this.pendingCandidate) this.pendingCandidate.bitmap.close();
+          this.pendingCandidate = { bitmap, timestamp, hash: dhash };
+        } else {
+          // Accurate: emit immediately (has frame-level temporal resolution)
+          this.savedHashes.push(dhash);
+          this.emitSlideFromCanvas(timestamp);
+        }
         this.copyBufferBToA();
         this.lastSlideTime = timestamp;
       }
@@ -866,6 +909,22 @@ export class SlideExtractor {
       // convertToBlob can fail under mobile memory pressure or unsupported formats.
       console.warn('emitBitmap: WebP encode failed (skipping slide):', e);
     });
+  }
+
+  /**
+   * Awaitable version of emitBitmap — used ONLY for the final candidate flush
+   * at extraction end. This ensures the blob is fully encoded and delivered to
+   * onSlide before extract() returns, preventing the worker from being terminated
+   * while convertToBlob is still pending.
+   */
+  private async emitBitmapAsync(bitmap: ImageBitmap, timestamp: number): Promise<void> {
+    try {
+      const blob = await this.renderBitmapToBlob(bitmap);
+      this.options.onSlide(blob, timestamp);
+      this.metrics.totalSlides++;
+    } catch (e) {
+      console.warn('emitBitmapAsync: WebP encode failed (skipping slide):', e);
+    }
   }
 
   private async renderBitmapToBlob(bitmap: ImageBitmap): Promise<Blob> {

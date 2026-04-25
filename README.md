@@ -265,7 +265,7 @@ new FastExtractor({ mode: 'accurate' });
 
 All options have sensible defaults. Most users won't need to change anything.
 
-> **🎯 Tuning Tip:** Don't guess parameter values from docs — use the **[live demo](https://fast-extractor.mm541.in)** as a calibration workbench. Drop in a sample video representative of your use case, adjust `edgeThreshold`, `blockThreshold`, and the region mask interactively, see exactly which slides get captured in real-time, then copy the tuned values into your code.
+> **🎯 Tuning Tip:** Don't guess parameter values from docs — use the **[live demo](https://fast-extractor.mm541.in)** as a calibration workbench. Drop in a sample video representative of your use case, adjust `edgeThreshold`, `blockThreshold`, `confirmThreshold`, and the region mask interactively, see exactly which slides get captured in real-time, then copy the tuned values into your code.
 
 ```typescript
 new FastExtractor({
@@ -278,6 +278,7 @@ new FastExtractor({
   minSlideDuration: 3,
   densityThresholdPct: 5,
   dhashDuplicateThreshold: 10,
+  confirmThreshold: 10,
   imageQuality: 0.8,
   exportResolution: 0,
   ignoreMask: 0n,
@@ -397,6 +398,15 @@ After a slide is captured, its 64-bit perceptual hash (dHash) is compared agains
 
 ---
 
+#### `confirmThreshold`
+**Type:** `number` · **Range:** `3–20` · **Default:** `10`
+
+**Turbo mode only.** After a keyframe triggers a potential slide change, the engine requires this many subsequent keyframes to remain "stable" (i.e., not trigger another change) before the slide is confirmed and emitted. This filters out brief flickers, transitions, and loading screens.
+
+- **Lower values (3–5):** Faster confirmation. Slides are emitted almost immediately after detection. May capture mid-transition frames.
+- **Higher values (12–20):** Requires the slide to persist across many keyframes. Very conservative — only emits slides that the speaker stayed on for a while.
+
+| Scenario | Recommended |
 |----------|-------------|
 | Videos with frequent transitions | `8–12` |
 | Stable lecture recordings | `5–8` |
