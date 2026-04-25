@@ -10,9 +10,8 @@
  *   import type { ExtractorEvent, SlideEvent } from 'fast-extractor';
  */
 
-// ─── Core Classes ───
+// ─── Core Class ───
 export { FastExtractor, default } from './fast-extractor';
-export { WorkspaceManager } from './workspace-manager';
 
 // ─── Error System ───
 export { ExtractorError } from './fast-extractor';

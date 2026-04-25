@@ -55,6 +55,7 @@
 // Library consumers using other bundlers will override these via options.
 import MediaWorker from './worker?worker';
 import defaultWasmUrl from './wasm/wasm_extractor_bg.wasm?url';
+import { WebDemuxer } from 'web-demuxer';
 
 // ─── Public Error Types ───
 
@@ -545,11 +546,65 @@ export class FastExtractor {
             });
 
           // 7. Instantiate WorkspaceManager and run the extraction pipeline
-          const { WorkspaceManager } = await import('./workspace-manager');
-          const workspaceManager = new WorkspaceManager(file, worker, this.options);
+          const tempFileName = `extract_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.mp4`;
+          
+          const runPipeline = async () => {
+            try {
+              await ingestFile(file, worker!, tempFileName);
 
-          workspaceManager.extract().catch(err => {
-            // WorkspaceManager will throw if SAF permissions expire or pipeline fails
+              // Trigger audio extraction on the worker
+              if (this.options.extractAudio !== false) {
+                const root = await navigator.storage.getDirectory();
+                const feDir = await root.getDirectoryHandle('.fast_extractor');
+                const fileHandle = await feDir.getFileHandle(tempFileName);
+
+                await new Promise<void>((resolve, reject) => {
+                  const handleAudioMessage = (e: MessageEvent) => {
+                    if (e.data.type === 'AUDIO_DONE') {
+                      worker!.removeEventListener('message', handleAudioMessage);
+                      resolve();
+                    } else if (e.data.type === 'ERROR') {
+                      worker!.removeEventListener('message', handleAudioMessage);
+                      reject(new Error(e.data.error));
+                    }
+                  };
+                  worker!.addEventListener('message', handleAudioMessage);
+                  worker!.postMessage({ type: 'EXTRACT_AUDIO', fileName: file.name, fileHandle });
+                });
+              }
+
+              // Run video extraction pipeline
+              if (this.options.extractSlides !== false) {
+                  await extractVideoChunks(worker!, this.options, tempFileName);
+              } else {
+                  worker!.postMessage({ type: 'VIDEO_DONE', skipped: true });
+              }
+
+              // Wait for ALL_DONE from the worker
+              await new Promise<void>((resolve, reject) => {
+                const handleDone = (e: MessageEvent) => {
+                  if (e.data.type === 'ALL_DONE') {
+                    worker!.removeEventListener('message', handleDone);
+                    resolve();
+                  } else if (e.data.type === 'ERROR') {
+                    worker!.removeEventListener('message', handleDone);
+                    reject(new Error(e.data.error));
+                  }
+                };
+                worker!.addEventListener('message', handleDone);
+              });
+
+            } finally {
+              await cleanupTempFile(this.options, tempFileName);
+            }
+          };
+
+          const pipelinePromise = navigator.locks 
+            ? navigator.locks.request(`fe_${tempFileName}`, runPipeline)
+            : runPipeline();
+
+          pipelinePromise.catch(err => {
+            // Pipeline will throw if SAF permissions expire or pipeline fails
             const isRecoverable = err.message.includes('File ingest failed') || err.message.includes('could not be read');
             this._extracting = false;
             
@@ -647,3 +702,113 @@ export class FastExtractor {
 
 // ─── Default Export ───
 export default FastExtractor;
+
+
+// ─── Pipeline Helper Functions ───
+
+async function ingestFile(file: File, worker: Worker, tempFileName: string): Promise<void> {
+    if (!navigator.storage?.getDirectory) {
+      throw new Error('OPFS is not supported in this browser.');
+    }
+
+    const root = await navigator.storage.getDirectory();
+    const feDir = await root.getDirectoryHandle('.fast_extractor', { create: true });
+    const fileHandle = await feDir.getFileHandle(tempFileName, { create: true });
+    
+    // createWritable is available on the main thread
+    const writable = await fileHandle.createWritable();
+    
+    // Android SAF: pipe the file immediately
+    const stream = file.stream();
+    const reader = stream.getReader();
+    let offset = 0;
+    
+    worker.postMessage({ type: 'STATUS', status: 'Ingesting Media: 0%', progress: 0 });
+    let lastReportTime = Date.now();
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        await writable.write(value);
+        offset += value.byteLength;
+        
+        if (Date.now() - lastReportTime > 250) {
+            const pct = Math.floor((offset / file.size) * 100);
+            worker.postMessage({ type: 'STATUS', status: `Ingesting Media: ${pct}%`, progress: pct });
+            lastReportTime = Date.now();
+        }
+    }
+    await writable.close();
+  }
+
+async function extractVideoChunks(worker: Worker, options: FastExtractorOptions, tempFileName: string): Promise<void> {
+    let demuxer: WebDemuxer | null = null;
+    try {
+      worker.postMessage({ type: 'STATUS', status: 'Initializing Demuxer...' });
+
+      // Demuxer runs on main thread now, no Base64 hack needed
+      const wasmUrl = options.demuxerWasmUrl ?? '/wasm-files/web-demuxer.wasm';
+      demuxer = new WebDemuxer({ wasmFilePath: wasmUrl });
+
+      // Read the file back from OPFS so demuxer has a stable reference
+      const root = await navigator.storage.getDirectory();
+      const feDir = await root.getDirectoryHandle('.fast_extractor');
+      const fileHandle = await feDir.getFileHandle(tempFileName);
+      const opfsFile = await fileHandle.getFile();
+
+      await demuxer.load(opfsFile);
+      
+      const mediaInfo = await demuxer.getMediaInfo();
+      const duration = mediaInfo.duration || 0;
+      const decoderConfig = await demuxer.getDecoderConfig('video');
+
+      // 1. Send config to worker
+      worker.postMessage({ 
+        type: 'CONFIG_DECODER', 
+        config: decoderConfig, 
+        duration 
+      });
+
+      // 2. Read packets and stream to worker
+      const endTime = duration > 0 ? duration * 2 : 999999;
+      const reader = demuxer.read('video', 0, endTime).getReader();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done || !value) break;
+
+        if (options.mode === 'turbo' && value.type !== 'key') continue;
+
+        // Extract raw bytes into an ArrayBuffer for zero-copy transfer
+        const chunkData = new ArrayBuffer(value.byteLength);
+        value.copyTo(chunkData);
+
+        worker.postMessage({
+          type: 'VIDEO_CHUNK',
+          chunk: chunkData,
+          timestamp: Number(value.timestamp),
+          chunkType: value.type
+        }, [chunkData]); // Zero-copy transfer!
+      }
+
+      // 3. Signal completion
+      worker.postMessage({ type: 'VIDEO_DONE' });
+
+    } finally {
+      if (demuxer) demuxer.destroy();
+    }
+  }
+
+async function cleanupTempFile(options: FastExtractorOptions, tempFileName: string): Promise<void> {
+    if (options.cleanupAfterExtraction === false) return;
+    
+    try {
+        const root = await navigator.storage.getDirectory();
+        const feDir = await root.getDirectoryHandle('.fast_extractor');
+        await feDir.removeEntry(tempFileName);
+        console.log(`[WorkspaceManager] Cleaned up temp file: ${tempFileName}`);
+    } catch (e) {
+        console.warn(`[WorkspaceManager] Failed to cleanup ${tempFileName}:`, e);
+    }
+  }
