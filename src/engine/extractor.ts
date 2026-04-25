@@ -20,11 +20,9 @@
  *     4. Compare Prev↔B (driftBlocks): "did anything change since last frame?"
  *
  *   EMIT CONDITIONS (all require minSlideDuration to have elapsed):
- *     Condition 1: mainChanges ≥ blockThreshold × 1.5  (immediate — big instant change)
+ *     Condition 1: mainChanges ≥ blockThreshold  (absolute divergence from baseline)
  *                  Optionally filtered by camera shake detector.
- *     Condition 2: mainChanges ≥ blockThreshold AND staticCount ≥ settledFrames
- *                  (absolute divergence has grown, and content has settled)
- *     Condition 3: color-only change — edges identical but avg RGB shifted ≥ threshold
+ *     Condition 2: color-only change — edges identical but avg RGB shifted ≥ threshold
  *                  (dark mode toggle, background color swap)
  *
  *   NOISE SUPPRESSION:
@@ -143,11 +141,6 @@
  *     Average pixel brightness below which a frame is considered blank/black.
  *     Skipped entirely to avoid emitting transition frames.
  *
- *   cumulativeSettledFrames (1-10, default 2)
- *     Consecutive frames of zero drift (Prev↔B = 0) required before
- *     Condition 2 can trigger. Ensures the screen has fully settled
- *     (e.g., presenter stopped typing) before capturing.
- *
  *   sampleFps (0.2-10, default 1) [sequential mode only]
  *     Frame sampling rate for sequential mode.
  *     1 = compare 1 frame per second (default).
@@ -166,7 +159,6 @@ export interface SlideExtractorOptions {
   dhashDuplicateThreshold: number;
   // Three-pointer drift detection
   blankBrightnessThreshold: number;     // skip frames darker than this (0-255)
-  cumulativeSettledFrames: number;      // frames of stability before emitting on drift or partial match
   // Color-aware detection
   colorChangeThreshold: number;         // max(|ΔR|,|ΔG|,|ΔB|) to trigger color-only slide (0=disabled)
   // Camera shake filter
@@ -202,7 +194,6 @@ export const DEFAULT_OPTIONS: SlideExtractorOptions = {
   minSlideDuration: 3, dhashDuplicateThreshold: 4,
   // Three-pointer defaults
   blankBrightnessThreshold: 8,
-  cumulativeSettledFrames: 2,
   // Color detection: 25 = detect shifts where any channel moves >25/255
   colorChangeThreshold: 25,
   // Shake filter: 3 = confirm with 3× density. 0 = disabled
@@ -257,9 +248,6 @@ export class SlideExtractor {
   private blobCanvas: OffscreenCanvas | null = null;
   private blobCtx: OffscreenCanvasRenderingContext2D | null = null;
 
-  // Three-pointer stability tracking
-  private staticCount = 0;       // consecutive frames with zero drift
-
 
   // Color-aware detection — tracks average RGB to detect color-only changes
   private prevColorSig: [number, number, number] | null = null;
@@ -288,8 +276,6 @@ export class SlideExtractor {
     this.savedHashes = [];
     this.lastSlideTime = -10;
     this.prevColorSig = null;
-
-    this.staticCount = 0;
 
     this.options.onProgress(0, "Initializing Demuxer...");
 
@@ -632,15 +618,6 @@ export class SlideExtractor {
     const mask = this.options.ignoreMask;
     const mainChanges = this.wasm.compare_frames(edgeThreshold, densityThresholdPct, mask);
 
-    // Pointer 2→3: Previous (Prev) vs Current (B) — consecutive drift
-    const driftBlocks = this.wasm.compare_prev_current(edgeThreshold, densityThresholdPct, mask);
-
-    // Track stability
-    if (driftBlocks > 0) {
-      this.staticCount = 0;
-    } else {
-      this.staticCount++;
-    }
 
     // --- Color Delta ---
     let colorDelta = 0;
@@ -661,9 +638,9 @@ export class SlideExtractor {
 
     let shouldEmit = false;
 
-    // Condition 1: Immediate Emit (Fast transition / Completely new slide)
-    if (mainChanges >= blockThreshold * 1.5) {
-      // --- Camera Shake Filter ---
+    // Condition 1: Absolute Divergence — enough blocks changed from baseline
+    if (mainChanges >= blockThreshold) {
+      // --- Camera Shake Filter (optional) ---
       if (this.options.shakeFilterStrictMultiplier > 0) {
         const strictDensity = Math.min(densityThresholdPct * this.options.shakeFilterStrictMultiplier, 100);
         const strictChanges = this.wasm.compare_frames(edgeThreshold, strictDensity, mask);
@@ -674,14 +651,7 @@ export class SlideExtractor {
         shouldEmit = true;
       }
     }
-    // Condition 2: Stable Emit (Live coding / Slow transition)
-    else if (
-      mainChanges >= blockThreshold &&
-      this.staticCount >= this.options.cumulativeSettledFrames
-    ) {
-      shouldEmit = true;
-    }
-    // Condition 3: Color-only change
+    // Condition 2: Color-only change
     else if (
       mask !== 0xFFFFFFFFFFFFFFFFn &&
       colorDelta >= this.options.colorChangeThreshold
@@ -700,7 +670,6 @@ export class SlideExtractor {
       // even if it was rejected as a duplicate. Otherwise, A vs B remains high
       // and triggers an infinite loop of dhash computations on every frame!
       this.copyBufferBToA();
-      this.staticCount = 0;
     }
   }
 
