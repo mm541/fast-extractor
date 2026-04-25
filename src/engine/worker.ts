@@ -143,42 +143,7 @@ async function initStorage() {
  * ⚠️ The for-await on OPFS entries() can hang on mobile if stale locks exist.
  * That's why the caller wraps this in a Promise.race() with a 3s timeout.
  */
-async function cleanupOldFiles() {
-    if (!root) await initStorage();
-    try {
-        const entries: string[] = [];
-        // @ts-ignore — collect names first, then delete (avoids iterator issues)
-        for await (const [name] of (root as any).entries()) {
-            entries.push(name);
-        }
-        for (const name of entries) {
-            // Use Web Locks to check if another tab is actively using this file.
-            // ifAvailable: true → returns null immediately if lock is held.
-            try {
-                if (navigator.locks) {
-                    const result = await navigator.locks.request(
-                        `fe_${name}`, { ifAvailable: true },
-                        async (lock) => {
-                            if (lock) {
-                                await root.removeEntry(name);
-                                return true;
-                            }
-                            return false; // another tab holds the lock
-                        }
-                    );
-                    if (!result) {
-                        console.log(`[Cleanup] Skipping ${name} — locked by another tab`);
-                    }
-                } else {
-                    // Fallback: no Web Locks API (older browsers) — delete anyway
-                    await root.removeEntry(name);
-                }
-            } catch {}
-        }
-    } catch (e) {
-        console.warn('[Worker] cleanupOldFiles failed:', e);
-    }
-}
+
 
 /** createSyncAccessHandle with timeout — prevents infinite deadlock from stale OPFS locks */
 function createSyncAccessHandleWithTimeout(
@@ -215,16 +180,6 @@ self.onmessage = async (e: MessageEvent) => {
             return;
         }
 
-        if (type === 'CLEANUP') {
-            // Explicit cleanup requested by library consumer
-            try {
-                await cleanupOldFiles();
-                self.postMessage({ type: 'STATUS', status: 'Storage cleaned up.' });
-            } catch (e: any) {
-                console.warn('[Worker] Manual cleanup failed:', e?.message);
-            }
-            return;
-        }
 
         if (type === 'INIT') {
             wasmBuffer = wb;
