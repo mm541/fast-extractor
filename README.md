@@ -33,7 +33,7 @@ The included React demo (`App.tsx`) showcases how to consume the library's strea
 
 | Device / Hardware | OS / Browser | Resolution | Mode | Video Length | Processing Time | Speed |
 |-------------------|--------------|------------|------|--------------|-----------------|-------|
-| **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **720p HD** | Turbo | 3h 43m | **47s** | **285×** |
+| **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **720p HD** | Turbo | 3h 43m | **35s** | **382×** |
 | **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **720p HD** | Sequential | 3h 43m | **6m 50s** | **33×** |
 | **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **1080p FHD** | Turbo | 5h 53m | **1m 20s** | **265×** |
 | **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **1080p FHD** | Sequential | 5h 53m | **22m 2s** | **16×** |
