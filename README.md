@@ -678,7 +678,7 @@ For anyone reading the source or contributing:
 |---|---|
 | **Zero per-frame allocations** | Static `FrameArena` in WASM — allocated once, never freed, never resized |
 | **Lazy memory init** | `arena()` helper auto-initializes on first use — impossible to read uninitialized memory |
-| **No data races** | WASM is single-threaded; `static mut` is safe under this constraint |
+| **No data races (UB prevention)** | `UnsafeCell` provides safe interior mutability instead of `static mut`, preventing LLVM `noalias` optimization bugs. |
 | **VideoFrame leak prevention** | Every `VideoFrame` is closed immediately after pixel copy — unclosed frames hold GPU memory |
 | **OPFS lock timeout** | `createSyncAccessHandleWithTimeout(5000ms)` — prevents infinite hang from crashed-tab stale locks |
 | **Mobile file expiry bypass** | File is copied to OPFS while `<input>` permission is still alive — subsequent reads use the OPFS copy |
