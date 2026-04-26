@@ -48,16 +48,10 @@
  *   The "Advanced Drift Detection" section is hidden by default for normal users.
  */
 import React, { useState, useRef, useEffect } from 'react';
-import JSZip from 'jszip';
 import GridMaskPicker from './GridMaskPicker';
-import { FastExtractor } from '../engine/fast-extractor';
-
-interface Slide {
-    url: string;
-    time: string;
-    startMs: number;
-    endMs: number;
-}
+import { FastExtractor } from '../engine';
+import { downloadZip } from 'client-zip';
+import './App.css';
 
 interface DeviceCapabilities {
     webCodecs: boolean;
@@ -83,10 +77,12 @@ const App: React.FC = () => {
     const [file, setFile] = useState<File | null>(null);
     const [status, setStatus] = useState<string>('Ready to extract');
     const [isExtracting, setIsExtracting] = useState(false);
-    const [isZipping, setIsZipping] = useState(false);
+    
+    type SlideIndexEntry = { offset: number, length: number, time: string, startMs: number, endMs: number, url: string };
+    const [slides, setSlides] = useState<SlideIndexEntry[]>([]);
     const [audioUrl, setAudioUrl] = useState<string | null>(null);
     const [fileName, setFileName] = useState<string>('');
-    const [slides, setSlides] = useState<Slide[]>([]);
+    const [isZipping, setIsZipping] = useState(false);
     const [progress, setProgress] = useState<number>(0);
     const [jobMetrics, setJobMetrics] = useState<{ start: number; end: number | null }>({ start: 0, end: null });
     const [extractionMode, setExtractionMode] = useState<'turbo' | 'sequential'>('turbo');
@@ -203,47 +199,74 @@ const App: React.FC = () => {
         if (!file) return;
         try {
             setIsZipping(true);
-            const zip = new JSZip();
             
-            // Add Audio
-            if (audioUrl && fileName) {
-                const response = await fetch(audioUrl);
-                const blob = await response.blob();
-                zip.file(fileName, blob);
-            }
-            
-            // Add Slides
-            if (slides.length > 0) {
-                const slidesFolder = zip.folder("slides");
-                if (slidesFolder) {
-                    for (let i = 0; i < slides.length; i++) {
-                        const slide = slides[i];
-                        const response = await fetch(slide.url);
-                        const blob = await response.blob();
-                        const startStr = formatMs(slide.startMs).replace(/:/g, '-');
-                        const endStr = formatMs(slide.endMs).replace(/:/g, '-');
+            async function* yieldFiles() {
+                const root = await navigator.storage.getDirectory();
+                const feDir = await root.getDirectoryHandle('.fast_extractor');
+                
+                if (audioUrl && fileName) {
+                    try {
+                        const audioH = await feDir.getFileHandle('audio_out.aac');
+                        yield { name: fileName, input: await audioH.getFile() };
+                    } catch (e) {
+                        console.warn("Audio file not found in OPFS, skipping.");
+                    }
+                }
+                
+                if (slides.length > 0) {
+                    try {
+                        const slidesH = await feDir.getFileHandle('slides.dat');
+                        const slidesFile = await slidesH.getFile();
+                        const mimeType = config.imageFormat === 'webp' ? 'image/webp' : 'image/jpeg';
                         const ext = config.imageFormat === 'webp' ? 'webp' : 'jpg';
-                        slidesFolder.file(`slide_${String(i+1).padStart(3, '0')}_${startStr}_to_${endStr}.${ext}`, blob);
+                        
+                        for (let i = 0; i < slides.length; i++) {
+                            const slide = slides[i];
+                            const startStr = formatMs(slide.startMs).replace(/:/g, '-');
+                            const endStr = formatMs(slide.endMs).replace(/:/g, '-');
+                            const blob = slidesFile.slice(slide.offset, slide.offset + slide.length, mimeType);
+                            yield { name: `slides/slide_${String(i+1).padStart(3, '0')}_${startStr}_to_${endStr}.${ext}`, input: blob };
+                        }
+                    } catch (e) {
+                        console.warn("Slides file not found in OPFS, skipping.");
                     }
                 }
             }
+
+            const zipStream = downloadZip(yieldFiles());
+            const downloadName = `${file.name.replace(/\.[^/.]+$/, "")}_extracted.zip`;
+
+            // Modern Streaming Download via OPFS or File System Access API
+            if ('showSaveFilePicker' in window) {
+                const handle = await (window as any).showSaveFilePicker({
+                    suggestedName: downloadName,
+                    types: [{
+                        description: 'ZIP Archive',
+                        accept: { 'application/zip': ['.zip'] },
+                    }],
+                });
+                const writable = await handle.createWritable();
+                await zipStream.body?.pipeTo(writable);
+            } else {
+                // Fallback for Safari/Mobile: Generate Blob (spikes RAM briefly)
+                const response = new Response(zipStream.body);
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = downloadName;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                setTimeout(() => URL.revokeObjectURL(url), 5000);
+            }
             
-            // Generate and trigger download
-            const zipData = await zip.generateAsync({ type: 'blob' });
-            const zipUrl = URL.createObjectURL(zipData);
-            const a = document.createElement('a');
-            a.href = zipUrl;
-            a.download = `${file.name.replace(/\.[^/.]+$/, "")}_extracted.zip`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            
-            // Cleanup the temp zip URL after a short delay
-            setTimeout(() => URL.revokeObjectURL(zipUrl), 1000);
-            
-        } catch (error) {
-            console.error("Failed to create ZIP:", error);
-            alert("Failed to create ZIP package.");
+        } catch (error: any) {
+            // Ignore AbortError when user cancels the save file picker
+            if (error.name !== 'AbortError') {
+                console.error("Failed to create ZIP:", error);
+                alert("Failed to create ZIP package.");
+            }
         } finally {
             setIsZipping(false);
         }
@@ -278,10 +301,30 @@ const App: React.FC = () => {
             ...config,
         });
 
-        const audioChunks: ArrayBuffer[] = [];
         if (!extractAudio) setAudioUrl(null); // clear stale audio from a previous run
 
         try {
+            const root = await navigator.storage.getDirectory();
+            const feDir = await root.getDirectoryHandle('.fast_extractor', { create: true });
+            
+            let audioWritable: FileSystemWritableFileStream | null = null;
+            if (extractAudio) {
+                const audioHandle = await feDir.getFileHandle('audio_out.aac', { create: true });
+                audioWritable = await audioHandle.createWritable({ keepExistingData: false });
+            }
+
+            let slidesWritable: FileSystemWritableFileStream | null = null;
+            let slidesHandle: FileSystemFileHandle | null = null;
+            if (extractSlides) {
+                slidesHandle = await feDir.getFileHandle('slides.dat', { create: true });
+                slidesWritable = await slidesHandle.createWritable({ keepExistingData: false });
+            }
+
+            let currentSlideOffset = 0;
+            let ramBatchSize = 0;
+            const BATCH_LIMIT = 25 * 1024 * 1024; // 25MB RAM Buffer for Slides
+            let slideIndexBuffer: SlideIndexEntry[] = [];
+
             const stream = extractor.extract(fileRef.current!, controller.signal);
             const reader = stream.getReader();
 
@@ -291,13 +334,19 @@ const App: React.FC = () => {
 
                 switch (event.type) {
                     case 'audio':
-                        audioChunks.push(event.chunk);
+                        if (audioWritable) {
+                            await audioWritable.write(event.chunk);
+                        }
                         break;
 
                     case 'audio_done': {
-                        const audioBlob = new Blob(audioChunks, { type: 'audio/aac' });
-                        audioChunks.length = 0;
-                        const url = URL.createObjectURL(audioBlob);
+                        if (audioWritable) {
+                            await audioWritable.close();
+                            audioWritable = null;
+                        }
+                        const audioH = await feDir.getFileHandle('audio_out.aac');
+                        const audioFile = await audioH.getFile();
+                        const url = URL.createObjectURL(audioFile);
                         urlsToCleanup.current.push(url);
                         setAudioUrl(url);
                         setFileName(event.fileName);
@@ -306,16 +355,62 @@ const App: React.FC = () => {
                     }
 
                     case 'slide': {
-                        const mimeType = config.imageFormat === 'webp' ? 'image/webp' : 'image/jpeg';
-                        const slideBlob = new Blob([event.imageBuffer], { type: mimeType });
-                        const url = URL.createObjectURL(slideBlob);
-                        urlsToCleanup.current.push(url);
-                        setSlides(prev => [...prev, {
-                            url,
-                            time: event.timestamp,
-                            startMs: event.startMs,
-                            endMs: event.endMs,
-                        }]);
+                        if (slidesWritable && slidesHandle) {
+                            // Write to OPFS Swap File
+                            await slidesWritable.write(event.imageBuffer);
+                            const length = event.imageBuffer.byteLength;
+                            const offset = currentSlideOffset;
+                            currentSlideOffset += length;
+                            ramBatchSize += length;
+
+                            const mimeType = config.imageFormat === 'webp' ? 'image/webp' : 'image/jpeg';
+                            const slideBlob = new Blob([event.imageBuffer], { type: mimeType });
+                            const tempUrl = URL.createObjectURL(slideBlob);
+                            urlsToCleanup.current.push(tempUrl);
+
+                            const newSlide: SlideIndexEntry = {
+                                offset,
+                                length,
+                                url: tempUrl,
+                                time: event.timestamp,
+                                startMs: event.startMs,
+                                endMs: event.endMs,
+                            };
+                            
+                            slideIndexBuffer.push(newSlide);
+                            setSlides(prev => [...prev, newSlide]);
+
+                            // 25MB Batched Append Flush
+                            if (ramBatchSize >= BATCH_LIMIT) {
+                                await slidesWritable.close();
+                                slidesWritable = await slidesHandle.createWritable({ keepExistingData: true });
+                                await slidesWritable.seek(currentSlideOffset);
+                                
+                                const slidesFile = await slidesHandle.getFile();
+                                const staleUrls: string[] = [];
+                                setSlides(prev => {
+                                    const updated = [...prev];
+                                    slideIndexBuffer.forEach(s => {
+                                        const idx = updated.findIndex(u => u.url === s.url);
+                                        if (idx !== -1) {
+                                            const newBlob = slidesFile.slice(s.offset, s.offset + s.length, mimeType);
+                                            const newUrl = URL.createObjectURL(newBlob);
+                                            staleUrls.push(s.url);
+                                            urlsToCleanup.current = urlsToCleanup.current.filter(u => u !== s.url);
+                                            urlsToCleanup.current.push(newUrl);
+                                            updated[idx] = { ...updated[idx], url: newUrl };
+                                        }
+                                    });
+                                    return updated;
+                                });
+                                // Delay revocation so the browser has time to load the new
+                                // disk-backed images before the old RAM blobs are killed.
+                                // This prevents any split-second blackout in the UI grid.
+                                setTimeout(() => staleUrls.forEach(u => URL.revokeObjectURL(u)), 500);
+                                slideIndexBuffer = [];
+                                ramBatchSize = 0;
+                            }
+                        }
                         break;
                     }
 
@@ -337,6 +432,30 @@ const App: React.FC = () => {
                             }
                         }
                         break;
+                }
+            }            // Final Flush of any remaining RAM slides
+            if (slidesWritable) {
+                await slidesWritable.close();
+                slidesWritable = null;
+                
+                if (slidesHandle && slideIndexBuffer.length > 0) {
+                    const slidesFile = await slidesHandle.getFile();
+                    const mimeType = config.imageFormat === 'webp' ? 'image/webp' : 'image/jpeg';
+                    setSlides(prev => {
+                        const updated = [...prev];
+                        slideIndexBuffer.forEach(s => {
+                            const idx = updated.findIndex(u => u.url === s.url);
+                            if (idx !== -1) {
+                                const newBlob = slidesFile.slice(s.offset, s.offset + s.length, mimeType);
+                                const newUrl = URL.createObjectURL(newBlob);
+                                URL.revokeObjectURL(s.url);
+                                urlsToCleanup.current = urlsToCleanup.current.filter(u => u !== s.url);
+                                urlsToCleanup.current.push(newUrl);
+                                updated[idx] = { ...updated[idx], url: newUrl };
+                            }
+                        });
+                        return updated;
+                    });
                 }
             }
 

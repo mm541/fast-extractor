@@ -12,7 +12,7 @@
     "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
-    "jszip": "^3.10.1",
+    "client-zip": "^2.5.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "web-demuxer": "^4.0.0"
