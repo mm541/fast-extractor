@@ -222,7 +222,8 @@ const App: React.FC = () => {
                         const blob = await response.blob();
                         const startStr = formatMs(slide.startMs).replace(/:/g, '-');
                         const endStr = formatMs(slide.endMs).replace(/:/g, '-');
-                        slidesFolder.file(`slide_${String(i+1).padStart(3, '0')}_${startStr}_to_${endStr}.webp`, blob);
+                        const ext = config.imageFormat === 'webp' ? 'webp' : 'jpg';
+                        slidesFolder.file(`slide_${String(i+1).padStart(3, '0')}_${startStr}_to_${endStr}.${ext}`, blob);
                     }
                 }
             }
@@ -305,7 +306,8 @@ const App: React.FC = () => {
                     }
 
                     case 'slide': {
-                        const slideBlob = new Blob([event.imageBuffer], { type: 'image/webp' });
+                        const mimeType = config.imageFormat === 'webp' ? 'image/webp' : 'image/jpeg';
+                        const slideBlob = new Blob([event.imageBuffer], { type: mimeType });
                         const url = URL.createObjectURL(slideBlob);
                         urlsToCleanup.current.push(url);
                         setSlides(prev => [...prev, {
