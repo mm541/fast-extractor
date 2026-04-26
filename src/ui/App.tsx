@@ -123,6 +123,7 @@ const App: React.FC = () => {
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const retryPending = useRef(false);
     const urlsToCleanup = useRef<string[]>([]);
+    const sessionIdRef = useRef<string>('');
     
     useEffect(() => {
         // Wipe out any orphaned temp files from previously crashed/closed tabs
@@ -206,7 +207,7 @@ const App: React.FC = () => {
                 
                 if (audioUrl && fileName) {
                     try {
-                        const audioH = await feDir.getFileHandle('audio_out.aac');
+                        const audioH = await feDir.getFileHandle(`audio_${sessionIdRef.current}.aac`);
                         yield { name: fileName, input: await audioH.getFile() };
                     } catch (e) {
                         console.warn("Audio file not found in OPFS, skipping.");
@@ -215,7 +216,7 @@ const App: React.FC = () => {
                 
                 if (slides.length > 0) {
                     try {
-                        const slidesH = await feDir.getFileHandle('slides.dat');
+                        const slidesH = await feDir.getFileHandle(`slides_${sessionIdRef.current}.dat`);
                         const slidesFile = await slidesH.getFile();
                         const mimeType = config.imageFormat === 'webp' ? 'image/webp' : 'image/jpeg';
                         const ext = config.imageFormat === 'webp' ? 'webp' : 'jpg';
@@ -282,6 +283,14 @@ const App: React.FC = () => {
         }
 
         cleanupPreviousSession();
+
+        // Clean stale OPFS files from crashed/previous tabs before starting
+        await FastExtractor.cleanupStorage();
+
+        // Generate unique session ID for this extraction's OPFS files
+        const sessionId = `${Date.now()}`;
+        sessionIdRef.current = sessionId;
+
         setIsExtracting(true);
         setStatus('Initializing Processing Engine...');
         setSlides([]);
@@ -309,14 +318,14 @@ const App: React.FC = () => {
             
             let audioWritable: FileSystemWritableFileStream | null = null;
             if (extractAudio) {
-                const audioHandle = await feDir.getFileHandle('audio_out.aac', { create: true });
+                const audioHandle = await feDir.getFileHandle(`audio_${sessionId}.aac`, { create: true });
                 audioWritable = await audioHandle.createWritable({ keepExistingData: false });
             }
 
             let slidesWritable: FileSystemWritableFileStream | null = null;
             let slidesHandle: FileSystemFileHandle | null = null;
             if (extractSlides) {
-                slidesHandle = await feDir.getFileHandle('slides.dat', { create: true });
+                slidesHandle = await feDir.getFileHandle(`slides_${sessionId}.dat`, { create: true });
                 slidesWritable = await slidesHandle.createWritable({ keepExistingData: false });
             }
 
@@ -344,7 +353,7 @@ const App: React.FC = () => {
                             await audioWritable.close();
                             audioWritable = null;
                         }
-                        const audioH = await feDir.getFileHandle('audio_out.aac');
+                        const audioH = await feDir.getFileHandle(`audio_${sessionId}.aac`);
                         const audioFile = await audioH.getFile();
                         const url = URL.createObjectURL(audioFile);
                         urlsToCleanup.current.push(url);
