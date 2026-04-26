@@ -35,7 +35,7 @@ The included React demo (`App.tsx`) showcases how to consume the library's strea
 |-------------------|--------------|------------|------|--------------|-----------------|-------|
 | **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **720p HD** | Turbo | 3h 43m | **47s** | **285×** |
 | **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **720p HD** | Sequential | 3h 43m | **6m 50s** | **33×** |
-| **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **1080p FHD** | Turbo | 5h 53m | **2m 29s** | **142×** |
+| **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **1080p FHD** | Turbo | 5h 53m | **1m 20s** | **265×** |
 | **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **1080p FHD** | Sequential | 5h 53m | **22m 2s** | **16×** |
 | **Redmi Note 9 Pro** (SD 720G, 4GB) | Android (Chrome 146) | **1080p FHD** | Turbo | 5h 53m | **7m 30s** | **47×** |
 | **Redmi Note 9 Pro** (SD 720G, 4GB) | Android (Chrome 146) | **1080p FHD** | Sequential | 5h 53m | **50m** | **7×** |
