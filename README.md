@@ -614,7 +614,7 @@ The reference UI (`App.tsx`) is engineered to process arbitrarily long videos (6
 ### Detection Pipeline (per frame)
 
 1. **Decode** — WebCodecs hardware-decodes the frame
-2. **Downscale** — Rendered to 427×240 via OffscreenCanvas
+2. **Downscale** — Rendered to 424×240 via OffscreenCanvas
 3. **Grayscale** — WASM converts RGBA→luminance (SIMD)
 4. **Edge map** — Sobel-like gradient, branchless threshold
 5. **Grid compare** — 8×8 block density vs baseline
