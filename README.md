@@ -18,6 +18,9 @@ Extract presentation slides and audio from video files entirely in the browser �
 - **📊 Live metrics** — real-time decode speed, frame count, peak RAM, and analysis time
 - **🔒 100% client-side** — your video never leaves the browser
 - **📱 Mobile-safe** — adaptive memory management, Android SAF handling, backpressure controls
+
+### 🎨 Reference Demo UI
+The included React demo (`App.tsx`) showcases how to consume the library's streams efficiently:
 - **💾 Zero-RAM OPFS streaming** — audio chunks and slides stream directly to disk via Origin Private File System
 - **📦 Streaming ZIP export** — `client-zip` pipes assets directly to the user's SSD via `showSaveFilePicker()`, with a Blob fallback for Safari
 - **🧱 25MB Batched Slide Packing** — slides are packed into a single `slides.dat` file with byte-addressable offsets; RAM usage is hard-capped at 25MB regardless of video length
@@ -51,7 +54,7 @@ Extract presentation slides and audio from video files entirely in the browser �
 - **Hardware decode** — WebCodecs uses the GPU, not software decoders
 - **Zero-copy transfers** — `ArrayBuffer` transferred (not cloned) from Worker to main thread
 - **LLVM-optimized** — bounds-check-free loops, branchless edge detection, SIMD auto-vectorization
-- **Zero-RAM UI pipeline** — audio streams to OPFS, slides batch-flush to a single `.dat` file every 25MB, ZIP exports stream directly to disk
+- **Zero-RAM UI pipeline (Demo)** — audio streams to OPFS, slides batch-flush to a single `.dat` file every 25MB, ZIP exports stream directly to disk
 
 ---
 
