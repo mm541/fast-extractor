@@ -50,7 +50,7 @@ The included React demo (`App.tsx`) showcases how to consume the library's strea
 ![Fast-Extractor Architecture](docs/architecture-pipeline.png)
 
 **Key architecture decisions:**
-- **Zero GC pressure** — static WASM memory arena, no per-frame allocations
+- **Zero GC pressure** — 894KB preallocated static WASM memory arena, no per-frame allocations
 - **Hardware decode** — WebCodecs uses the GPU, not software decoders
 - **Zero-copy transfers** — `ArrayBuffer` transferred (not cloned) from Worker to main thread
 - **LLVM-optimized** — bounds-check-free loops, branchless edge detection, SIMD auto-vectorization
@@ -676,7 +676,7 @@ For anyone reading the source or contributing:
 
 | Invariant | Enforced By |
 |---|---|
-| **Zero per-frame allocations** | Static `FrameArena` in WASM — allocated once, never freed, never resized |
+| **Zero per-frame allocations** | `FrameArena` (894KB preallocated `UnsafeCell`) in WASM — allocated once, never freed, never resized |
 | **Lazy memory init** | `arena()` helper auto-initializes on first use — impossible to read uninitialized memory |
 | **No data races (UB prevention)** | `UnsafeCell` provides safe interior mutability instead of `static mut`, preventing LLVM `noalias` optimization bugs. |
 | **VideoFrame leak prevention** | Every `VideoFrame` is closed immediately after pixel copy — unclosed frames hold GPU memory |
