@@ -13,7 +13,7 @@ Extract presentation slides and audio from video files entirely in the browser �
 - **🖼️ Slide extraction** — unique slides captured as WebP/JPEG with millisecond-accurate timestamps
 - **🎧 Audio extraction** — raw AAC stream, ready to play or transcribe
 - **🚀 Turbo mode** — keyframe-only scanning, processes a 1-hour HD video in under 15 seconds
-- **🎯 Accurate mode** — sequential full-frame decode for pixel-perfect transitions
+- **🎯 Sequential mode** — sequential full-frame decode for pixel-perfect transitions
 - **🎭 Region masking** — interactive 8×8 grid to exclude webcam overlays, watermarks, etc.
 - **📊 Live metrics** — real-time decode speed, frame count, peak RAM, and analysis time
 - **🔒 100% client-side** — your video never leaves the browser
@@ -31,11 +31,11 @@ Extract presentation slides and audio from video files entirely in the browser �
 | Device / Hardware | OS / Browser | Resolution | Mode | Video Length | Processing Time | Speed |
 |-------------------|--------------|------------|------|--------------|-----------------|-------|
 | **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **720p HD** | Turbo | 3h 43m | **47s** | **285×** |
-| **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **720p HD** | Accurate | 3h 43m | **6m 50s** | **33×** |
+| **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **720p HD** | Sequential | 3h 43m | **6m 50s** | **33×** |
 | **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **1080p FHD** | Turbo | 5h 53m | **2m 29s** | **142×** |
-| **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **1080p FHD** | Accurate | 5h 53m | **22m 2s** | **16×** |
+| **ASUS TUF F17** (i9-12900H, 16GB, RTX 3050 Ti) | Linux (Chrome 142) | **1080p FHD** | Sequential | 5h 53m | **22m 2s** | **16×** |
 | **Redmi Note 9 Pro** (SD 720G, 4GB) | Android (Chrome 146) | **1080p FHD** | Turbo | 5h 53m | **10m** | **35×** |
-| **Redmi Note 9 Pro** (SD 720G, 4GB) | Android (Chrome 146) | **1080p FHD** | Accurate | 5h 53m | **1h 16m** | **4.6×** |
+| **Redmi Note 9 Pro** (SD 720G, 4GB) | Android (Chrome 146) | **1080p FHD** | Sequential | 5h 53m | **1h 16m** | **4.6×** |
 | **AMD A6-7310** (2015 Legacy APU, 4GB) | Linux (Firefox 149) | **1080p FHD** | Turbo | 5h 53m | **16m 17s** | **22×** |
 
 *Note: The AMD A6 benchmark demonstrates worst-case "floor" performance, successfully extracting a 6-hour video on a decade-old processor with slow DDR3 memory, proving the engine's extreme memory efficiency.*
@@ -255,14 +255,14 @@ No performance impact when `debug: false` (the default) — the logging branch i
 | Mode | Strategy | Speed | Accuracy | Default |
 |------|----------|-------|----------|---------|
 | `'turbo'` | Keyframe-only seeking | ~20s / 1hr video | ~95% of transitions | ✅ Yes |
-| `'accurate'` | Sequential frame decode | ~2-3min / 1hr video | 100% of transitions | |
+| `'sequential'` | Sequential frame decode | ~2-3min / 1hr video | 100% of transitions | |
 
 ```typescript
 // Turbo (default) — 10x faster, skips non-keyframes
 new FastExtractor({ mode: 'turbo' });
 
-// Accurate — every frame, catches subtle transitions
-new FastExtractor({ mode: 'accurate' });
+// Sequential — every frame, catches subtle transitions
+new FastExtractor({ mode: 'sequential' });
 ```
 
 ![Turbo vs Sequential Mode](docs/turbo-vs-sequential.png)
@@ -297,26 +297,26 @@ new FastExtractor({
 ### Parameter Reference
 
 #### `mode`
-**Type:** `'turbo' | 'accurate'` · **Default:** `'turbo'`
+**Type:** `'turbo' | 'sequential'` · **Default:** `'turbo'`
 
 Controls which video decoding strategy is used.
 
 - **`'turbo'`** — Decodes only keyframes (IDR frames). The decoder is flushed between each keyframe, resulting in ~10x speed. Catches ~95% of slide transitions. Uses software decoding (`prefer-software`) to avoid GPU pipeline stall issues with isolated keyframes on mobile GPUs.
-- **`'accurate'`** — Decodes every frame sequentially in 300-second chunks. Catches 100% of transitions including gradual scrolls and animations. Uses hardware decoding (GPU) since it feeds a continuous frame stream.
+- **`'sequential'`** — Decodes every frame sequentially in 300-second chunks. Catches 100% of transitions including gradual scrolls and animations. Uses hardware decoding (GPU) since it feeds a continuous frame stream.
 
 | Scenario | Recommended |
 |----------|-------------|
 | Lecture recordings (1+ hours) | `'turbo'` |
-| Short screen recordings (<10 min) | `'accurate'` |
+| Short screen recordings (<10 min) | `'sequential'` |
 | Mobile devices with ≤4GB RAM | `'turbo'` |
-| Animated/scrolling slide transitions | `'accurate'` |
+| Animated/scrolling slide transitions | `'sequential'` |
 
 ---
 
 #### `sampleFps`
 **Type:** `number` · **Range:** `0.2–10` · **Default:** `1`
 
-**Accurate mode only.** Frame sampling rate for accurate mode. 
+**Sequential mode only.** Frame sampling rate for sequential mode. 
 - **`1`** — Compare 1 frame per second (default).
 - **`0.5`** — Extract and compare 1 frame every 2 seconds. Faster, but may drift timestamp precision slightly.
 - **`5`** — Analyze 5 frames a second. Catches extremely fast transitions but will heavily load the CPU.
