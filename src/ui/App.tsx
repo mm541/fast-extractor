@@ -805,26 +805,14 @@ const App: React.FC = () => {
                     <div className="result-card slide-up">
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <h3 style={{ margin: 0 }}>🎧 Extracted Audio</h3>
-                            <div>
-                                <a href={audioUrl} download={fileName} className="btn-download" style={{ marginRight: '10px' }}>
-                                    Download {fileName}
-                                </a>
-                                {slides.length > 0 && (
-                                    <button 
-                                        onClick={downloadAsZip} 
-                                        disabled={isZipping}
-                                        className="btn-download" 
-                                        style={{ backgroundColor: '#2b2b2b', color: '#fff', border: '1px solid #444', marginLeft: '10px' }}
-                                    >
-                                        {isZipping ? '⌛ Zipping...' : '📦 Download All as ZIP'}
-                                    </button>
-                                )}
-                            </div>
+                            <a href={audioUrl} download={fileName} className="btn-download">
+                                Download {fileName}
+                            </a>
                         </div>
                     </div>
                 )}
                 
-                {slides.length > 0 && !audioUrl && !isExtracting && (
+                {!isExtracting && (slides.length > 0 || audioUrl) && (
                      <div className="result-card slide-up" style={{ textAlign: 'right' }}>
                         <button 
                             onClick={downloadAsZip} 
