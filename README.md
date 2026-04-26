@@ -10,7 +10,7 @@ Extract presentation slides and audio from video files entirely in the browser �
 
 ## ✨ Features
 
-- **🖼️ Slide extraction** — unique slides captured as WebP with millisecond-accurate timestamps
+- **🖼️ Slide extraction** — unique slides captured as WebP/JPEG with millisecond-accurate timestamps
 - **🎧 Audio extraction** — raw AAC stream, ready to play or transcribe
 - **🚀 Turbo mode** — keyframe-only scanning, processes a 1-hour HD video in under 15 seconds
 - **🎯 Accurate mode** — sequential full-frame decode for pixel-perfect transitions
@@ -18,6 +18,9 @@ Extract presentation slides and audio from video files entirely in the browser �
 - **📊 Live metrics** — real-time decode speed, frame count, peak RAM, and analysis time
 - **🔒 100% client-side** — your video never leaves the browser
 - **📱 Mobile-safe** — adaptive memory management, Android SAF handling, backpressure controls
+- **💾 Zero-RAM OPFS streaming** — audio chunks and slides stream directly to disk via Origin Private File System
+- **📦 Streaming ZIP export** — `client-zip` pipes assets directly to the user's SSD via `showSaveFilePicker()`, with a Blob fallback for Safari
+- **🧱 25MB Batched Slide Packing** — slides are packed into a single `slides.dat` file with byte-addressable offsets; RAM usage is hard-capped at 25MB regardless of video length
 
 ---
 
@@ -41,13 +44,14 @@ Extract presentation slides and audio from video files entirely in the browser �
 
 ## How It Works
 
-![Fast-Extractor Architecture](https://kroki.io/graphviz/svg/eJx8U11PIkEQfOdXdPZeIAfRUzwhHiTI4kcikYgeD2Iuszs1MHGY2ZudNW4u_vfLfiJKJAF2q6t7qqt7uFxZFq3pkv41iCzTz1zawf35WYNIGw56jNcswiAwr22KXaow8KxJNAdvC6kUuNem7CE0ytiB9030RF-wDDTaabbBwLuCeoGTYYZWNA4c4af3lJ0DvgI9fs1nPDgJeMFvEP2WHOZCKtCjYgHUwMsRyiCvTYVmL0yV1Bz2g0T0EULUteIkKDwIVRI72D8LY59hc0OIyvILBFTiMxlBSQ3vLCfs0d05N4qX4f2elanvfcs_ZaACQ_AuZyWY_9zOLuZ1z_nLDUthl7p5j01Ec2csW6G1x4OnosoCwdhwhHFdZYuMZtdL3bxaFPaSj9Bw2NbHCQtxjMN3sxEiOO3y6oCi60-esnhTOlp7epfEjg5oMZpPaaJXUoOaN1KDWZpiY2xKIwvNWmX_X3u56yaOxZHYhiq4fxgy0a_h8m-UcGkmr652JAdo8uosC91SN0ejMY1NlLaqHonmSnL42ObkAPlwCJ00eqk7dGlZGodMgebXU79AJKf7tUW8NopLvcpAfsXiNfngSVTVf2tk3wbRbeKiZHvIHRhngcLcWbDNr1KhsZMXaDdc6mauIs6GPKPvRWM0Xif6Of44RfTECfrvptj7EZ72utvF0cYh07Nz2zrD3Q3MLxz51pTS82BnuGfLaDrrHiwQTOk8EaLax4r_aQSUeV7o95lj9WXdFu4MPw-hVGrZBvQgteuNrGVpnVzzszZ2naUHLf8myJ2Li4Ra0x52oazoJKe__Q8AAP__7Aek1w)
+![Fast-Extractor Architecture](docs/architecture-pipeline.png)
 
 **Key architecture decisions:**
 - **Zero GC pressure** — static WASM memory arena, no per-frame allocations
 - **Hardware decode** — WebCodecs uses the GPU, not software decoders
 - **Zero-copy transfers** — `ArrayBuffer` transferred (not cloned) from Worker to main thread
 - **LLVM-optimized** — bounds-check-free loops, branchless edge detection, SIMD auto-vectorization
+- **Zero-RAM UI pipeline** — audio streams to OPFS, slides batch-flush to a single `.dat` file every 25MB, ZIP exports stream directly to disk
 
 ---
 
@@ -75,21 +79,23 @@ while (true) {
 
   switch (event.type) {
     case 'audio':
-      // Raw AAC chunk (ArrayBuffer). Accumulate for playback.
-      audioChunks.push(event.chunk);
+      // Raw AAC chunk (ArrayBuffer).
+      // Recommended: stream directly to OPFS instead of accumulating in RAM.
+      await opfsAudioStream.write(event.chunk);
       break;
 
     case 'audio_done':
       // All audio extracted. event.fileName = suggested filename.
-      const blob = new Blob(audioChunks, { type: 'audio/aac' });
+      await opfsAudioStream.close();
       break;
 
     case 'slide':
       // New slide detected.
-      // event.imageBuffer = WebP ArrayBuffer
+      // event.imageBuffer = WebP/JPEG ArrayBuffer
       // event.timestamp   = "01:23:45"
       // event.startMs     = 83000
       // event.endMs       = 128000
+      // Recommended: append to an OPFS slides.dat file with byte offsets.
       break;
 
     case 'progress':
@@ -258,6 +264,8 @@ new FastExtractor({ mode: 'turbo' });
 // Accurate — every frame, catches subtle transitions
 new FastExtractor({ mode: 'accurate' });
 ```
+
+![Turbo vs Sequential Mode](docs/turbo-vs-sequential.png)
 
 ---
 
@@ -563,24 +571,42 @@ fast-extractor/
 │   │   ├── extractor.ts         #   Slide detection engine (three-pointer drift)
 │   │   ├── worker.ts            #   Web Worker — OPFS + audio + video pipeline
 │   │   ├── index.ts             #   Barrel export — single import entry point
-│   │   ├── types/               #   Type declarations (mp4box.d.ts)
 │   │   └── wasm/                #   Pre-built WASM binaries
 │   │       ├── wasm_extractor_bg.wasm
 │   │       └── wasm_extractor.js
 │   └── ui/                      # ── Reference demo app (React) ──
-│       ├── App.tsx              #   Demo UI with drag-and-drop
+│       ├── App.tsx              #   Zero-RAM OPFS streaming UI (25MB batched slide packing)
+│       ├── App.css              #   Component-specific styles
 │       ├── GridMaskPicker.tsx   #   Interactive region masking component
-│       └── useFastExtractor.ts  #   React hook — managed state wrapper
+│       ├── useFastExtractor.ts  #   React hook — managed state wrapper
+│       └── index.css            #   Global design system
+├── docs/                        # ── Architecture documentation ──
+│   ├── slide-detection-orchestrator.md
+│   ├── slide-detection-wasm.md
+│   ├── AUDIT_CHECKLIST.md
+│   ├── WEBCODECS_HAZARDS.md
+│   └── *.png                    #   Graphviz pipeline diagrams
 └── wasm-extractor/
     └── src/
         └── lib.rs               # Rust/WASM module
-            • Static 512KB memory arena (zero GC, zero per-frame alloc)
+            • Static 894KB memory arena (zero GC, zero per-frame alloc)
             • RGBA→grayscale (BT.601, SIMD auto-vectorized)
             • Edge detection (branchless Sobel gradient)
             • dHash perceptual hashing (64-bit fingerprint)
             • 8×8 grid density comparison with bitmask exclusion
             • Audio extraction (Symphonia AAC over OPFS sync reads)
 ```
+
+### Zero-RAM UI Pipeline
+
+The reference UI (`App.tsx`) is engineered to process arbitrarily long videos (6+ hours) without exceeding 25MB of RAM:
+
+| Component | Strategy | RAM Usage |
+|-----------|----------|----------|
+| **Audio** | Chunks stream directly to `.fast_extractor/audio_out.aac` in OPFS | **0 MB** |
+| **Slides** | Appended to a single `slides.dat` in OPFS; flushed every 25MB | **0–25 MB** (capped) |
+| **UI Grid** | Temporary RAM blob URLs swapped to disk `slice()` pointers after each flush | **~50 MB** (browser-managed decoded pixels) |
+| **ZIP Export** | `client-zip` streams from OPFS → `showSaveFilePicker()` → disk | **0 MB** |
 
 ### Detection Pipeline (per frame)
 
@@ -592,6 +618,14 @@ fast-extractor/
 6. **Stability** — Requires N consecutive stable frames
 7. **dHash dedup** — Perceptual hash rejects duplicate slides
 8. **Emit** — Slide captured and streamed to consumer
+
+### Pipeline Diagrams
+
+#### Per-Frame Slide Detection
+![Frame Detection Pipeline](docs/frame-detection-pipeline.png)
+
+#### Zero-RAM OPFS Streaming Data Flow
+![OPFS Streaming Pipeline](docs/opfs-streaming-pipeline.png)
 
 ---
 
@@ -647,6 +681,9 @@ For anyone reading the source or contributing:
 | **Mobile file expiry bypass** | File is copied to OPFS while `<input>` permission is still alive — subsequent reads use the OPFS copy |
 | **Nested-worker CORS bypass** | web-demuxer WASM is fetched and converted to `data:` URL — no network request from `null`-origin blob worker |
 | **Zero-copy slide transfer** | `ArrayBuffer` is transferred (not cloned) from Worker to main thread via `postMessage` transferList |
+| **25MB RAM hard cap** | Slide batch buffer flushes to OPFS every 25MB; stale RAM URLs are deferred-revoked after 500ms to prevent UI flicker |
+| **Zero-RAM audio pipeline** | Audio chunks are piped directly to OPFS `FileSystemWritableFileStream` — no accumulation array |
+| **Streaming ZIP export** | `client-zip` generator yields OPFS file slices on-demand; `showSaveFilePicker()` streams to disk with 0 RAM overhead |
 
 ---
 
@@ -654,13 +691,13 @@ For anyone reading the source or contributing:
 
 ```
 dist/assets/
-  worker-DC5oHOjA.js               133KB    Compiled Web Worker
-  wasm_extractor_bg-DG2f_dB7.wasm  545KB    Rust/WASM binary (gzip: 272KB)
-  index-D_vfm4N4.js                210KB    React UI (gzip: 67KB)
-  index-CmtCqZpd.css               12KB     Styles (gzip: 3KB)
+  worker-BXEFk5Ps.js                20KB    Compiled Web Worker
+  wasm_extractor_bg-DJfE8Kde.wasm  561KB    Rust/WASM binary (gzip: 273KB)
+  index-DY03MU5U.js                342KB    React UI + client-zip (gzip: 117KB)
+  index-D7e5IDWP.css                14KB    Styles (gzip: 4KB)
 ```
 
-Total cold-load transfer: **~345KB gzipped**.
+Total cold-load transfer: **~394KB gzipped**.
 
 ---
 

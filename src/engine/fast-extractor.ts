@@ -107,7 +107,7 @@ export interface AudioDoneEvent {
 /** A slide image was detected and captured. */
 export interface SlideEvent {
   type: 'slide';
-  /** Raw image data (WebP format) */
+  /** Raw image data (WebP/JPEG format) */
   imageBuffer: ArrayBuffer;
   /** Human-readable timestamp (e.g. "01:23:45") */
   timestamp: string;
