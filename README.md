@@ -684,9 +684,7 @@ For anyone reading the source or contributing:
 | **Mobile file expiry bypass** | File is copied to OPFS while `<input>` permission is still alive — subsequent reads use the OPFS copy |
 | **Nested-worker CORS bypass** | web-demuxer WASM is fetched and converted to `data:` URL — no network request from `null`-origin blob worker |
 | **Zero-copy slide transfer** | `ArrayBuffer` is transferred (not cloned) from Worker to main thread via `postMessage` transferList |
-| **25MB RAM hard cap** | Slide batch buffer flushes to OPFS every 25MB; stale RAM URLs are deferred-revoked after 500ms to prevent UI flicker |
-| **Zero-RAM audio pipeline** | Audio chunks are piped directly to OPFS `FileSystemWritableFileStream` — no accumulation array |
-| **Streaming ZIP export** | `client-zip` generator yields OPFS file slices on-demand; `showSaveFilePicker()` streams to disk with 0 RAM overhead |
+
 
 ---
 
