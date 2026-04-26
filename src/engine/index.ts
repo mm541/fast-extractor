@@ -24,7 +24,7 @@ export type {
   AudioDoneEvent,
   SlideEvent,
   ProgressEvent,
-  ErrorEvent,
+  ExtractorErrorEvent,
 } from './fast-extractor';
 
 // ─── Configuration & Browser Support ───

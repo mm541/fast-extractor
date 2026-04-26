@@ -134,7 +134,7 @@ export interface ProgressEvent {
 }
 
 /** A recoverable error occurred (e.g. Android SAF permission expired). */
-export interface ErrorEvent {
+export interface ExtractorErrorEvent {
   type: 'error';
   /** Human-readable error message */
   message: string;
@@ -143,7 +143,7 @@ export interface ErrorEvent {
 }
 
 /** Union of all events emitted by the extraction stream. */
-export type ExtractorEvent = AudioChunkEvent | AudioDoneEvent | SlideEvent | ProgressEvent | ErrorEvent;
+export type ExtractorEvent = AudioChunkEvent | AudioDoneEvent | SlideEvent | ProgressEvent | ExtractorErrorEvent;
 
 // ─── Browser Compatibility ───
 
