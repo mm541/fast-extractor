@@ -133,17 +133,8 @@ export interface ProgressEvent {
   };
 }
 
-/** A recoverable error occurred (e.g. Android SAF permission expired). */
-export interface ExtractorErrorEvent {
-  type: 'error';
-  /** Human-readable error message */
-  message: string;
-  /** Whether the error is likely recoverable by re-selecting the file */
-  recoverable: boolean;
-}
-
 /** Union of all events emitted by the extraction stream. */
-export type ExtractorEvent = AudioChunkEvent | AudioDoneEvent | SlideEvent | ProgressEvent | ExtractorErrorEvent;
+export type ExtractorEvent = AudioChunkEvent | AudioDoneEvent | SlideEvent | ProgressEvent;
 
 // ─── Browser Compatibility ───
 
@@ -514,23 +505,10 @@ export class FastExtractor {
                   const errorCode: ExtractorErrorCode = e.data.code ?? 'ERR_WORKER_GENERIC';
                   const customError = new ExtractorError(errorCode, errorMsg);
                   
-                  const isRecoverable = errorMsg.includes('File ingest failed') || errorMsg.includes('could not be read');
                   this._extracting = false;
-                  if (errorCode === 'ERR_FILE_INGEST' || isRecoverable) {
-                    // Emit as a recoverable event — let consumer decide how to handle
-                    controller.enqueue({
-                      type: 'error',
-                      message: customError.message,
-                      recoverable: true,
-                    });
-                    // Don't terminate — worker self-closes after OPFS cleanup
-                    worker = null;
-                    controller.close();
-                  } else {
-                    // Don't terminate — worker self-closes after OPFS cleanup
-                    worker = null;
-                    controller.error(customError);
-                  }
+                  // Don't terminate — worker self-closes after OPFS cleanup
+                  worker = null;
+                  controller.error(customError);
                   break;
                 }
               }
@@ -646,11 +624,7 @@ export class FastExtractor {
             
             if (isRecoverable) {
               try {
-                controller.enqueue({
-                  type: 'error',
-                  message: msg,
-                  recoverable: true,
-                });
+                controller.error(new ExtractorError('ERR_FILE_INGEST', 'File could not be read'));
                 controller.close();
               } catch { /* stream already closed */ }
               worker = null;
@@ -722,9 +696,6 @@ export class FastExtractor {
             break;
           case 'progress':
             callbacks.onProgress?.(value.percent, value.message, value.metrics);
-            break;
-          case 'error':
-            callbacks.onError?.(new ExtractorError('ERR_WORKER_GENERIC', value.message));
             break;
         }
       }

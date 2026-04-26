@@ -429,18 +429,6 @@ const App: React.FC = () => {
                         if (event.metrics) setMetrics(event.metrics);
                         break;
 
-                    case 'error':
-                        // Recoverable error (e.g. Android SAF permission expired)
-                        if (event.recoverable) {
-                            setStatus('⚠️ File access expired. Please re-select the same file.');
-                            setIsExtracting(false);
-                            retryPending.current = true;
-                            if (fileInputRef.current) {
-                                fileInputRef.current.value = '';
-                                fileInputRef.current.click();
-                            }
-                        }
-                        break;
                 }
             }            // Final Flush of any remaining RAM slides
             if (slidesWritable) {
@@ -473,9 +461,20 @@ const App: React.FC = () => {
             setJobMetrics(prev => ({ ...prev, end: performance.now() }));
             setIsExtracting(false);
         } catch (err: any) {
-            // Fatal (non-recoverable) error
-            setStatus(`Error: ${err.message}`);
-            setIsExtracting(false);
+            if (err.name === 'ExtractorError' && (err.code === 'ERR_FILE_INGEST' || err.message.includes('could not be read'))) {
+                // Recoverable error (e.g. Android SAF permission expired)
+                setStatus('⚠️ File access expired. Please re-select the same file.');
+                setIsExtracting(false);
+                retryPending.current = true;
+                if (fileInputRef.current) {
+                    fileInputRef.current.value = '';
+                    fileInputRef.current.click();
+                }
+            } else {
+                // Fatal (non-recoverable) error
+                setStatus(`Error: ${err.message}`);
+                setIsExtracting(false);
+            }
         } finally {
             abortRef.current = null;
         }
