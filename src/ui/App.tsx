@@ -312,18 +312,19 @@ const App: React.FC = () => {
 
         if (!extractAudio) setAudioUrl(null); // clear stale audio from a previous run
 
+        let audioWritable: FileSystemWritableFileStream | null = null;
+        let slidesWritable: FileSystemWritableFileStream | null = null;
+        let slidesHandle: FileSystemFileHandle | null = null;
+
         try {
             const root = await navigator.storage.getDirectory();
             const feDir = await root.getDirectoryHandle('.fast_extractor', { create: true });
             
-            let audioWritable: FileSystemWritableFileStream | null = null;
             if (extractAudio) {
                 const audioHandle = await feDir.getFileHandle(`audio_${sessionId}.aac`, { create: true });
                 audioWritable = await audioHandle.createWritable({ keepExistingData: false });
             }
 
-            let slidesWritable: FileSystemWritableFileStream | null = null;
-            let slidesHandle: FileSystemFileHandle | null = null;
             if (extractSlides) {
                 slidesHandle = await feDir.getFileHandle(`slides_${sessionId}.dat`, { create: true });
                 slidesWritable = await slidesHandle.createWritable({ keepExistingData: false });
@@ -461,6 +462,14 @@ const App: React.FC = () => {
             setJobMetrics(prev => ({ ...prev, end: performance.now() }));
             setIsExtracting(false);
         } catch (err: any) {
+            // Close OPFS handles safely before retrying to prevent locks
+            if (slidesWritable) {
+                try { await slidesWritable.close(); } catch {}
+            }
+            if (audioWritable) {
+                try { await audioWritable.close(); } catch {}
+            }
+
             if (err.name === 'ExtractorError' && (err.code === 'ERR_FILE_INGEST' || err.message.includes('could not be read'))) {
                 // Recoverable error (e.g. Android SAF permission expired)
                 setStatus('⚠️ File access expired. Please re-select the same file.');
