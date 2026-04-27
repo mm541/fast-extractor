@@ -255,7 +255,7 @@ export interface ExtractorCallbacks {
   onSlide?: (slide: { imageBuffer: ArrayBuffer; timestamp: string; startMs: number; endMs: number }) => void;
   /** Called on progress updates. */
   onProgress?: (percent: number, message: string, metrics?: ProgressEvent['metrics']) => void;
-  /** Called on recoverable errors (stream stays alive). */
+ 
   onError?: (error: ExtractorError | Error) => void;
   /** Called when extraction is fully complete. */
   onDone?: () => void;
@@ -351,7 +351,7 @@ export class FastExtractor {
       for await (const [name] of (feDir as any).entries()) {
         entries.push(name);
       }
-      for (const name of entries) {
+      await Promise.all(entries.map(async (name) => {
         try {
           if (navigator.locks) {
             await navigator.locks.request(
@@ -364,7 +364,7 @@ export class FastExtractor {
             await feDir.removeEntry(name);
           }
         } catch {}
-      }
+      }));
     } catch (e) {
       console.warn('[FastExtractor] cleanupStorage failed:', e);
     }
