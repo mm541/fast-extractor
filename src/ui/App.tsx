@@ -182,6 +182,7 @@ const App: React.FC = () => {
             const f = e.target.files[0];
             setFile(f);
             fileRef.current = f;
+            cleanupPreviousSession();
             setAudioUrl(null);
             setSlides([]);
             setStatus('File selected: ' + f.name);
