@@ -18,11 +18,11 @@
  */
 
 import { useState, useCallback, useRef } from 'react';
-import { FastExtractor } from '../engine/fast-extractor';
+import { FastExtractor } from '../engine/FastExtractor';
 import type {
   FastExtractorOptions,
   ProgressEvent,
-} from '../engine/fast-extractor';
+} from '../engine/types';
 
 // ─── Hook State Types ───
 
@@ -164,11 +164,6 @@ export function useFastExtractor(options?: FastExtractorOptions): UseFastExtract
               if (value.metrics) {
                 setMetrics(value.metrics);
               }
-              break;
-
-            case 'error':
-              setError(new Error(value.message));
-              break;
           }
         }
 

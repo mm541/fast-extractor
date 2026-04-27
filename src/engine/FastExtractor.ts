@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * fast-extractor.ts — Public Library API
+ * FastExtractor.ts — Public Library API
  * ============================================================================
  * 
  * ⚠️ CRITICAL ARCHITECTURE HAZARD: THE 100% CPU BURN SPINLOOP
@@ -67,199 +67,17 @@
 // ?url    → returns a hashed asset URL (e.g. /assets/wasm-abc123.wasm)
 import MediaWorker from './worker?worker';
 import defaultWasmUrl from './wasm/wasm_extractor_bg.wasm?url';
-import { WebDemuxer } from 'web-demuxer';
 
-// ─── Public Error Types ───
-
-export type ExtractorErrorCode =
-  | 'ERR_OPFS_NOT_SUPPORTED'
-  | 'ERR_OPFS_PERMISSION'
-  | 'ERR_OPFS_STALE_LOCK'
-  | 'ERR_WASM_INIT'
-  | 'ERR_FILE_INGEST'
-  | 'ERR_AUDIO_EXTRACTION'
-  | 'ERR_VIDEO_DECODE'
-  | 'ERR_WORKER_GENERIC';
-
-export class ExtractorError extends Error {
-  constructor(public code: ExtractorErrorCode, message: string) {
-    super(message);
-    this.name = 'ExtractorError';
-  }
-}
-
-// ─── Public Event Types ───
-
-/** Audio chunk streamed from the worker (zero-copy transferred ArrayBuffer) */
-export interface AudioChunkEvent {
-  type: 'audio';
-  /** Raw AAC audio data (ADTS-framed). Accumulate and wrap in Blob to play. */
-  chunk: ArrayBuffer;
-}
-
-/** Audio extraction complete. No more audio events will be emitted. */
-export interface AudioDoneEvent {
-  type: 'audio_done';
-  /** Suggested filename (e.g. "lecture.aac") */
-  fileName: string;
-}
-
-/** A slide image was detected and captured. */
-export interface SlideEvent {
-  type: 'slide';
-  /** Raw image data (WebP/JPEG format) */
-  imageBuffer: ArrayBuffer;
-  /** Human-readable timestamp (e.g. "01:23:45") */
-  timestamp: string;
-  /** Start time in milliseconds (when this slide first appeared) */
-  startMs: number;
-  /** End time in milliseconds (when the next slide replaced this one) */
-  endMs: number;
-}
-
-/** Progress update from the extraction engine. */
-export interface ProgressEvent {
-  type: 'progress';
-  /** 0-100 */
-  percent: number;
-  /** Human-readable status message */
-  message: string;
-  /** Optional performance metrics */
-  metrics?: {
-    totalFrames: number;
-    totalSlides: number;
-    peakRamMb: number;
-    avgFrameProcessTimeMs: number;
-  };
-}
-
-/** Union of all events emitted by the extraction stream. */
-export type ExtractorEvent = AudioChunkEvent | AudioDoneEvent | SlideEvent | ProgressEvent;
-
-// ─── Browser Compatibility ───
-
-/** Result of checking whether the current browser supports extraction. */
-export interface BrowserSupport {
-  /** WebCodecs (VideoDecoder) available — required */
-  webCodecs: boolean;
-  /** Origin Private File System available — required for audio extraction */
-  opfs: boolean;
-  /** OffscreenCanvas available — optional, for worker-side rendering */
-  offscreenCanvas: boolean;
-  /** Device RAM in GB (if exposed by navigator.deviceMemory) */
-  deviceMemoryGb: number | null;
-  /** Whether mobile browser is detected */
-  /** Number of logical CPU cores */
-  hardwareConcurrency: number;
-  /** Whether WebGPU API is available for future hardware acceleration */
-  webGpu: boolean;
-  /** Whether mobile browser is detected */
-  isMobile: boolean;
-  /** Overall: can this browser run the extraction engine? */
-  supported: boolean;
-  /** Human-readable reason if not supported */
-  reason?: string;
-}
-
-// ─── Configuration ───
-
-/** Options for the FastExtractor. Only mode is required; everything else has sensible defaults. */
-export interface FastExtractorOptions {
-  // ─── Extraction mode ───
-  /** 'turbo' = keyframe-only (~10x faster), 'sequential' = every frame */
-  mode?: 'sequential' | 'turbo';
-  
-  /** 
-   * Frame sampling rate for sequential mode (0.2 - 10). Default: 1.
-   * 1 = compare 1 frame per second.
-   * 0.5 = one frame every 2 seconds.
-   * Ignored in turbo mode.
-   */
-  sampleFps?: number;
-
-  // ─── Asset URLs (for library consumers using non-Vite bundlers) ───
-  /**
-   * URL to the core WASM binary (wasm_extractor_bg.wasm).
-   * Default: auto-resolved by Vite. Override this when using Webpack/Rollup/etc.
-   */
-  wasmUrl?: string;
-  /**
-   * URL to the web-demuxer WASM binary (web-demuxer.wasm).
-   * Default: '/wasm-files/web-demuxer.wasm'. Override to match your CDN/asset path.
-   */
-  demuxerWasmUrl?: string;
-  /**
-   * A pre-constructed Worker instance. If provided, the library uses this
-   * instead of creating its own. Useful for bundlers that don't support
-   * Vite's `?worker` import syntax.
-   */
-  worker?: Worker;
-
-  // ─── Detection tuning ───
-  /** Edge detection sensitivity (10-100). Default: 30 */
-  edgeThreshold?: number;
-  /** Minimum changed blocks to trigger slide (1-64). Default: 12 */
-  blockThreshold?: number;
-  /** Minimum seconds between slides. Default: 3 */
-  minSlideDuration?: number;
-  /** Density percentage threshold for block comparison. Default: 5 */
-  densityThresholdPct?: number;
-  /** Perceptual hash hamming distance for duplicate detection. Default: 10 */
-  dhashDuplicateThreshold?: number;
-  /** Max dHash distance to confirm a turbo candidate as real (not a transition blend).
-   *  Lower = stricter filtering (5-8 for crossfade-heavy videos).
-   *  Higher = more permissive (12-15 for clean-cut transitions). Default: 10 */
-  confirmThreshold?: number;
-  /** 64-bit bitmask: bit (row*8 + col) = 1 skips that 8×8 grid block. Default: 0n (no masking). */
-  ignoreMask?: bigint;
-
-  // ─── Output selection ───
-  /** Extract audio from the video. Default: true */
-  extractAudio?: boolean;
-  /** Extract slide images from the video. Default: true */
-  extractSlides?: boolean;
-  /** Encoded image quality of the extracted slides (0.01 - 1.0). Default: 0.8 */
-  imageQuality?: number;
-  /** Output format for extracted slides. Default: 'jpeg' */
-  imageFormat?: 'webp' | 'jpeg';
-  /** Max width of output slides (e.g. 1280 or 1920). 0 means original. Default: 0. */
-  exportResolution?: number;
-
-  // ─── Storage ───
-  /**
-   * Whether to delete OPFS temp files after extraction completes.
-   * Default: true. Set to false to keep the ingested file in OPFS for
-   * re-extraction with different settings (avoids re-ingesting the same video).
-   * Call FastExtractor.cleanupStorage() explicitly when you're done.
-   */
-  cleanupAfterExtraction?: boolean;
-
-  // ─── Debugging ───
-  /**
-   * When true, logs all internal worker messages and state transitions to the
-   * browser console. Useful for diagnosing extraction failures.
-   * Default: false. Has zero performance impact when disabled.
-   */
-  debug?: boolean;
-}
-
-// ─── Callback API ───
-
-/** Callback-style interface as an alternative to ReadableStream consumption. */
-export interface ExtractorCallbacks {
-  /** Called for each raw AAC audio chunk. */
-  onAudio?: (chunk: ArrayBuffer) => void;
-  /** Called when audio extraction is complete. */
-  onAudioDone?: (fileName: string) => void;
-  /** Called when a new slide is detected. */
-  onSlide?: (slide: { imageBuffer: ArrayBuffer; timestamp: string; startMs: number; endMs: number }) => void;
-  /** Called on progress updates. */
-  onProgress?: (percent: number, message: string, metrics?: ProgressEvent['metrics']) => void;
- 
-  onError?: (error: ExtractorError | Error) => void;
-  /** Called when extraction is fully complete. */
-  onDone?: () => void;
-}
+// ─── Internal Imports ───
+import { ExtractorError } from './errors';
+import type { ExtractorErrorCode } from './errors';
+import type {
+  ExtractorEvent,
+  ExtractorCallbacks,
+  FastExtractorOptions,
+  BrowserSupport,
+} from './types';
+import { ingestFile, extractVideoChunks, cleanupTempFile } from './pipeline';
 
 // ─── Main Class ───
 
@@ -309,12 +127,12 @@ export class FastExtractor {
 
     const offscreenCanvas = typeof OffscreenCanvas !== 'undefined';
     const deviceMemoryGb = (navigator as any).deviceMemory ?? null;
-    const hardwareConcurrency = navigator.hardwareConcurrency || 1;
+    const hardwareConcurrency = navigator.hardwareConcurrency ?? 1;
     const webGpu = 'gpu' in navigator;
-    const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
     const supported = webCodecs && opfs;
-
     let reason: string | undefined;
+
     if (!supported) {
       const missing: string[] = [];
       if (!webCodecs) missing.push('WebCodecs (VideoDecoder)');
@@ -713,160 +531,3 @@ export class FastExtractor {
 
 // ─── Default Export ───
 export default FastExtractor;
-
-
-// ─── Pipeline Helper Functions ───
-
-async function ingestFile(file: File, tempFileName: string, onProgress: (status: string, progress: number) => void): Promise<void> {
-    if (!navigator.storage?.getDirectory) {
-      throw new Error('OPFS is not supported in this browser.');
-    }
-
-    const root = await navigator.storage.getDirectory();
-    const feDir = await root.getDirectoryHandle('.fast_extractor', { create: true });
-    const fileHandle = await feDir.getFileHandle(tempFileName, { create: true });
-    
-    // createWritable is available on the main thread
-    const writable = await fileHandle.createWritable();
-    
-    // Android SAF: pipe the file immediately
-    const stream = file.stream();
-    const reader = stream.getReader();
-    let offset = 0;
-    
-    onProgress('Ingesting Media: 0%', 0);
-    let lastReportTime = Date.now();
-
-    try {
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            
-            await writable.write(value);
-            offset += value.byteLength;
-            
-            if (Date.now() - lastReportTime > 250) {
-                const pct = Math.floor((offset / file.size) * 100);
-                onProgress(`Ingesting Media: ${pct}%`, pct);
-                lastReportTime = Date.now();
-            }
-        }
-    } catch (err: any) {
-        throw new Error(`FILE_ACCESS_EXPIRED: ${err.message}`);
-    } finally {
-        await writable.close();
-    }
-  }
-
-// No module-level cache needed. The browser's HTTP cache handles WASM fetching.
-
-async function extractVideoChunks(
-  worker: Worker, 
-  options: FastExtractorOptions, 
-  tempFileName: string, 
-  getUnacked: () => number, 
-  incUnacked: () => void,
-  waitForAck: () => Promise<void>
-): Promise<void> {
-    let demuxer: WebDemuxer | null = null;
-    try {
-      worker.postMessage({ type: 'STATUS', status: 'Initializing Demuxer...' });
-
-      // Resolve the WASM URL relative to the current page.
-      // We use a relative path ('wasm-files/...') and self.location.href to ensure
-      // it resolves correctly whether hosted at the root (/) or a subpath (/audio-extractor/).
-      const defaultUrl = 'wasm-files/web-demuxer.wasm';
-      const rawUrl = options.demuxerWasmUrl ?? defaultUrl;
-      const wasmUrl = rawUrl.startsWith('http') ? rawUrl : new URL(rawUrl, self.location.href).href;
-      
-      try {
-        demuxer = new WebDemuxer({ wasmFilePath: wasmUrl });
-
-        // Read the file back from OPFS so demuxer has a stable reference
-        const root = await navigator.storage.getDirectory();
-        const feDir = await root.getDirectoryHandle('.fast_extractor');
-        const fileHandle = await feDir.getFileHandle(tempFileName);
-        const opfsFile = await fileHandle.getFile();
-
-        await demuxer.load(opfsFile);
-      } catch (err: any) {
-        throw new Error(`Demuxer WASM Error: ${err.message}`);
-      }
-      
-      const mediaInfo = await demuxer.getMediaInfo();
-      const duration = mediaInfo.duration || 0;
-      const decoderConfig = await demuxer.getDecoderConfig('video');
-
-      // 1. Send config to worker
-      worker.postMessage({ 
-        type: 'CONFIG_DECODER', 
-        config: decoderConfig, 
-        duration 
-      });
-
-      // 2. Read packets and stream to worker
-      const endTime = duration > 0 ? duration * 2 : 999999;
-      const reader = demuxer.read('video', 0, endTime).getReader();
-      let packetCount = 0;
-
-      // Chrome throttles setTimeout to 1000ms in background tabs, which kills
-      // the pipeline. MessageChannel.postMessage fires as a macrotask that is
-      // NOT subject to timer throttling, so extraction runs at full speed
-      // even when the user switches tabs.
-      const yieldToEventLoop = (): Promise<void> => new Promise(resolve => {
-        const ch = new MessageChannel();
-        ch.port1.onmessage = () => resolve();
-        ch.port2.postMessage(null);
-      });
-
-      while (true) {
-        // Cross-thread backpressure: Wait if the worker has too many chunks queued up.
-        // We explicitly await a Promise resolved by the worker's onmessage handler
-        // to completely suspend the main thread (0% CPU) instead of busy-waiting.
-        while (getUnacked() >= 15) {
-          await waitForAck();
-        }
-
-        const { done, value } = await reader.read();
-        if (done || !value) break;
-
-        if (options.mode === 'turbo' && value.type !== 'key') continue;
-
-        // Extract raw bytes into an ArrayBuffer for zero-copy transfer
-        const chunkData = new ArrayBuffer(value.byteLength);
-        value.copyTo(chunkData);
-
-        incUnacked();
-        worker.postMessage({
-          type: 'VIDEO_CHUNK',
-          chunk: chunkData,
-          timestamp: Number(value.timestamp),
-          chunkType: value.type
-        }, [chunkData]); // Zero-copy transfer!
-
-        // Yield to browser every 50 packets so React can paint UI updates
-        if (++packetCount % 50 === 0) {
-          await yieldToEventLoop();
-        }
-      }
-
-      // 3. Signal completion
-      worker.postMessage({ type: 'VIDEO_DONE' });
-
-    } finally {
-      if (demuxer) demuxer.destroy();
-    }
-  }
-
-async function cleanupTempFile(options: FastExtractorOptions, tempFileName: string): Promise<void> {
-    if (options.cleanupAfterExtraction === false) return;
-    
-    try {
-        const root = await navigator.storage.getDirectory();
-        const feDir = await root.getDirectoryHandle('.fast_extractor');
-        await feDir.removeEntry(tempFileName);
-        console.log(`[WorkspaceManager] Cleaned up temp file: ${tempFileName}`);
-    } catch (e) {
-        console.warn(`[WorkspaceManager] Failed to cleanup ${tempFileName}:`, e);
-    }
-  }
