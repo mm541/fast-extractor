@@ -173,8 +173,7 @@ const App: React.FC = () => {
     }, [lightboxIndex, slides.length]);
 
     const cleanupPreviousSession = () => {
-        if (audioUrl) URL.revokeObjectURL(audioUrl);
-        slides.forEach(s => URL.revokeObjectURL(s.url));
+        urlsToCleanup.current.forEach(url => URL.revokeObjectURL(url));
         urlsToCleanup.current = [];
     };
 
