@@ -73,6 +73,40 @@ function formatMs(ms: number): string {
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
+async function cleanupAppStorage(): Promise<void> {
+    if (!navigator.storage?.getDirectory) return;
+    try {
+      const opfsRoot = await navigator.storage.getDirectory();
+      let artifactsDir: FileSystemDirectoryHandle;
+      try {
+        artifactsDir = await opfsRoot.getDirectoryHandle('.app_artifacts');
+      } catch {
+        return; // folder doesn't exist — nothing to clean
+      }
+      const entries: string[] = [];
+      // @ts-ignore — OPFS entries()
+      for await (const [name] of (artifactsDir as any).entries()) {
+        entries.push(name);
+      }
+      await Promise.all(entries.map(async (name) => {
+        try {
+          if (navigator.locks) {
+            await navigator.locks.request(
+              `app_${name}`, { ifAvailable: true },
+              async (lock) => {
+                if (lock) await artifactsDir.removeEntry(name);
+              }
+            );
+          } else {
+            await artifactsDir.removeEntry(name);
+          }
+        } catch {}
+      }));
+    } catch (e) {
+      console.warn('[App] cleanupAppStorage failed:', e);
+    }
+}
+
 const App: React.FC = () => {
     const [file, setFile] = useState<File | null>(null);
     const [status, setStatus] = useState<string>('Ready to extract');
@@ -128,6 +162,7 @@ const App: React.FC = () => {
     useEffect(() => {
         // Wipe out any orphaned temp files from previously crashed/closed tabs
         FastExtractor.cleanupStorage().catch(console.warn);
+        cleanupAppStorage().catch(console.warn);
 
         FastExtractor.checkBrowserSupport().then(support => {
             const caps: DeviceCapabilities = {
@@ -286,6 +321,7 @@ const App: React.FC = () => {
 
         // Clean stale OPFS files from crashed/previous tabs before starting
         await FastExtractor.cleanupStorage();
+        await cleanupAppStorage();
 
         // Generate unique session ID for this extraction's OPFS files
         const sessionId = `${Date.now()}`;
