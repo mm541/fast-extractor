@@ -259,7 +259,8 @@ const App: React.FC = () => {
                         for (let i = 0; i < slides.length; i++) {
                             const slide = slides[i];
                             const startStr = formatMs(slide.startMs).replace(/:/g, '-');
-                            const endMs = slides[i+1]?.startMs ?? (metrics?.videoDurationSec ? metrics.videoDurationSec * 1000 : slide.startMs);
+                            const rawEnd = slides[i+1]?.startMs ?? (metrics?.videoDurationSec ? metrics.videoDurationSec * 1000 : slide.startMs);
+                            const endMs = slides[i+1] ? Math.max(slide.startMs, rawEnd - 1) : rawEnd;
                             const endStr = formatMs(endMs).replace(/:/g, '-');
                             const blob = slidesFile.slice(slide.offset, slide.offset + slide.length, mimeType);
                             yield { name: `slides/slide_${String(i+1).padStart(3, '0')}_${startStr}_to_${endStr}.${ext}`, input: blob };
@@ -896,7 +897,11 @@ const App: React.FC = () => {
                                         onClick={() => { setLightboxIndex(i); setLightboxZoom(1); }}
                                     />
                                     <span className="timestamp">
-                                        {formatMs(slide.startMs)} → {formatMs(slides[i+1]?.startMs ?? (metrics?.videoDurationSec ? metrics.videoDurationSec * 1000 : slide.startMs))}
+                                        {(() => {
+                                            const rawEnd = slides[i+1]?.startMs ?? (metrics?.videoDurationSec ? metrics.videoDurationSec * 1000 : slide.startMs);
+                                            const endMs = slides[i+1] ? Math.max(slide.startMs, rawEnd - 1) : rawEnd;
+                                            return `${formatMs(slide.startMs)} → ${formatMs(endMs)}`;
+                                        })()}
                                     </span>
                                 </div>
                             ))}
@@ -926,7 +931,11 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div className="lightbox-info">
-                            {formatMs(slides[lightboxIndex].startMs)} → {formatMs(slides[lightboxIndex+1]?.startMs ?? (metrics?.videoDurationSec ? metrics.videoDurationSec * 1000 : slides[lightboxIndex].startMs))}
+                            {(() => {
+                                const rawEnd = slides[lightboxIndex+1]?.startMs ?? (metrics?.videoDurationSec ? metrics.videoDurationSec * 1000 : slides[lightboxIndex].startMs);
+                                const endMs = slides[lightboxIndex+1] ? Math.max(slides[lightboxIndex].startMs, rawEnd - 1) : rawEnd;
+                                return `${formatMs(slides[lightboxIndex].startMs)} → ${formatMs(endMs)}`;
+                            })()}
                         </div>
                         <div className="lightbox-controls" onClick={(e) => e.stopPropagation()}>
                             <button className="lightbox-btn" onClick={() => setLightboxZoom(prev => Math.max(1, prev - 0.5))}>⊖</button>
