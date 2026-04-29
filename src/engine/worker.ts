@@ -199,11 +199,11 @@ self.onmessage = async (e: MessageEvent) => {
                 onProgress: (percent: number, message: string, metrics?: any) => {
                     self.postMessage({ type: 'STATUS', status: message, progress: Math.round(percent), metrics });
                 },
-                onSlide: async (blob: Blob, timestamp: number) => {
+                onSlide: async (blob: Blob, _timestamp: number, prevTimestamp: number) => {
                     pendingSlideEncodes++;
                     try {
                         const ab = await blob.arrayBuffer();
-                        const startMs = Math.round(timestamp * 1000);
+                        const boundaryMs = Math.round(prevTimestamp * 1000);
 
                         if (pendingSlide) {
                             self.postMessage({
@@ -211,11 +211,11 @@ self.onmessage = async (e: MessageEvent) => {
                                 buffer: pendingSlide.buffer,
                                 timestamp: pendingSlide.timestamp,
                                 startMs: pendingSlide.startMs,
-                                endMs: startMs,
+                                endMs: boundaryMs,
                             }, [pendingSlide.buffer]);
                         }
 
-                        pendingSlide = { buffer: ab, startMs, timestamp: formatTime(timestamp) };
+                        pendingSlide = { buffer: ab, startMs: boundaryMs, timestamp: formatTime(prevTimestamp) };
                     } catch (e: any) {
                         console.warn('[Worker] onSlide buffer read failed:', e.message);
                     } finally {

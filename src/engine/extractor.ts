@@ -49,7 +49,8 @@
  * TWO EXTRACTION MODES:
  *   TURBO:    Decode only keyframes (IDR). ~10-20s for a 1-hour video.
  *             One pipelined VideoDecoder (no per-frame flush — see perf warning).
- *             
+ *             Emits immediately (same as sequential). Timestamps use the
+ *             previous keyframe's time as boundary (stretch-left).
  *
  *   SEQUENTIAL: Decode EVERY frame in 300s (5-min) chunks. ~120-150s for a 1-hour video.
  *             Decoder is recycled per chunk to bound RAM.
@@ -119,6 +120,16 @@
  *   unexplained gaps in the timeline. If you need global dedup for a
  *   specific use case, check against savedHashes[0..N] — but be aware
  *   it becomes O(N) per frame and changes the user-facing behavior.
+ *
+ * 💡 CONSIDERATION: TIMESTAMP BOUNDARY (stretch-left)
+ *   When a slide transition is detected at keyframe T, the previous keyframe
+ *   T_prev was the last confirmed sighting of the old slide. We use T_prev
+ *   as the boundary: old slide endMs = T_prev, new slide startMs = T_prev.
+ *   This "stretches left" — the new slide claims the gap between T_prev
+ *   and T. This is safe for downstream AI (Synthizer) because the AI can
+ *   visually verify the new slide's content against the transcript.
+ *   The alternative (stretching right) is dangerous: it makes the old slide
+ *   "claim" transcript that belongs to the new slide's content.
  *
  * CONFIGURATION REFERENCE:
  *   edgeThreshold (10-100, default 30)
@@ -195,11 +206,6 @@ export interface SlideExtractorOptions {
   shakeFilterStrictMultiplier: number;  // density multiplier for shake confirmation (0=disabled)
   // Region-of-interest masking
   ignoreMask: bigint;                   // 64-bit bitmask: bit (row*8+col)=1 skips that grid block
-  // Turbo deferred-emit confirmation
-  /** Max dHash hamming distance to confirm a candidate as real (not a transition blend). Default: 10.
-   *  Lower = stricter (more transition frames filtered, but might drop fast slides).
-   *  Higher = looser (more slides captured, but more transition frames leak through). */
-  confirmThreshold: number;
   
   /** Encoded image quality (0.01 - 1.0). Default: 0.8 */
   imageQuality?: number;
@@ -209,7 +215,8 @@ export interface SlideExtractorOptions {
   exportResolution?: number;
 
   onProgress: (percent: number, message: string, metrics?: ExtractionMetrics) => void;
-  onSlide: (blob: Blob, timestamp: number) => void;
+  /** @param prevTimestamp - timestamp (seconds) of the previous processed frame (stretch-left boundary) */
+  onSlide: (blob: Blob, timestamp: number, prevTimestamp: number) => void;
 }
 
 export interface ExtractionMetrics {
@@ -242,8 +249,6 @@ export const DEFAULT_OPTIONS: SlideExtractorOptions = {
   shakeFilterStrictMultiplier: 3,
   // Grid masking: 0n = compare all 64 blocks (no masking)
   ignoreMask: 0n,
-  // Turbo confirmation: 10 = moderate strictness
-  confirmThreshold: 10,
   onProgress: () => {}, onSlide: () => {},
 };
 
@@ -304,8 +309,8 @@ export class SlideExtractor {
   private prevColorSig: [number, number, number] | null = null;
 
 
-  // Turbo deferred-emit: buffers one candidate to filter transition frames
-  private pendingCandidate: { bitmap: ImageBitmap; timestamp: number; hash: bigint } | null = null;
+  // Timestamp of the last processed frame — used as stretch-left boundary
+  private lastProcessedTimestamp = 0;
 
   // Chunk-fed decoder state
   private decoder: VideoDecoder | null = null;
@@ -364,8 +369,7 @@ export class SlideExtractor {
     this.hasBaseline = false;
     this.savedHashes = [];
     this.lastEmitPromise = Promise.resolve();
-    if (this.pendingCandidate) { this.pendingCandidate.bitmap.close(); }
-    this.pendingCandidate = null;
+    this.lastProcessedTimestamp = 0;
     this.lastSlideTime = -10;
     this.needsKeyframe = true;
     this.nextCaptureTime = 0;
@@ -494,15 +498,6 @@ export class SlideExtractor {
     }
     this.decoder = null;
 
-    // Flush last buffered candidate (turbo deferred-emit)
-    // MUST await here — fire-and-forget would race against worker termination.
-    const lc = this.pendingCandidate as { bitmap: ImageBitmap; timestamp: number; hash: bigint } | null;
-    if (lc) {
-      this.savedHashes.push(lc.hash);
-      await this.emitBitmapAsync(lc.bitmap, lc.timestamp);
-      this.pendingCandidate = null;
-    }
-
     // Await all queued background encodes to prevent dropping slides
     // when the worker terminates
     await this.lastEmitPromise;
@@ -615,29 +610,13 @@ export class SlideExtractor {
     const brightness = this.wasm.get_avg_brightness();
     if (brightness < this.options.blankBrightnessThreshold) return;
 
-    // Turbo deferred-emit: confirm or discard the pending candidate
-    // by checking if the current frame is similar (real slide persisted)
-    // or different (candidate was a transition frame).
-    if (this.options.mode === 'turbo' && this.pendingCandidate) {
-      const currentHash = this.wasm.compute_dhash(true);
-      const dist = SlideExtractor.hammingDistance(this.pendingCandidate.hash, currentHash);
-      if (dist <= this.options.confirmThreshold) {
-        // Next frame is similar → candidate was a real slide, emit it
-        this.savedHashes.push(this.pendingCandidate.hash);
-        this.emitBitmap(this.pendingCandidate.bitmap, this.pendingCandidate.timestamp);
-      } else {
-        // Next frame is different → candidate was a transition frame, discard
-        this.pendingCandidate.bitmap.close();
-      }
-      this.pendingCandidate = null;
-    }
-
     if (!this.hasBaseline) {
       this.copyBufferBToA();
       this.savedHashes.push(this.wasm.compute_dhash(true));
-      this.emitSlideFromCanvas(timestamp);
+      this.emitSlideFromCanvas(timestamp, timestamp);
       this.hasBaseline = true;
       this.lastSlideTime = timestamp;
+      this.lastProcessedTimestamp = timestamp;
       this.prevColorSig = colorSig;
       return;
     }
@@ -740,18 +719,10 @@ export class SlideExtractor {
     if (shouldEmit) {
       const dhash = this.wasm.compute_dhash(true);
       if (!this.isDuplicate(dhash)) {
-        if (this.options.mode === 'turbo') {
-          // Turbo: defer emit — buffer as candidate for confirmation on next keyframe.
-          // Transition frames (crossfades, dissolves) will be discarded when the
-          // next frame doesn't match. Real slides persist across keyframes.
-          const bitmap = this.captureCanvasBitmap();
-          if (this.pendingCandidate) this.pendingCandidate.bitmap.close();
-          this.pendingCandidate = { bitmap, timestamp, hash: dhash };
-        } else {
-          // Accurate: emit immediately (has frame-level temporal resolution)
-          this.savedHashes.push(dhash);
-          this.emitSlideFromCanvas(timestamp);
-        }
+        // Both modes emit immediately. Turbo passes lastProcessedTimestamp
+        // as the stretch-left boundary for the previous slide's endMs.
+        this.savedHashes.push(dhash);
+        this.emitSlideFromCanvas(timestamp, this.lastProcessedTimestamp);
         this.copyBufferBToA();
         this.lastSlideTime = timestamp;
       }
@@ -768,6 +739,9 @@ export class SlideExtractor {
       this.cumulativeDrift = 0;
       this.driftFrames = 0;
     }
+
+    // Track for stretch-left boundary estimation
+    this.lastProcessedTimestamp = timestamp;
   }
 
   // ===================== Helpers =====================
@@ -775,9 +749,6 @@ export class SlideExtractor {
   // Comparison canvas: small for fast WASM processing
   private static readonly CMP_W = 424;
   private static readonly CMP_H = 240;
-
-  // Deferred-emit: max hamming distance to confirm a candidate is real (not a transition blend)
-  // Now configurable via options.confirmThreshold (default: 10)
 
   /**
    * Copy VideoFrame pixels into the WASM RGBA buffer.
@@ -846,20 +817,20 @@ export class SlideExtractor {
     return this.exportCanvas!.transferToImageBitmap();
   }
 
-  private emitSlideFromCanvas(timestamp: number) {
-    this.emitBitmap(this.captureCanvasBitmap(), timestamp);
+  private emitSlideFromCanvas(timestamp: number, prevTimestamp: number) {
+    this.emitBitmap(this.captureCanvasBitmap(), timestamp, prevTimestamp);
   }
 
   private lastEmitPromise: Promise<void> = Promise.resolve();
 
-  private emitBitmap(bitmap: ImageBitmap, timestamp: number) {
+  private emitBitmap(bitmap: ImageBitmap, timestamp: number, prevTimestamp: number) {
     // Chain encodes sequentially to prevent concurrent access to the shared
     // OffscreenCanvas, ensuring strict timestamp ordering and preventing
     // OOM spikes from massive concurrent convertToBlob calls.
     this.lastEmitPromise = this.lastEmitPromise.then(async () => {
       try {
         const blob = await this.renderBitmapToBlob(bitmap);
-        this.options.onSlide(blob, timestamp);
+        this.options.onSlide(blob, timestamp, prevTimestamp);
         this.metrics.totalSlides++;
       } catch (e) {
         console.warn('emitBitmap: image encode failed (skipping slide):', e);
@@ -867,15 +838,7 @@ export class SlideExtractor {
     });
   }
 
-  /**
-   * Awaitable version of emitBitmap — used ONLY for the final candidate flush
-   * at extraction end. Enqueues the final candidate and returns the promise
-   * for the entire chain.
-   */
-  private emitBitmapAsync(bitmap: ImageBitmap, timestamp: number): Promise<void> {
-    this.emitBitmap(bitmap, timestamp);
-    return this.lastEmitPromise;
-  }
+
 
   private async renderBitmapToBlob(bitmap: ImageBitmap): Promise<Blob> {
     const w = bitmap.width, h = bitmap.height;
