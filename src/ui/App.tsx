@@ -259,10 +259,13 @@ const App: React.FC = () => {
                         
                         for (let i = 0; i < slides.length; i++) {
                             const slide = slides[i];
-                            const startStr = formatMs(slide.startMs).replace(/:/g, '-');
-                            const rawEnd = slides[i+1]?.startMs ?? (metrics?.videoDurationSec ? metrics.videoDurationSec * 1000 : slide.startMs);
-                            const endMs = slides[i+1] ? Math.max(slide.startMs, rawEnd - 1) : rawEnd;
-                            const endStr = formatMs(endMs).replace(/:/g, '-');
+                            const startSec = Math.floor(slide.startMs / 1000);
+                            const nextStartSec = slides[i+1] ? Math.floor(slides[i+1].startMs / 1000) : (metrics?.videoDurationSec ? Math.floor(metrics.videoDurationSec) : startSec);
+                            const endSec = slides[i+1] ? Math.max(startSec, nextStartSec - 1) : nextStartSec;
+                            
+                            const startStr = formatMs(startSec * 1000).replace(/:/g, '-');
+                            const endStr = formatMs(endSec * 1000).replace(/:/g, '-');
+                            
                             const blob = slidesFile.slice(slide.offset, slide.offset + slide.length, mimeType);
                             yield { name: `slides/slide_${String(i+1).padStart(3, '0')}_${startStr}_to_${endStr}.${ext}`, input: blob };
                         }
@@ -914,9 +917,10 @@ const App: React.FC = () => {
                                     />
                                     <span className="timestamp">
                                         {(() => {
-                                            const rawEnd = slides[i+1]?.startMs ?? (metrics?.videoDurationSec ? metrics.videoDurationSec * 1000 : slide.startMs);
-                                            const endMs = slides[i+1] ? Math.max(slide.startMs, rawEnd - 1) : rawEnd;
-                                            return `${formatMs(slide.startMs)} → ${formatMs(endMs)}`;
+                                            const startSec = Math.floor(slide.startMs / 1000);
+                                            const nextStartSec = slides[i+1] ? Math.floor(slides[i+1].startMs / 1000) : (metrics?.videoDurationSec ? Math.floor(metrics.videoDurationSec) : startSec);
+                                            const endSec = slides[i+1] ? Math.max(startSec, nextStartSec - 1) : nextStartSec;
+                                            return `${formatMs(startSec * 1000)} → ${formatMs(endSec * 1000)}`;
                                         })()}
                                     </span>
                                 </div>
@@ -948,9 +952,10 @@ const App: React.FC = () => {
                         </div>
                         <div className="lightbox-info">
                             {(() => {
-                                const rawEnd = slides[lightboxIndex+1]?.startMs ?? (metrics?.videoDurationSec ? metrics.videoDurationSec * 1000 : slides[lightboxIndex].startMs);
-                                const endMs = slides[lightboxIndex+1] ? Math.max(slides[lightboxIndex].startMs, rawEnd - 1) : rawEnd;
-                                return `${formatMs(slides[lightboxIndex].startMs)} → ${formatMs(endMs)}`;
+                                const startSec = Math.floor(slides[lightboxIndex].startMs / 1000);
+                                const nextStartSec = slides[lightboxIndex+1] ? Math.floor(slides[lightboxIndex+1].startMs / 1000) : (metrics?.videoDurationSec ? Math.floor(metrics.videoDurationSec) : startSec);
+                                const endSec = slides[lightboxIndex+1] ? Math.max(startSec, nextStartSec - 1) : nextStartSec;
+                                return `${formatMs(startSec * 1000)} → ${formatMs(endSec * 1000)}`;
                             })()}
                         </div>
                         <div className="lightbox-controls" onClick={(e) => e.stopPropagation()}>
