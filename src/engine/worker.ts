@@ -199,19 +199,26 @@ self.onmessage = async (e: MessageEvent) => {
                 onProgress: (percent: number, message: string, metrics?: any) => {
                     self.postMessage({ type: 'STATUS', status: message, progress: Math.round(percent), metrics });
                 },
-                onSlide: async (blob: Blob, _timestamp: number, prevTimestamp: number) => {
+                onSlide: async (blob: Blob, timestamp: number, prevTimestamp: number) => {
                     pendingSlideEncodes++;
                     try {
                         const ab = await blob.arrayBuffer();
+                        const detectionMs = Math.round(timestamp * 1000);
                         const boundaryMs = Math.round(prevTimestamp * 1000);
 
                         if (pendingSlide) {
+                            // Use stretch-left boundary (prevTimestamp), but fall back to
+                            // detection timestamp when boundary collapses to startMs
+                            // (happens when no intermediate frames exist, e.g. baseline → immediate change)
+                            const effectiveEnd = boundaryMs > pendingSlide.startMs
+                                ? boundaryMs - 1
+                                : Math.max(detectionMs - 1, pendingSlide.startMs);
                             self.postMessage({
                                 type: 'SLIDE',
                                 buffer: pendingSlide.buffer,
                                 timestamp: pendingSlide.timestamp,
                                 startMs: pendingSlide.startMs,
-                                endMs: Math.max(boundaryMs - 1, pendingSlide.startMs),
+                                endMs: effectiveEnd,
                             }, [pendingSlide.buffer]);
                         }
 
