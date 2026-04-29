@@ -34,36 +34,33 @@ export async function ingestFile(
   const root = await navigator.storage.getDirectory();
   const feDir = await root.getDirectoryHandle('.fast_extractor', { create: true });
   const fileHandle = await feDir.getFileHandle(tempFileName, { create: true });
-  
-  // createWritable is available on the main thread
   const writable = await fileHandle.createWritable();
-  
-  // Android SAF: pipe the file immediately
-  const stream = file.stream();
-  const reader = stream.getReader();
-  let offset = 0;
-  
-  onProgress('Ingesting Media: 0%', 0);
-  let lastReportTime = Date.now();
 
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      
-      await writable.write(value);
-      offset += value.byteLength;
-      
-      if (Date.now() - lastReportTime > 250) {
+  // Use a native TransformStream as a zero-copy progress counter.
+  // pipeTo() lets the browser handle backpressure and chunk scheduling
+  // internally, which is significantly faster than a manual read/write loop.
+  let offset = 0;
+  let lastReportTime = Date.now();
+  onProgress('Ingesting Media: 0%', 0);
+
+  const progressTracker = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      offset += chunk.byteLength;
+      const now = Date.now();
+      if (now - lastReportTime > 250) {
         const pct = Math.floor((offset / file.size) * 100);
         onProgress(`Ingesting Media: ${pct}%`, pct);
-        lastReportTime = Date.now();
+        lastReportTime = now;
       }
-    }
+      controller.enqueue(chunk);
+    },
+  });
+
+  try {
+    // Android SAF: pipe the file immediately before permissions expire
+    await file.stream().pipeThrough(progressTracker).pipeTo(writable);
   } catch (err: any) {
     throw new Error(`FILE_ACCESS_EXPIRED: ${err.message}`);
-  } finally {
-    await writable.close();
   }
 }
 
