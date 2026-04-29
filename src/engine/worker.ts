@@ -204,25 +204,27 @@ self.onmessage = async (e: MessageEvent) => {
                     try {
                         const ab = await blob.arrayBuffer();
                         const detectionMs = Math.round(timestamp * 1000);
-                        const boundaryMs = Math.round(prevTimestamp * 1000);
+                        const prevMs = Math.round(prevTimestamp * 1000);
+
+                        // Use stretch-left boundary (prevTimestamp), but fall back to
+                        // detection timestamp when boundary collapses to startMs
+                        // (happens when no intermediate frames exist, e.g. baseline → immediate change)
+                        let boundaryMs = prevMs;
+                        if (pendingSlide && prevMs <= pendingSlide.startMs) {
+                            boundaryMs = detectionMs;
+                        }
 
                         if (pendingSlide) {
-                            // Use stretch-left boundary (prevTimestamp), but fall back to
-                            // detection timestamp when boundary collapses to startMs
-                            // (happens when no intermediate frames exist, e.g. baseline → immediate change)
-                            const effectiveEnd = boundaryMs > pendingSlide.startMs
-                                ? boundaryMs - 1
-                                : Math.max(detectionMs - 1, pendingSlide.startMs);
                             self.postMessage({
                                 type: 'SLIDE',
                                 buffer: pendingSlide.buffer,
                                 timestamp: pendingSlide.timestamp,
                                 startMs: pendingSlide.startMs,
-                                endMs: effectiveEnd,
+                                endMs: Math.max(boundaryMs - 1, pendingSlide.startMs),
                             }, [pendingSlide.buffer]);
                         }
 
-                        pendingSlide = { buffer: ab, startMs: boundaryMs, timestamp: formatTime(prevTimestamp) };
+                        pendingSlide = { buffer: ab, startMs: boundaryMs, timestamp: formatTime(boundaryMs / 1000) };
                     } catch (e: any) {
                         console.warn('[Worker] onSlide buffer read failed:', e.message);
                     } finally {
