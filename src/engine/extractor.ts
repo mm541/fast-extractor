@@ -207,6 +207,9 @@ export interface SlideExtractorOptions {
   // Region-of-interest masking
   ignoreMask: bigint;                   // 64-bit bitmask: bit (row*8+col)=1 skips that grid block
   
+  // Transition Filter (Stability Gate)
+  useDeferredEmit: boolean;
+
   /** Encoded image quality (0.01 - 1.0). Default: 0.8 */
   imageQuality?: number;
   /** Output format for extracted slides. Default: 'jpeg' */
@@ -249,6 +252,7 @@ export const DEFAULT_OPTIONS: SlideExtractorOptions = {
   shakeFilterStrictMultiplier: 3,
   // Grid masking: 0n = compare all 64 blocks (no masking)
   ignoreMask: 0n,
+  useDeferredEmit: true,
   onProgress: () => {}, onSlide: () => {},
 };
 
@@ -287,6 +291,12 @@ export class SlideExtractor {
   private hasBaseline = false;
   private savedHashes: bigint[] = [];
   private lastSlideTime = -10;
+
+  private pendingCandidate: {
+    bitmap: ImageBitmap;
+    timestamp: number;
+    colorSig: [number, number, number];
+  } | null = null;
 
   private compareCanvas: OffscreenCanvas | null = null;
   private compareCtx: OffscreenCanvasRenderingContext2D | null = null;
@@ -632,6 +642,32 @@ export class SlideExtractor {
     // Pointer 2→3: Previous (Prev) vs Current (B) — consecutive drift
     const driftBlocks = this.wasm.compare_prev_current(edgeThreshold, densityThresholdPct, mask);
 
+    // --- Transition Filter (Deferred Emit) ---
+    let candidateConfirmedThisFrame = false;
+    if (this.options.useDeferredEmit && this.pendingCandidate) {
+      const allowedDrift = Math.max(this.noiseFloor * 2, Math.floor(blockThreshold * 0.3));
+      
+      if (driftBlocks <= allowedDrift) {
+        // SETTLED! The slide has stopped moving. Confirm the candidate.
+        const dhash = this.wasm.compute_dhash(true);
+        if (!this.isDuplicate(dhash)) {
+          this.savedHashes.push(dhash);
+          this.emitBitmap(this.pendingCandidate.bitmap, this.pendingCandidate.timestamp, this.lastProcessedTimestamp);
+          this.copyBufferBToA(); // Current frame is the new Baseline
+          this.lastSlideTime = this.pendingCandidate.timestamp;
+        } else {
+          this.pendingCandidate.bitmap.close(); // Clean up if duplicate
+        }
+        this.pendingCandidate = null;
+        
+        // Reset drift metrics because a transition just finished
+        this.cumulativeDrift = 0;
+        this.driftFrames = 0;
+        this.staticCount = 0;
+        candidateConfirmedThisFrame = true;
+      }
+    }
+
     // --- Adaptive Noise Floor Calibration ---
     // Collect drift samples during the first 10 frames where content is stable
     // (drift > 0 but no big change = codec noise, not a real transition)
@@ -670,12 +706,18 @@ export class SlideExtractor {
     const timeSinceLastSlide = timestamp - this.lastSlideTime;
     const minTime = this.options.minSlideDuration;
 
-    if (timeSinceLastSlide < minTime) return;
+    if (timeSinceLastSlide < minTime) {
+      // If we are still cooling down, do not trigger new slides.
+      // But we MUST track lastProcessedTimestamp.
+      this.lastProcessedTimestamp = timestamp;
+      return;
+    }
 
     let shouldEmit = false;
 
-    // Condition 1: Direct threshold — A vs B shows big change
-    if (mainChanges >= blockThreshold) {
+    if (!candidateConfirmedThisFrame) {
+      // Condition 1: Direct threshold — A vs B shows big change
+      if (mainChanges >= blockThreshold) {
       // --- Camera Shake Filter ---
       // If the change is diffuse (all blocks changed a little), it's shake, not a slide.
       // Confirm with a stricter density check: if few blocks pass 3× density, it's shake.
@@ -715,24 +757,36 @@ export class SlideExtractor {
     ) {
       shouldEmit = true;
     }
+    } // End of !candidateConfirmedThisFrame
 
     if (shouldEmit) {
-      const dhash = this.wasm.compute_dhash(true);
-      if (!this.isDuplicate(dhash)) {
-        // Both modes emit immediately. Turbo passes lastProcessedTimestamp
-        // as the stretch-left boundary for the previous slide's endMs.
-        this.savedHashes.push(dhash);
-        this.emitSlideFromCanvas(timestamp, this.lastProcessedTimestamp);
-        this.copyBufferBToA();
-        this.lastSlideTime = timestamp;
+      if (this.options.useDeferredEmit) {
+        // Buffer the frame as a candidate instead of emitting instantly
+        if (this.pendingCandidate) {
+          this.pendingCandidate.bitmap.close(); // Clean up old candidate
+        }
+        this.pendingCandidate = {
+          bitmap: this.captureCanvasBitmap(),
+          timestamp: timestamp,
+          colorSig: colorSig
+        };
+      } else {
+        // Instant Emit Mode (Fallback)
+        const dhash = this.wasm.compute_dhash(true);
+        if (!this.isDuplicate(dhash)) {
+          this.savedHashes.push(dhash);
+          this.emitSlideFromCanvas(timestamp, this.lastProcessedTimestamp);
+          this.copyBufferBToA();
+          this.lastSlideTime = timestamp;
+        }
+        this.cumulativeDrift = 0;
+        this.driftFrames = 0;
+        this.staticCount = 0;
       }
-      // Reset drift regardless (baseline updated or duplicate skipped)
-      this.cumulativeDrift = 0;
-      this.driftFrames = 0;
-      this.staticCount = 0;
     }
     // Reset drift if too long without trigger (prevents webcam noise buildup)
     else if (
+      !candidateConfirmedThisFrame &&
       this.driftFrames > this.options.noiseResetFrames &&
       mainChanges < Math.floor(blockThreshold * this.options.noiseMainRatio)
     ) {

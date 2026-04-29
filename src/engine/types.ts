@@ -127,6 +127,13 @@ export interface FastExtractorOptions {
   densityThresholdPct?: number;
   /** Perceptual hash hamming distance for duplicate detection. Default: 10 */
   dhashDuplicateThreshold?: number;
+  /** 
+   * If true, enables the "Stability Gate" which buffers frames during a transition
+   * and only emits them once the video has stopped moving (driftBlocks drops).
+   * Greatly reduces mid-transition garbage frames.
+   * @default true
+   */
+  useDeferredEmit?: boolean;
   /** 64-bit bitmask: bit (row*8 + col) = 1 skips that 8×8 grid block. Default: 0n (no masking). */
   ignoreMask?: bigint;
 

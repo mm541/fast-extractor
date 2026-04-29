@@ -128,6 +128,7 @@ const App: React.FC = () => {
         densityThresholdPct: 4,
         minSlideDuration: 3,
         dhashDuplicateThreshold: 4,
+        useDeferredEmit: true,
 
         // Drift detection
         blankBrightnessThreshold: 8,
@@ -733,6 +734,17 @@ const App: React.FC = () => {
                                     <option value={1920}>Full HD (1920px)</option>
                                     <option value={0}>Original Size</option>
                                 </select>
+                            </div>
+                            <div className="setting-item" style={{ gridColumn: '1 / -1' }}>
+                                <label className="extract-toggle-btn" style={{ margin: 0, justifyContent: 'flex-start' }}>
+                                    <input 
+                                        type="checkbox" 
+                                        checked={config.useDeferredEmit} 
+                                        onChange={e => setConfig({...config, useDeferredEmit: e.target.checked})}
+                                        disabled={isExtracting}
+                                    />
+                                    <strong>Transition Filter (Deferred Emit)</strong> — Waits for slides to stop moving before emitting to prevent blurry mid-transition frames.
+                                </label>
                             </div>
                         </div>
 
