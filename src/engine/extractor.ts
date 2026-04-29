@@ -218,8 +218,8 @@ export interface SlideExtractorOptions {
   exportResolution?: number;
 
   onProgress: (percent: number, message: string, metrics?: ExtractionMetrics) => void;
-  /** @param prevTimestamp - timestamp (seconds) of the previous processed frame (stretch-left boundary) */
-  onSlide: (blob: Blob, timestamp: number, prevTimestamp: number) => void;
+  /** @param timestamp - exact timestamp (seconds) of the frame that triggered the slide */
+  onSlide: (blob: Blob, timestamp: number) => void;
 }
 
 export interface ExtractionMetrics {
@@ -318,10 +318,6 @@ export class SlideExtractor {
   // Color-aware detection — tracks average RGB to detect color-only changes
   private prevColorSig: [number, number, number] | null = null;
 
-
-  // Timestamp of the last processed frame — used as stretch-left boundary
-  private lastProcessedTimestamp = 0;
-
   // Chunk-fed decoder state
   private decoder: VideoDecoder | null = null;
   private decoderConfig: VideoDecoderConfig | null = null;
@@ -379,7 +375,6 @@ export class SlideExtractor {
     this.hasBaseline = false;
     this.savedHashes = [];
     this.lastEmitPromise = Promise.resolve();
-    this.lastProcessedTimestamp = 0;
     this.lastSlideTime = -10;
     this.needsKeyframe = true;
     this.nextCaptureTime = 0;
@@ -623,10 +618,9 @@ export class SlideExtractor {
     if (!this.hasBaseline) {
       this.copyBufferBToA();
       this.savedHashes.push(this.wasm.compute_dhash(true));
-      this.emitSlideFromCanvas(timestamp, timestamp);
+      this.emitSlideFromCanvas(timestamp);
       this.hasBaseline = true;
       this.lastSlideTime = timestamp;
-      this.lastProcessedTimestamp = timestamp;
       this.prevColorSig = colorSig;
       return;
     }
@@ -652,7 +646,7 @@ export class SlideExtractor {
         const dhash = this.wasm.compute_dhash(true);
         if (!this.isDuplicate(dhash)) {
           this.savedHashes.push(dhash);
-          this.emitBitmap(this.pendingCandidate.bitmap, this.pendingCandidate.timestamp, this.lastProcessedTimestamp);
+          this.emitBitmap(this.pendingCandidate.bitmap, this.pendingCandidate.timestamp);
           this.copyBufferBToA(); // Current frame is the new Baseline
           this.lastSlideTime = this.pendingCandidate.timestamp;
         } else {
@@ -708,8 +702,6 @@ export class SlideExtractor {
 
     if (timeSinceLastSlide < minTime) {
       // If we are still cooling down, do not trigger new slides.
-      // But we MUST track lastProcessedTimestamp.
-      this.lastProcessedTimestamp = timestamp;
       return;
     }
 
@@ -775,7 +767,7 @@ export class SlideExtractor {
         const dhash = this.wasm.compute_dhash(true);
         if (!this.isDuplicate(dhash)) {
           this.savedHashes.push(dhash);
-          this.emitSlideFromCanvas(timestamp, this.lastProcessedTimestamp);
+          this.emitSlideFromCanvas(timestamp);
           this.copyBufferBToA();
           this.lastSlideTime = timestamp;
         }
@@ -793,9 +785,6 @@ export class SlideExtractor {
       this.cumulativeDrift = 0;
       this.driftFrames = 0;
     }
-
-    // Track for stretch-left boundary estimation
-    this.lastProcessedTimestamp = timestamp;
   }
 
   // ===================== Helpers =====================
@@ -871,20 +860,20 @@ export class SlideExtractor {
     return this.exportCanvas!.transferToImageBitmap();
   }
 
-  private emitSlideFromCanvas(timestamp: number, prevTimestamp: number) {
-    this.emitBitmap(this.captureCanvasBitmap(), timestamp, prevTimestamp);
+  private emitSlideFromCanvas(timestamp: number) {
+    this.emitBitmap(this.captureCanvasBitmap(), timestamp);
   }
 
   private lastEmitPromise: Promise<void> = Promise.resolve();
 
-  private emitBitmap(bitmap: ImageBitmap, timestamp: number, prevTimestamp: number) {
+  private emitBitmap(bitmap: ImageBitmap, timestamp: number) {
     // Chain encodes sequentially to prevent concurrent access to the shared
     // OffscreenCanvas, ensuring strict timestamp ordering and preventing
     // OOM spikes from massive concurrent convertToBlob calls.
     this.lastEmitPromise = this.lastEmitPromise.then(async () => {
       try {
         const blob = await this.renderBitmapToBlob(bitmap);
-        this.options.onSlide(blob, timestamp, prevTimestamp);
+        this.options.onSlide(blob, timestamp);
         this.metrics.totalSlides++;
       } catch (e) {
         console.warn('emitBitmap: image encode failed (skipping slide):', e);

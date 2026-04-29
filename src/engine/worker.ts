@@ -198,16 +198,16 @@ self.onmessage = async (e: MessageEvent) => {
                 onProgress: (percent: number, message: string, metrics?: any) => {
                     self.postMessage({ type: 'STATUS', status: message, progress: Math.round(percent), metrics });
                 },
-                onSlide: async (blob: Blob, _timestamp: number, prevTimestamp: number) => {
+                onSlide: async (blob: Blob, timestamp: number) => {
                     pendingSlideEncodes++;
                     try {
                         const ab = await blob.arrayBuffer();
-                        const boundaryMs = Math.round(prevTimestamp * 1000);
+                        const boundaryMs = Math.round(timestamp * 1000);
 
                         self.postMessage({
                             type: 'SLIDE',
                             buffer: ab,
-                            timestamp: formatTime(prevTimestamp),
+                            timestamp: formatTime(timestamp),
                             startMs: boundaryMs,
                             endMs: boundaryMs, // Dummy value, the UI will override this based on the next slide's startMs
                         }, [ab]);
