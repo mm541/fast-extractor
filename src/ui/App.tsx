@@ -736,14 +736,18 @@ const App: React.FC = () => {
                                 </select>
                             </div>
                             <div className="setting-item" style={{ gridColumn: '1 / -1' }}>
-                                <label className="extract-toggle-btn" style={{ margin: 0, justifyContent: 'flex-start' }}>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer', background: 'rgba(255,255,255,0.03)', padding: '16px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.1)' }}>
                                     <input 
                                         type="checkbox" 
                                         checked={config.useDeferredEmit} 
                                         onChange={e => setConfig({...config, useDeferredEmit: e.target.checked})}
                                         disabled={isExtracting}
+                                        style={{ width: '20px', height: '20px', accentColor: 'var(--accent)' }}
                                     />
-                                    <strong>Transition Filter (Deferred Emit)</strong> — Waits for slides to stop moving before emitting to prevent blurry mid-transition frames.
+                                    <div>
+                                        <strong style={{ color: 'var(--accent)', display: 'block', fontSize: '1rem', marginBottom: '4px' }}>Transition Filter (Deferred Emit)</strong>
+                                        <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Waits for slides to stop moving before emitting to prevent blurry mid-transition frames.</span>
+                                    </div>
                                 </label>
                             </div>
                         </div>
