@@ -56,7 +56,6 @@ let shouldCleanup = true;
 
 // Slide extraction state
 let slideExtractor: SlideExtractor | null = null;
-let pendingSlide: { buffer: ArrayBuffer; startMs: number; timestamp: string } | null = null;
 let pendingSlideEncodes = 0;
 let drainResolve: (() => void) | null = null;
 /**
@@ -199,32 +198,19 @@ self.onmessage = async (e: MessageEvent) => {
                 onProgress: (percent: number, message: string, metrics?: any) => {
                     self.postMessage({ type: 'STATUS', status: message, progress: Math.round(percent), metrics });
                 },
-                onSlide: async (blob: Blob, timestamp: number, prevTimestamp: number) => {
+                onSlide: async (blob: Blob, _timestamp: number, prevTimestamp: number) => {
                     pendingSlideEncodes++;
                     try {
                         const ab = await blob.arrayBuffer();
-                        const detectionMs = Math.round(timestamp * 1000);
-                        const prevMs = Math.round(prevTimestamp * 1000);
+                        const boundaryMs = Math.round(prevTimestamp * 1000);
 
-                        // Use stretch-left boundary (prevTimestamp), but fall back to
-                        // detection timestamp when boundary collapses to startMs
-                        // (happens when no intermediate frames exist, e.g. baseline → immediate change)
-                        let boundaryMs = prevMs;
-                        if (pendingSlide && prevMs <= pendingSlide.startMs) {
-                            boundaryMs = detectionMs;
-                        }
-
-                        if (pendingSlide) {
-                            self.postMessage({
-                                type: 'SLIDE',
-                                buffer: pendingSlide.buffer,
-                                timestamp: pendingSlide.timestamp,
-                                startMs: pendingSlide.startMs,
-                                endMs: Math.max(boundaryMs - 1, pendingSlide.startMs),
-                            }, [pendingSlide.buffer]);
-                        }
-
-                        pendingSlide = { buffer: ab, startMs: boundaryMs, timestamp: formatTime(boundaryMs / 1000) };
+                        self.postMessage({
+                            type: 'SLIDE',
+                            buffer: ab,
+                            timestamp: formatTime(prevTimestamp),
+                            startMs: boundaryMs,
+                            endMs: boundaryMs, // Dummy value, the UI will override this based on the next slide's startMs
+                        }, [ab]);
                     } catch (e: any) {
                         console.warn('[Worker] onSlide buffer read failed:', e.message);
                     } finally {
@@ -296,23 +282,7 @@ self.onmessage = async (e: MessageEvent) => {
                     ]);
                 }
 
-                // Flush the last buffered slide
-                if (pendingSlide) {
-                    const videoDurationMs = metrics?.videoDurationSec
-                        ? Math.round(metrics.videoDurationSec * 1000)
-                        : metrics?.lastFrameTimestamp
-                            ? Math.round(metrics.lastFrameTimestamp * 1000)
-                            : pendingSlide.startMs;
-                    
-                    self.postMessage({
-                        type: 'SLIDE',
-                        buffer: pendingSlide.buffer,
-                        timestamp: pendingSlide.timestamp,
-                        startMs: pendingSlide.startMs,
-                        endMs: videoDurationMs,
-                    }, [pendingSlide.buffer]);
-                    pendingSlide = null;
-                }
+
 
                 postMessage({ type: 'ALL_DONE', metrics });
             });

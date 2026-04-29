@@ -112,7 +112,7 @@ const App: React.FC = () => {
     const [status, setStatus] = useState<string>('Ready to extract');
     const [isExtracting, setIsExtracting] = useState(false);
     
-    type SlideIndexEntry = { offset: number, length: number, time: string, startMs: number, endMs: number, url: string };
+    type SlideIndexEntry = { offset: number, length: number, time: string, startMs: number, url: string };
     const [slides, setSlides] = useState<SlideIndexEntry[]>([]);
     const [audioUrl, setAudioUrl] = useState<string | null>(null);
     const [fileName, setFileName] = useState<string>('');
@@ -259,7 +259,8 @@ const App: React.FC = () => {
                         for (let i = 0; i < slides.length; i++) {
                             const slide = slides[i];
                             const startStr = formatMs(slide.startMs).replace(/:/g, '-');
-                            const endStr = formatMs(slide.endMs).replace(/:/g, '-');
+                            const endMs = slides[i+1]?.startMs ?? (metrics?.videoDurationSec ? metrics.videoDurationSec * 1000 : slide.startMs);
+                            const endStr = formatMs(endMs).replace(/:/g, '-');
                             const blob = slidesFile.slice(slide.offset, slide.offset + slide.length, mimeType);
                             yield { name: `slides/slide_${String(i+1).padStart(3, '0')}_${startStr}_to_${endStr}.${ext}`, input: blob };
                         }
@@ -421,7 +422,6 @@ const App: React.FC = () => {
                                 url: tempUrl,
                                 time: event.timestamp,
                                 startMs: event.startMs,
-                                endMs: event.endMs,
                             };
                             
                             slideIndexBuffer.push(newSlide);
@@ -895,7 +895,9 @@ const App: React.FC = () => {
                                         style={{ cursor: 'pointer' }}
                                         onClick={() => { setLightboxIndex(i); setLightboxZoom(1); }}
                                     />
-                                    <span className="timestamp">{formatMs(slide.startMs)} → {formatMs(slide.endMs)}</span>
+                                    <span className="timestamp">
+                                        {formatMs(slide.startMs)} → {formatMs(slides[i+1]?.startMs ?? (metrics?.videoDurationSec ? metrics.videoDurationSec * 1000 : slide.startMs))}
+                                    </span>
                                 </div>
                             ))}
                         </div>
@@ -924,7 +926,7 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div className="lightbox-info">
-                            {formatMs(slides[lightboxIndex].startMs)} → {formatMs(slides[lightboxIndex].endMs)}
+                            {formatMs(slides[lightboxIndex].startMs)} → {formatMs(slides[lightboxIndex+1]?.startMs ?? (metrics?.videoDurationSec ? metrics.videoDurationSec * 1000 : slides[lightboxIndex].startMs))}
                         </div>
                         <div className="lightbox-controls" onClick={(e) => e.stopPropagation()}>
                             <button className="lightbox-btn" onClick={() => setLightboxZoom(prev => Math.max(1, prev - 0.5))}>⊖</button>
