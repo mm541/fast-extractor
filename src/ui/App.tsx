@@ -203,11 +203,11 @@ const App: React.FC = () => {
             
             async function* yieldFiles() {
                 const root = await navigator.storage.getDirectory();
-                const feDir = await root.getDirectoryHandle('.fast_extractor');
+                const artifactsDir = await root.getDirectoryHandle('.app_artifacts');
                 
                 if (audioUrl && fileName) {
                     try {
-                        const audioH = await feDir.getFileHandle(`audio_${sessionIdRef.current}.aac`);
+                        const audioH = await artifactsDir.getFileHandle(`audio_${sessionIdRef.current}.aac`);
                         yield { name: fileName, input: await audioH.getFile() };
                     } catch (e) {
                         console.warn("Audio file not found in OPFS, skipping.");
@@ -216,7 +216,7 @@ const App: React.FC = () => {
                 
                 if (slides.length > 0) {
                     try {
-                        const slidesH = await feDir.getFileHandle(`slides_${sessionIdRef.current}.dat`);
+                        const slidesH = await artifactsDir.getFileHandle(`slides_${sessionIdRef.current}.dat`);
                         const slidesFile = await slidesH.getFile();
                         const mimeType = config.imageFormat === 'webp' ? 'image/webp' : 'image/jpeg';
                         const ext = config.imageFormat === 'webp' ? 'webp' : 'jpg';
@@ -318,15 +318,15 @@ const App: React.FC = () => {
 
         try {
             const root = await navigator.storage.getDirectory();
-            const feDir = await root.getDirectoryHandle('.fast_extractor', { create: true });
+            const artifactsDir = await root.getDirectoryHandle('.app_artifacts', { create: true });
             
             if (extractAudio) {
-                const audioHandle = await feDir.getFileHandle(`audio_${sessionId}.aac`, { create: true });
+                const audioHandle = await artifactsDir.getFileHandle(`audio_${sessionId}.aac`, { create: true });
                 audioWritable = await audioHandle.createWritable({ keepExistingData: false });
             }
 
             if (extractSlides) {
-                slidesHandle = await feDir.getFileHandle(`slides_${sessionId}.dat`, { create: true });
+                slidesHandle = await artifactsDir.getFileHandle(`slides_${sessionId}.dat`, { create: true });
                 slidesWritable = await slidesHandle.createWritable({ keepExistingData: false });
             }
 
@@ -354,7 +354,7 @@ const App: React.FC = () => {
                             await audioWritable.close();
                             audioWritable = null;
                         }
-                        const audioH = await feDir.getFileHandle(`audio_${sessionId}.aac`);
+                        const audioH = await artifactsDir.getFileHandle(`audio_${sessionId}.aac`);
                         const audioFile = await audioH.getFile();
                         const url = URL.createObjectURL(audioFile);
                         urlsToCleanup.current.push(url);
