@@ -211,7 +211,7 @@ self.onmessage = async (e: MessageEvent) => {
                                 buffer: pendingSlide.buffer,
                                 timestamp: pendingSlide.timestamp,
                                 startMs: pendingSlide.startMs,
-                                endMs: boundaryMs,
+                                endMs: Math.max(boundaryMs - 1, pendingSlide.startMs),
                             }, [pendingSlide.buffer]);
                         }
 
