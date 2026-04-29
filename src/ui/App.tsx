@@ -352,8 +352,9 @@ const App: React.FC = () => {
         let slidesWritable: FileSystemWritableFileStream | null = null;
         let slidesHandle: FileSystemFileHandle | null = null;
 
-        try {
-            const root = await navigator.storage.getDirectory();
+        const doExtract = async () => {
+            try {
+                const root = await navigator.storage.getDirectory();
             const artifactsDir = await root.getDirectoryHandle('.app_artifacts', { create: true });
             
             if (extractAudio) {
@@ -522,6 +523,17 @@ const App: React.FC = () => {
             }
         } finally {
             abortRef.current = null;
+        }
+        }; // End of doExtract
+
+        if (navigator.locks) {
+            await navigator.locks.request(`app_audio_${sessionId}.aac`, async () => {
+                await navigator.locks.request(`app_slides_${sessionId}.dat`, async () => {
+                    await doExtract();
+                });
+            });
+        } else {
+            await doExtract();
         }
     };
 
