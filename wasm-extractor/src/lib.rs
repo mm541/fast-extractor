@@ -425,6 +425,8 @@ pub struct AudioExtractor {
     last_indexed_sec: usize,
     // Timestamp accumulator for codecs that report packet duration
     samples_decoded: u64,
+    // Pre-allocated reusable buffer for chunks to avoid per-call allocations
+    chunk_buffer: Vec<u8>,
 }
 
 #[wasm_bindgen]
@@ -549,6 +551,7 @@ impl AudioExtractor {
             byte_index,
             last_indexed_sec: 0,
             samples_decoded: 0,
+            chunk_buffer: Vec::with_capacity(1024 * 1024), // 1MB pre-allocation
         })
     }
 
@@ -585,39 +588,39 @@ impl AudioExtractor {
     ///   Opus   → raw packets (Ogg muxing deferred)
     ///   Vorbis → raw packets (Ogg muxing deferred)
     ///
-    /// The per-second byte index is updated inline with zero branch overhead
-    /// when the manifest is disabled (the Option check compiles to a single
-    /// test-and-jump that the branch predictor trivially learns).
+    /// Uses a pre-allocated internal buffer to guarantee zero allocations
+    /// during the extraction loop.
     pub fn pull_chunk(&mut self, max_bytes: usize) -> Uint8Array {
-        let mut buffer = Vec::with_capacity(max_bytes);
-        while buffer.len() < max_bytes {
+        self.chunk_buffer.clear();
+        
+        while self.chunk_buffer.len() < max_bytes {
             match self.reader.next_packet() {
                 Ok(packet) => {
                     if packet.track_id() != self.track_id { continue; }
                     
                     let packet_data = &packet.data;
-                    let framed_start = buffer.len();
+                    let framed_start = self.chunk_buffer.len();
 
                     // ── Codec-specific framing ──
                     match self.codec {
                         AudioCodec::Aac => {
                             let adts = create_adts_header(packet_data.len(), self.aac_sr_idx, self.channels);
-                            buffer.extend_from_slice(&adts);
-                            buffer.extend_from_slice(packet_data);
+                            self.chunk_buffer.extend_from_slice(&adts);
+                            self.chunk_buffer.extend_from_slice(packet_data);
                         }
                         AudioCodec::Mp3 => {
                             // MP3 frames are self-framing (sync word 0xFFE/0xFFF).
                             // Direct passthrough — zero framing overhead.
-                            buffer.extend_from_slice(packet_data);
+                            self.chunk_buffer.extend_from_slice(packet_data);
                         }
                         AudioCodec::Opus | AudioCodec::Vorbis => {
                             // Raw packet passthrough for now.
                             // Phase 2: wrap in Ogg pages for standalone playability.
-                            buffer.extend_from_slice(packet_data);
+                            self.chunk_buffer.extend_from_slice(packet_data);
                         }
                     }
 
-                    let framed_size = (buffer.len() - framed_start) as u64;
+                    let framed_size = (self.chunk_buffer.len() - framed_start) as u64;
                     self.bytes_written += framed_size;
 
                     // ── Manifest: update per-second byte index ──
@@ -648,7 +651,7 @@ impl AudioExtractor {
                 _ => break,
             }
         }
-        Uint8Array::from(&buffer[..])
+        Uint8Array::from(&self.chunk_buffer[..])
     }
 
     /// Build the manifest as a JSON string. Returns empty string if disabled.
