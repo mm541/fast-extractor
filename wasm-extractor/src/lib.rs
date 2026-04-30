@@ -658,16 +658,9 @@ impl AudioExtractor {
             None
         };
 
-        // Smart capacity allocation for the manifest string
-        let manifest_cap = if build_manifest {
-            if duration_sec > 0.0 {
-                (duration_sec.ceil() as usize) * 12 + 256
-            } else {
-                8192 // Fallback if duration is unknown until extraction finishes
-            }
-        } else {
-            0
-        };
+        // Smart capacity allocation for the manifest string.
+        // NOTE: We calculate this AFTER init_segments are built (below)
+        // so we can account for their exact Base64 size in the budget.
 
         let mut chunk_buffer = Vec::with_capacity(1024 * 1024);
         let mut ogg_page_seq = 0;
@@ -724,6 +717,20 @@ impl AudioExtractor {
         }
 
         let bytes_written = chunk_buffer.len() as u64;
+
+        // Now that init_segments are known, compute exact manifest capacity.
+        // Formula: byte_index entries + JSON envelope + init_segments Base64 strings.
+        let init_seg_size: usize = init_segments.iter().map(|s| s.len() + 3).sum(); // +3 for quotes and comma
+        let manifest_cap = if build_manifest {
+            let index_cap = if duration_sec > 0.0 {
+                (duration_sec.ceil() as usize) * 12
+            } else {
+                8192
+            };
+            index_cap + 512 + init_seg_size // 512 for JSON envelope (keys, braces, etc.)
+        } else {
+            0
+        };
 
         Ok(AudioExtractor {
             reader, track_id, codec, sample_rate, channels, aac_sr_idx,
@@ -870,35 +877,33 @@ impl AudioExtractor {
         
         self.manifest_buffer.clear();
         
-        // Ensure we have enough capacity (idx.len() * ~12 bytes for numbers + ~200 for JSON envelope)
-        let required_cap = idx.len() * 12 + 256;
+        // Account for init_segments size in capacity check
+        let init_seg_size: usize = self.init_segments.iter().map(|s| s.len() + 3).sum();
+        let required_cap = idx.len() * 12 + 512 + init_seg_size;
         if self.manifest_buffer.capacity() < required_cap {
             self.manifest_buffer.reserve(required_cap - self.manifest_buffer.capacity());
         }
 
-        let mut init_segments_json = String::new();
-        if !self.init_segments.is_empty() {
-            init_segments_json.push('[');
-            for (i, seg) in self.init_segments.iter().enumerate() {
-                if i > 0 { init_segments_json.push(','); }
-                init_segments_json.push_str(&format!(r#""{}""#, seg));
-            }
-            init_segments_json.push(']');
-        } else {
-            init_segments_json.push_str("[]");
-        }
-
-        // Write the JSON prefix
+        // Write the JSON prefix (everything before byte_index array)
         let _ = write!(
             self.manifest_buffer,
-            r#"{{"codec":"{}","extension":"{}","mime":"{}","sample_rate":{},"channels":{},"duration_sec":{},"total_bytes":{},"pre_roll_ms":{},"init_segments":{},"byte_index":["#,
+            r#"{{"codec":"{}","extension":"{}","mime":"{}","sample_rate":{},"channels":{},"duration_sec":{},"total_bytes":{},"pre_roll_ms":{},"init_segments":["#,
             codec_str, ext, mime,
             self.sample_rate, self.channels,
             idx.len().saturating_sub(1),
             self.bytes_written,
-            pre_roll_ms,
-            init_segments_json
+            pre_roll_ms
         );
+
+        // Write init_segments directly into manifest_buffer (no intermediate String)
+        for (i, seg) in self.init_segments.iter().enumerate() {
+            if i > 0 { let _ = self.manifest_buffer.write_char(','); }
+            let _ = self.manifest_buffer.write_char('"');
+            let _ = self.manifest_buffer.write_str(seg);
+            let _ = self.manifest_buffer.write_char('"');
+        }
+
+        let _ = self.manifest_buffer.write_str(r#"],"byte_index":["#);
 
         // Write the array elements
         for (i, &offset) in idx.iter().enumerate() {
