@@ -147,7 +147,7 @@ const App: React.FC = () => {
     const [ignoreMask, setIgnoreMask] = useState<bigint>(0n);
     const [extractAudio, setExtractAudio] = useState(true);
     const [extractSlides, setExtractSlides] = useState(true);
-    const [buildManifest, setBuildManifest] = useState(false);
+    const [buildManifest, setBuildManifest] = useState(true);
     const [audioManifest, setAudioManifest] = useState<any>(null);
     
     const [metrics, setMetrics] = useState<any>(null);
@@ -250,6 +250,11 @@ const App: React.FC = () => {
                     } catch (e) {
                         console.warn("Audio file not found in OPFS, skipping.");
                     }
+                }
+                
+                if (audioManifest) {
+                    const manifestBlob = new Blob([JSON.stringify(audioManifest, null, 2)], { type: 'application/json' });
+                    yield { name: 'manifest.json', input: manifestBlob };
                 }
                 
                 if (slides.length > 0) {
