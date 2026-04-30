@@ -427,6 +427,8 @@ pub struct AudioExtractor {
     samples_decoded: u64,
     // Pre-allocated reusable buffer for chunks to avoid per-call allocations
     chunk_buffer: Vec<u8>,
+    // Pre-allocated reusable buffer for building the manifest JSON string
+    manifest_buffer: String,
 }
 
 #[wasm_bindgen]
@@ -552,6 +554,7 @@ impl AudioExtractor {
             last_indexed_sec: 0,
             samples_decoded: 0,
             chunk_buffer: Vec::with_capacity(1024 * 1024), // 1MB pre-allocation
+            manifest_buffer: String::with_capacity(if build_manifest { 8192 } else { 0 }),
         })
     }
 
@@ -656,9 +659,9 @@ impl AudioExtractor {
 
     /// Build the manifest as a JSON string. Returns empty string if disabled.
     ///
-    /// Hand-serialized via format!() to avoid pulling in serde_json (~100KB WASM).
-    /// The byte_index array is emitted as a comma-separated list of integers.
-    pub fn build_manifest(&self) -> String {
+    /// Uses a pre-allocated String buffer and writes directly into it to avoid
+    /// intermediate allocations.
+    pub fn build_manifest(&mut self) -> String {
         let idx = match &self.byte_index {
             Some(v) => v,
             None => return String::new(),
@@ -671,24 +674,37 @@ impl AudioExtractor {
             AudioCodec::Vorbis => ("vorbis", ".ogg", "audio/ogg; codecs=vorbis", 50),
         };
 
-        // Build byte_index array string without intermediate String allocations.
-        // Pre-size: each u64 is at most 20 digits + comma = ~21 chars.
-        let mut index_str = String::with_capacity(idx.len() * 12);
-        for (i, &offset) in idx.iter().enumerate() {
-            if i > 0 { index_str.push(','); }
-            use std::fmt::Write;
-            let _ = write!(index_str, "{}", offset);
+        use std::fmt::Write;
+        
+        self.manifest_buffer.clear();
+        
+        // Ensure we have enough capacity (idx.len() * ~12 bytes for numbers + ~200 for JSON envelope)
+        let required_cap = idx.len() * 12 + 256;
+        if self.manifest_buffer.capacity() < required_cap {
+            self.manifest_buffer.reserve(required_cap - self.manifest_buffer.capacity());
         }
 
-        format!(
-            r#"{{"codec":"{}","extension":"{}","mime":"{}","sample_rate":{},"channels":{},"duration_sec":{},"total_bytes":{},"pre_roll_ms":{},"byte_index":[{}]}}"#,
+        // Write the JSON prefix
+        let _ = write!(
+            self.manifest_buffer,
+            r#"{{"codec":"{}","extension":"{}","mime":"{}","sample_rate":{},"channels":{},"duration_sec":{},"total_bytes":{},"pre_roll_ms":{},"byte_index":["#,
             codec_str, ext, mime,
             self.sample_rate, self.channels,
             idx.len().saturating_sub(1),
             self.bytes_written,
-            pre_roll_ms,
-            index_str,
-        )
+            pre_roll_ms
+        );
+
+        // Write the array elements
+        for (i, &offset) in idx.iter().enumerate() {
+            if i > 0 { let _ = self.manifest_buffer.write_char(','); }
+            let _ = write!(self.manifest_buffer, "{}", offset);
+        }
+
+        // Close the JSON envelope
+        let _ = self.manifest_buffer.write_str("]}");
+
+        self.manifest_buffer.clone()
     }
 }
 

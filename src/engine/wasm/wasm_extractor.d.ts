@@ -7,8 +7,8 @@ export class AudioExtractor {
     /**
      * Build the manifest as a JSON string. Returns empty string if disabled.
      *
-     * Hand-serialized via format!() to avoid pulling in serde_json (~100KB WASM).
-     * The byte_index array is emitted as a comma-separated list of integers.
+     * Uses a pre-allocated String buffer and writes directly into it to avoid
+     * intermediate allocations.
      */
     build_manifest(): string;
     /**
@@ -41,9 +41,8 @@ export class AudioExtractor {
      *   Opus   → raw packets (Ogg muxing deferred)
      *   Vorbis → raw packets (Ogg muxing deferred)
      *
-     * The per-second byte index is updated inline with zero branch overhead
-     * when the manifest is disabled (the Option check compiles to a single
-     * test-and-jump that the branch predictor trivially learns).
+     * Uses a pre-allocated internal buffer to guarantee zero allocations
+     * during the extraction loop.
      */
     pull_chunk(max_bytes: number): Uint8Array;
 }
