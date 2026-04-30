@@ -127,6 +127,8 @@ export interface FastExtractorOptions {
   densityThresholdPct?: number;
   /** Perceptual hash hamming distance for duplicate detection. Default: 10 */
   dhashDuplicateThreshold?: number;
+  /** Brightness threshold for blank slide detection. Default: 0 */
+  blankBrightnessThreshold?: number;
   /** 
    * If true, enables the "Stability Gate" which buffers frames during a transition
    * and only emits them once the video has stopped moving (driftBlocks drops).

@@ -131,7 +131,7 @@ const App: React.FC = () => {
         useDeferredEmit: true,
 
         // Drift detection
-        blankBrightnessThreshold: 8,
+        blankBrightnessThreshold: 0,
         cumulativeDriftMultiplier: 2,
         cumulativeSettledFrames: 2,
         partialThresholdRatio: 0.5,
