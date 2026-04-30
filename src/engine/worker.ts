@@ -131,7 +131,7 @@ self.onmessage = async (e: MessageEvent) => {
         }
 
         if (type === 'EXTRACT_AUDIO') {
-            const { fileName, fileHandle } = e.data;
+            const { fileName, fileHandle, buildManifest = false, duration = 0 } = e.data;
             
             // Wait up to 30s for background WASM fetch to arrive
             let retries = 0;
@@ -150,7 +150,7 @@ self.onmessage = async (e: MessageEvent) => {
 
             let audioExtractor: any = null;
             try {
-                audioExtractor = new AudioExtractor(syncHandle);
+                audioExtractor = new AudioExtractor(syncHandle, buildManifest, duration);
 
                 let lastReport = 0;
                 while (true) {
@@ -166,12 +166,21 @@ self.onmessage = async (e: MessageEvent) => {
                         lastReport = progress;
                     }
                 }
-                postMessage({ type: 'AUDIO_DONE', fileName: fileName.replace(/\.[^/.]+$/, "") + ".aac" });
+
+                // Read extension and manifest from WASM (codec-agnostic)
+                const ext = audioExtractor.get_extension();
+                const manifest = buildManifest ? JSON.parse(audioExtractor.build_manifest()) : null;
+
+                postMessage({
+                    type: 'AUDIO_DONE',
+                    fileName: fileName.replace(/\.[^/.]+$/, "") + "." + ext,
+                    manifest,
+                });
             } catch (e: any) {
                 const reason = e?.message ?? 'unsupported format';
                 console.warn('[Worker] Audio extraction failed:', reason);
                 postMessage({ type: 'STATUS', status: `⚠️ Audio unavailable: ${reason}. Extracting slides only...` });
-                postMessage({ type: 'AUDIO_DONE', fileName: null });
+                postMessage({ type: 'AUDIO_DONE', fileName: null, manifest: null });
             } finally {
                 if (audioExtractor) try { audioExtractor.free(); } catch(_) {}
                 if (syncHandle) {

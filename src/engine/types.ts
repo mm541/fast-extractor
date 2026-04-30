@@ -15,15 +15,39 @@ import type { ExtractorError } from './errors';
 /** Audio chunk streamed from the worker (zero-copy transferred ArrayBuffer) */
 export interface AudioChunkEvent {
   type: 'audio';
-  /** Raw AAC audio data (ADTS-framed). Accumulate and wrap in Blob to play. */
+  /** Raw audio data (codec-specific framing: ADTS for AAC, self-framing for MP3, raw for Opus/Vorbis). */
   chunk: ArrayBuffer;
+}
+
+/** Per-second byte-offset manifest for S3 range-query access. */
+export interface AudioManifest {
+  /** Detected codec: "aac", "mp3", "opus", "vorbis" */
+  codec: string;
+  /** File extension: ".aac", ".mp3", ".ogg" */
+  extension: string;
+  /** MIME type: "audio/aac", "audio/mpeg", "audio/ogg; codecs=opus", etc. */
+  mime: string;
+  /** Audio sample rate in Hz */
+  sample_rate: number;
+  /** Number of audio channels */
+  channels: number;
+  /** Total audio duration in seconds */
+  duration_sec: number;
+  /** Total audio file size in bytes */
+  total_bytes: number;
+  /** Milliseconds of pre-roll needed before a seek target for clean playback */
+  pre_roll_ms: number;
+  /** Per-second byte offset index. byte_index[N] = byte offset at second N. */
+  byte_index: number[];
 }
 
 /** Audio extraction complete. No more audio events will be emitted. */
 export interface AudioDoneEvent {
   type: 'audio_done';
-  /** Suggested filename (e.g. "lecture.aac") */
-  fileName: string;
+  /** Suggested filename (e.g. "lecture.aac", "lecture.mp3", "lecture.ogg"). Null if extraction failed. */
+  fileName: string | null;
+  /** Per-second byte-offset manifest. Null if buildManifest was false or extraction failed. */
+  manifest?: AudioManifest | null;
 }
 
 /** A slide image was detected and captured. */
@@ -160,6 +184,13 @@ export interface FastExtractorOptions {
   extractAudio?: boolean;
   /** Extract slide images from the video. Default: true */
   extractSlides?: boolean;
+  /**
+   * Build a per-second byte-offset manifest during audio extraction.
+   * When true, the WASM engine tracks byte offsets at 1-second granularity,
+   * enabling S3 range-query access to arbitrary audio segments.
+   * The manifest is emitted alongside audio_done. Default: false.
+   */
+  buildManifest?: boolean;
   /** Encoded image quality of the extracted slides (0.01 - 1.0). Default: 0.8 */
   imageQuality?: number;
   /** Output format for extracted slides. Default: 'jpeg' */
@@ -189,10 +220,10 @@ export interface FastExtractorOptions {
 
 /** Callback-style interface as an alternative to ReadableStream consumption. */
 export interface ExtractorCallbacks {
-  /** Called for each raw AAC audio chunk. */
+  /** Called for each raw audio chunk (codec-agnostic). */
   onAudio?: (chunk: ArrayBuffer) => void;
   /** Called when audio extraction is complete. */
-  onAudioDone?: (fileName: string) => void;
+  onAudioDone?: (fileName: string | null, manifest?: AudioManifest | null) => void;
   /** Called when a new slide is detected. */
   onSlide?: (slide: { imageBuffer: ArrayBuffer; timestamp: string; startMs: number; endMs: number }) => void;
   /** Called on progress updates. */

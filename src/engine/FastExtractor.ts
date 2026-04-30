@@ -260,6 +260,7 @@ export class FastExtractor {
                   controller.enqueue({
                     type: 'audio_done',
                     fileName: e.data.fileName,
+                    manifest: e.data.manifest ?? null,
                   });
                   break;
 
@@ -388,7 +389,12 @@ export class FastExtractor {
                     }
                   };
                   worker!.addEventListener('message', handleAudioMessage);
-                  worker!.postMessage({ type: 'EXTRACT_AUDIO', fileName: file.name, fileHandle });
+                  worker!.postMessage({
+                    type: 'EXTRACT_AUDIO',
+                    fileName: file.name,
+                    fileHandle,
+                    buildManifest: this.options.buildManifest ?? false,
+                  });
                 });
               }
 

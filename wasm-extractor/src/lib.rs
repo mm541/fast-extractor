@@ -58,7 +58,7 @@ use wasm_bindgen::prelude::*;
 use symphonia::core::formats::FormatReader;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::probe::Hint;
-use symphonia::core::codecs::CODEC_TYPE_AAC;
+use symphonia::core::codecs::{CODEC_TYPE_AAC, CODEC_TYPE_MP3, CODEC_TYPE_VORBIS, CODEC_TYPE_OPUS};
 
 // ════════════════════════════════════════════════
 // 1. JS OPFS BINDINGS
@@ -366,35 +366,91 @@ pub fn compute_color_signature() -> u64 {
 
 
 // ════════════════════════════════════════════════
-// 3. AUDIO EXTRACTOR (Symphonia based)
+// 3. AUDIO EXTRACTOR (Symphonia-based, multi-codec)
 // ════════════════════════════════════════════════
-// ... Same AudioExtractor implementation as before ...
+//
+// Supported codecs (priority order during probing):
+//   1. AAC  — packets framed with 7-byte ADTS headers
+//   2. MP3  — self-framing, direct passthrough
+//   3. Opus — raw packets (Ogg muxing deferred to Phase 2)
+//   4. Vorbis — raw packets (Ogg muxing deferred to Phase 2)
+//
+// ── MANIFEST (optional) ──────────────────────────────────────────────
+//
+//   When `build_manifest=true`, a per-second byte-offset index is built
+//   during extraction. Memory cost: ceil(duration) × 8 bytes (~29KB/hr).
+//   The index is never allocated when disabled (Option::None).
+//
+// ── HARDWARE SYMPATHY ────────────────────────────────────────────────
+//
+//   • SharedPosReader reuses a single 64KB Uint8Array + cached JS Object/key
+//   • pull_chunk() reuses a pre-capacity Vec<u8> (no per-call allocation)
+//   • Codec dispatch is a match on a fieldless enum (compiles to a jump table)
+//   • Manifest JSON is hand-serialized via format!() — no serde dependency
+//
+
+/// Detected audio codec — used for branchless dispatch in the hot loop.
+/// Fieldless variants keep the match cheap (single integer compare).
+enum AudioCodec {
+    Aac,
+    Mp3,
+    Opus,
+    Vorbis,
+}
+
+/// Codec priority for probing: AAC > MP3 > Opus > Vorbis.
+/// First match wins. This matches real-world frequency of lecture videos.
+const SUPPORTED_CODECS: &[symphonia::core::codecs::CodecType] = &[
+    CODEC_TYPE_AAC,
+    CODEC_TYPE_MP3,
+    CODEC_TYPE_OPUS,
+    CODEC_TYPE_VORBIS,
+];
 
 #[wasm_bindgen]
 pub struct AudioExtractor {
     reader: Box<dyn FormatReader>,
     track_id: u32,
-    sample_rate_idx: u8,
+    codec: AudioCodec,
+    sample_rate: u32,
     channels: u8,
+    // AAC-specific: ADTS sample rate index (only meaningful for AAC)
+    aac_sr_idx: u8,
+    // OPFS position tracking (shared with SharedPosReader)
     pos_ref: std::sync::Arc<std::sync::atomic::AtomicU64>,
     total_size: u64,
+    // ── Manifest state (all zero-cost when None) ──
+    bytes_written: u64,
+    byte_index: Option<Vec<u64>>,
+    last_indexed_sec: usize,
+    // Timestamp accumulator for codecs that report packet duration
+    samples_decoded: u64,
 }
 
 #[wasm_bindgen]
 impl AudioExtractor {
+    /// Create a new AudioExtractor from an OPFS SyncAccessHandle.
+    ///
+    /// # Arguments
+    /// * `handle` — OPFS SyncAccessHandle for zero-copy reads
+    /// * `build_manifest` — if true, preallocate per-second byte index
+    /// * `duration_sec` — total video duration in seconds (for index preallocation)
     #[wasm_bindgen(constructor)]
-    pub fn new(handle: SyncHandle) -> Result<AudioExtractor, JsValue> {
+    pub fn new(handle: SyncHandle, build_manifest: bool, duration_sec: f64) -> Result<AudioExtractor, JsValue> {
         console_error_panic_hook::set_once();
         let total_size = handle.get_size() as u64;
         let pos_ref = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let reader_pos = pos_ref.clone();
         
+        // ── SharedPosReader (unchanged — preserves zero-alloc invariants) ──
+        // Reuses a single 64KB Uint8Array scratch buffer and a cached JS
+        // Object + "at" key across all reads to avoid per-read JS allocations.
         struct SharedPosReader {
             handle: SyncHandle,
             pos: std::sync::Arc<std::sync::atomic::AtomicU64>,
             scratch: Uint8Array,
-            options: Object,    // reused across reads — avoids per-read JS allocation
-            at_key: JsValue,    // cached "at" string — avoids per-read interning
+            options: Object,
+            at_key: JsValue,
         }
         
         impl Read for SharedPosReader {
@@ -437,43 +493,156 @@ impl AudioExtractor {
         let scratch = Uint8Array::new_with_length(65536);
         let options = Object::new();
         let at_key: JsValue = "at".into();
-        let mss = MediaSourceStream::new(Box::new(SharedPosReader { handle, pos: reader_pos, scratch, options, at_key }), Default::default());
+        let mss = MediaSourceStream::new(
+            Box::new(SharedPosReader { handle, pos: reader_pos, scratch, options, at_key }),
+            Default::default(),
+        );
         let probed = symphonia::default::get_probe()
             .format(&Hint::new(), mss, &Default::default(), &Default::default())
             .map_err(|_| JsValue::from_str("Failed to parse media format"))?;
 
         let reader = probed.format;
+
+        // ── Dynamic codec probing ──
+        // Search tracks in priority order: AAC > MP3 > Opus > Vorbis
         let track = reader.tracks().iter()
-            .find(|t| t.codec_params.codec == CODEC_TYPE_AAC)
-            .ok_or_else(|| JsValue::from_str("No AAC track found"))?;
+            .find(|t| SUPPORTED_CODECS.contains(&t.codec_params.codec))
+            .ok_or_else(|| JsValue::from_str("No supported audio track (AAC/MP3/Opus/Vorbis)"))?;
 
         let track_id = track.id;
         let sample_rate = track.codec_params.sample_rate.unwrap_or(44100);
         let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(2) as u8;
-        
-        let sample_rate_idx = match sample_rate {
-            96000 => 0, 88200 => 1, 64000 => 2, 48000 => 3, 44100 => 4,
-            32000 => 5, 24000 => 6, 22050 => 7, 16000 => 8, 12000 => 9,
-            11025 => 10, 8000 => 11, _ => 4,
+
+        let (codec, aac_sr_idx) = match track.codec_params.codec {
+            CODEC_TYPE_AAC => {
+                let sr_idx = match sample_rate {
+                    96000 => 0, 88200 => 1, 64000 => 2, 48000 => 3, 44100 => 4,
+                    32000 => 5, 24000 => 6, 22050 => 7, 16000 => 8, 12000 => 9,
+                    11025 => 10, 8000 => 11, _ => 4,
+                };
+                (AudioCodec::Aac, sr_idx)
+            }
+            CODEC_TYPE_MP3 => (AudioCodec::Mp3, 0),
+            CODEC_TYPE_OPUS => (AudioCodec::Opus, 0),
+            CODEC_TYPE_VORBIS => (AudioCodec::Vorbis, 0),
+            _ => return Err(JsValue::from_str("Unsupported codec")),
         };
 
-        Ok(AudioExtractor { reader, track_id, sample_rate_idx, channels, pos_ref, total_size })
+        // ── Manifest preallocation (zero-cost when disabled) ──
+        // If duration is known, preallocate exactly. If unknown (0), start with
+        // a small vec that grows as we extract. Never allocated when disabled.
+        let byte_index = if build_manifest {
+            let cap = if duration_sec > 0.0 {
+                (duration_sec.ceil() as usize) + 1
+            } else {
+                64 // sensible starting capacity for unknown duration
+            };
+            Some(vec![0u64; cap])
+        } else {
+            None
+        };
+
+        Ok(AudioExtractor {
+            reader, track_id, codec, sample_rate, channels, aac_sr_idx,
+            pos_ref, total_size,
+            bytes_written: 0,
+            byte_index,
+            last_indexed_sec: 0,
+            samples_decoded: 0,
+        })
     }
 
+    /// Progress as percentage (0.0 - 100.0), based on bytes read from OPFS.
     pub fn get_progress(&self) -> f64 {
         let pos = self.pos_ref.load(std::sync::atomic::Ordering::SeqCst) as f64;
         (pos / self.total_size as f64) * 100.0
     }
 
+    /// File extension for the output audio file ("aac", "mp3", "ogg").
+    pub fn get_extension(&self) -> String {
+        match self.codec {
+            AudioCodec::Aac => "aac".into(),
+            AudioCodec::Mp3 => "mp3".into(),
+            AudioCodec::Opus | AudioCodec::Vorbis => "ogg".into(),
+        }
+    }
+
+    /// MIME type for the output audio ("audio/aac", "audio/mpeg", etc).
+    pub fn get_mime(&self) -> String {
+        match self.codec {
+            AudioCodec::Aac => "audio/aac".into(),
+            AudioCodec::Mp3 => "audio/mpeg".into(),
+            AudioCodec::Opus => "audio/ogg; codecs=opus".into(),
+            AudioCodec::Vorbis => "audio/ogg; codecs=vorbis".into(),
+        }
+    }
+
+    /// Pull up to `max_bytes` of framed audio data.
+    ///
+    /// Each codec is framed appropriately:
+    ///   AAC    → 7-byte ADTS header injected per packet
+    ///   MP3    → direct passthrough (self-framing)
+    ///   Opus   → raw packets (Ogg muxing deferred)
+    ///   Vorbis → raw packets (Ogg muxing deferred)
+    ///
+    /// The per-second byte index is updated inline with zero branch overhead
+    /// when the manifest is disabled (the Option check compiles to a single
+    /// test-and-jump that the branch predictor trivially learns).
     pub fn pull_chunk(&mut self, max_bytes: usize) -> Uint8Array {
         let mut buffer = Vec::with_capacity(max_bytes);
         while buffer.len() < max_bytes {
             match self.reader.next_packet() {
                 Ok(packet) => {
-                    if packet.track_id() == self.track_id {
-                        let adts = create_adts_header(packet.data.len(), self.sample_rate_idx, self.channels);
-                        buffer.extend_from_slice(&adts);
-                        buffer.extend_from_slice(&packet.data);
+                    if packet.track_id() != self.track_id { continue; }
+                    
+                    let packet_data = &packet.data;
+                    let framed_start = buffer.len();
+
+                    // ── Codec-specific framing ──
+                    match self.codec {
+                        AudioCodec::Aac => {
+                            let adts = create_adts_header(packet_data.len(), self.aac_sr_idx, self.channels);
+                            buffer.extend_from_slice(&adts);
+                            buffer.extend_from_slice(packet_data);
+                        }
+                        AudioCodec::Mp3 => {
+                            // MP3 frames are self-framing (sync word 0xFFE/0xFFF).
+                            // Direct passthrough — zero framing overhead.
+                            buffer.extend_from_slice(packet_data);
+                        }
+                        AudioCodec::Opus | AudioCodec::Vorbis => {
+                            // Raw packet passthrough for now.
+                            // Phase 2: wrap in Ogg pages for standalone playability.
+                            buffer.extend_from_slice(packet_data);
+                        }
+                    }
+
+                    let framed_size = (buffer.len() - framed_start) as u64;
+                    self.bytes_written += framed_size;
+
+                    // ── Manifest: update per-second byte index ──
+                    // Track cumulative samples for sample-accurate timestamps.
+                    // AAC: 1024 samples/frame. MP3: 1152 samples/frame.
+                    // Opus/Vorbis: variable (packet.dur gives exact count).
+                    let samples_per_frame = match self.codec {
+                        AudioCodec::Aac => 1024u64,
+                        AudioCodec::Mp3 => 1152,
+                        AudioCodec::Opus | AudioCodec::Vorbis => packet.dur,
+                    };
+                    self.samples_decoded += samples_per_frame;
+
+                    if let Some(ref mut idx) = self.byte_index {
+                        let current_sec = (self.samples_decoded / self.sample_rate as u64) as usize;
+                        // Fill any gaps (in case a packet spans multiple seconds)
+                        while self.last_indexed_sec < current_sec {
+                            self.last_indexed_sec += 1;
+                            // Grow the vec if duration was unknown at construction time
+                            if self.last_indexed_sec >= idx.len() {
+                                idx.push(self.bytes_written);
+                            } else {
+                                idx[self.last_indexed_sec] = self.bytes_written;
+                            }
+                        }
                     }
                 }
                 _ => break,
@@ -481,8 +650,52 @@ impl AudioExtractor {
         }
         Uint8Array::from(&buffer[..])
     }
+
+    /// Build the manifest as a JSON string. Returns empty string if disabled.
+    ///
+    /// Hand-serialized via format!() to avoid pulling in serde_json (~100KB WASM).
+    /// The byte_index array is emitted as a comma-separated list of integers.
+    pub fn build_manifest(&self) -> String {
+        let idx = match &self.byte_index {
+            Some(v) => v,
+            None => return String::new(),
+        };
+
+        let (codec_str, ext, mime, pre_roll_ms) = match self.codec {
+            AudioCodec::Aac => ("aac", ".aac", "audio/aac", 48),
+            AudioCodec::Mp3 => ("mp3", ".mp3", "audio/mpeg", 300),
+            AudioCodec::Opus => ("opus", ".ogg", "audio/ogg; codecs=opus", 80),
+            AudioCodec::Vorbis => ("vorbis", ".ogg", "audio/ogg; codecs=vorbis", 50),
+        };
+
+        // Build byte_index array string without intermediate String allocations.
+        // Pre-size: each u64 is at most 20 digits + comma = ~21 chars.
+        let mut index_str = String::with_capacity(idx.len() * 12);
+        for (i, &offset) in idx.iter().enumerate() {
+            if i > 0 { index_str.push(','); }
+            use std::fmt::Write;
+            let _ = write!(index_str, "{}", offset);
+        }
+
+        format!(
+            r#"{{"codec":"{}","extension":"{}","mime":"{}","sample_rate":{},"channels":{},"duration_sec":{},"total_bytes":{},"pre_roll_ms":{},"byte_index":[{}]}}"#,
+            codec_str, ext, mime,
+            self.sample_rate, self.channels,
+            idx.len().saturating_sub(1),
+            self.bytes_written,
+            pre_roll_ms,
+            index_str,
+        )
+    }
 }
 
+/// Build a 7-byte ADTS header for a single AAC Access Unit.
+///
+/// Layout (MPEG-4 AAC-LC, no CRC):
+///   Bytes 0-1: Syncword (0xFFF) + ID=0 + Layer=0 + Protection=1
+///   Byte  2:   Profile(LC=1) + SampleRateIdx + ChannelConfig(hi)
+///   Bytes 3-4: ChannelConfig(lo) + FrameLength(13 bits)
+///   Bytes 5-6: Buffer fullness (0x7FF = VBR) + NumFrames=0
 fn create_adts_header(packet_len: usize, sr_idx: u8, ch: u8) -> [u8; 7] {
     let fl = (packet_len + 7) as u16;
     let mut h = [0u8; 7];

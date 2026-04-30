@@ -4,8 +4,47 @@
 export class AudioExtractor {
     free(): void;
     [Symbol.dispose](): void;
+    /**
+     * Build the manifest as a JSON string. Returns empty string if disabled.
+     *
+     * Hand-serialized via format!() to avoid pulling in serde_json (~100KB WASM).
+     * The byte_index array is emitted as a comma-separated list of integers.
+     */
+    build_manifest(): string;
+    /**
+     * File extension for the output audio file ("aac", "mp3", "ogg").
+     */
+    get_extension(): string;
+    /**
+     * MIME type for the output audio ("audio/aac", "audio/mpeg", etc).
+     */
+    get_mime(): string;
+    /**
+     * Progress as percentage (0.0 - 100.0), based on bytes read from OPFS.
+     */
     get_progress(): number;
-    constructor(handle: any);
+    /**
+     * Create a new AudioExtractor from an OPFS SyncAccessHandle.
+     *
+     * # Arguments
+     * * `handle` — OPFS SyncAccessHandle for zero-copy reads
+     * * `build_manifest` — if true, preallocate per-second byte index
+     * * `duration_sec` — total video duration in seconds (for index preallocation)
+     */
+    constructor(handle: any, build_manifest: boolean, duration_sec: number);
+    /**
+     * Pull up to `max_bytes` of framed audio data.
+     *
+     * Each codec is framed appropriately:
+     *   AAC    → 7-byte ADTS header injected per packet
+     *   MP3    → direct passthrough (self-framing)
+     *   Opus   → raw packets (Ogg muxing deferred)
+     *   Vorbis → raw packets (Ogg muxing deferred)
+     *
+     * The per-second byte index is updated inline with zero branch overhead
+     * when the manifest is disabled (the Option check compiles to a single
+     * test-and-jump that the branch predictor trivially learns).
+     */
     pull_chunk(max_bytes: number): Uint8Array;
 }
 
@@ -65,8 +104,11 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_audioextractor_free: (a: number, b: number) => void;
+    readonly audioextractor_build_manifest: (a: number) => [number, number];
+    readonly audioextractor_get_extension: (a: number) => [number, number];
+    readonly audioextractor_get_mime: (a: number) => [number, number];
     readonly audioextractor_get_progress: (a: number) => number;
-    readonly audioextractor_new: (a: any) => [number, number, number];
+    readonly audioextractor_new: (a: any, b: number, c: number) => [number, number, number];
     readonly audioextractor_pull_chunk: (a: number, b: number) => any;
     readonly compare_frames: (a: number, b: number, c: bigint) => number;
     readonly compare_prev_current: (a: number, b: number, c: bigint) => number;
