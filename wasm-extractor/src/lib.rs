@@ -546,6 +546,17 @@ impl AudioExtractor {
             None
         };
 
+        // Smart capacity allocation for the manifest string
+        let manifest_cap = if build_manifest {
+            if duration_sec > 0.0 {
+                (duration_sec.ceil() as usize) * 12 + 256
+            } else {
+                8192 // Fallback if duration is unknown until extraction finishes
+            }
+        } else {
+            0
+        };
+
         Ok(AudioExtractor {
             reader, track_id, codec, sample_rate, channels, aac_sr_idx,
             pos_ref, total_size,
@@ -554,7 +565,7 @@ impl AudioExtractor {
             last_indexed_sec: 0,
             samples_decoded: 0,
             chunk_buffer: Vec::with_capacity(1024 * 1024), // 1MB pre-allocation
-            manifest_buffer: String::with_capacity(if build_manifest { 8192 } else { 0 }),
+            manifest_buffer: String::with_capacity(manifest_cap),
         })
     }
 
