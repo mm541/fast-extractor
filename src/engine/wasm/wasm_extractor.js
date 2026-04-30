@@ -96,8 +96,8 @@ export class AudioExtractor {
      * Each codec is framed appropriately:
      *   AAC    → 7-byte ADTS header injected per packet
      *   MP3    → direct passthrough (self-framing)
-     *   Opus   → raw packets (Ogg muxing deferred)
-     *   Vorbis → raw packets (Ogg muxing deferred)
+     *   Opus   → wrapped in Ogg pages with correct granule_pos
+     *   Vorbis → wrapped in Ogg pages with correct granule_pos
      *
      * Uses a pre-allocated internal buffer to guarantee zero allocations
      * during the extraction loop.
