@@ -391,6 +391,7 @@ pub fn compute_color_signature() -> u64 {
 
 /// Detected audio codec — used for branchless dispatch in the hot loop.
 /// Fieldless variants keep the match cheap (single integer compare).
+#[derive(PartialEq)]
 enum AudioCodec {
     Aac,
     Mp3,
@@ -406,6 +407,107 @@ const SUPPORTED_CODECS: &[symphonia::core::codecs::CodecType] = &[
     CODEC_TYPE_OPUS,
     CODEC_TYPE_VORBIS,
 ];
+
+// ── ZERO-ALLOCATION OGG MUXER & UTILS ────────────────────────────────
+
+const fn build_ogg_crc_table() -> [u32; 256] {
+    let mut table = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut r = (i as u32) << 24;
+        let mut j = 0;
+        while j < 8 {
+            if (r & 0x8000_0000) != 0 {
+                r = (r << 1) ^ 0x04C11DB7;
+            } else {
+                r <<= 1;
+            }
+            j += 1;
+        }
+        table[i] = r;
+        i += 1;
+    }
+    table
+}
+
+const OGG_CRC_TABLE: [u32; 256] = build_ogg_crc_table();
+
+fn ogg_crc(data: &[u8]) -> u32 {
+    let mut crc = 0u32;
+    for &b in data {
+        let idx = ((crc >> 24) ^ (b as u32)) & 0xFF;
+        crc = (crc << 8) ^ OGG_CRC_TABLE[idx as usize];
+    }
+    crc
+}
+
+const BASE64_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn base64_encode(input: &[u8]) -> String {
+    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    let mut chunks = input.chunks_exact(3);
+    for chunk in &mut chunks {
+        let n = (chunk[0] as u32) << 16 | (chunk[1] as u32) << 8 | (chunk[2] as u32);
+        out.push(BASE64_ALPHABET[(n >> 18) as usize] as char);
+        out.push(BASE64_ALPHABET[((n >> 12) & 0x3F) as usize] as char);
+        out.push(BASE64_ALPHABET[((n >> 6) & 0x3F) as usize] as char);
+        out.push(BASE64_ALPHABET[(n & 0x3F) as usize] as char);
+    }
+    let rem = chunks.remainder();
+    if rem.len() == 1 {
+        let n = (rem[0] as u32) << 16;
+        out.push(BASE64_ALPHABET[(n >> 18) as usize] as char);
+        out.push(BASE64_ALPHABET[((n >> 12) & 0x3F) as usize] as char);
+        out.push_str("==");
+    } else if rem.len() == 2 {
+        let n = (rem[0] as u32) << 16 | (rem[1] as u32) << 8;
+        out.push(BASE64_ALPHABET[(n >> 18) as usize] as char);
+        out.push(BASE64_ALPHABET[((n >> 12) & 0x3F) as usize] as char);
+        out.push(BASE64_ALPHABET[((n >> 6) & 0x3F) as usize] as char);
+        out.push('=');
+    }
+    out
+}
+
+fn write_ogg_page(
+    buf: &mut Vec<u8>,
+    payload: &[u8],
+    granule_pos: u64,
+    serial: u32,
+    page_seq: &mut u32,
+    is_bos: bool,
+    is_eos: bool,
+) {
+    let header_start = buf.len();
+    let header_type: u8 = if is_bos { 0x02 } else if is_eos { 0x04 } else { 0x00 };
+    
+    buf.extend_from_slice(b"OggS");
+    buf.push(0);
+    buf.push(header_type);
+    buf.extend_from_slice(&granule_pos.to_le_bytes());
+    buf.extend_from_slice(&serial.to_le_bytes());
+    buf.extend_from_slice(&page_seq.to_le_bytes());
+    
+    let checksum_pos = buf.len();
+    buf.extend_from_slice(&[0, 0, 0, 0]);
+    
+    let segments = (payload.len() / 255) + 1;
+    buf.push(segments as u8);
+    
+    let mut rem = payload.len();
+    for _ in 0..segments {
+        let s = std::cmp::min(255, rem);
+        buf.push(s as u8);
+        rem -= s;
+    }
+    
+    buf.extend_from_slice(payload);
+    
+    let crc = ogg_crc(&buf[header_start..]);
+    buf[checksum_pos..checksum_pos+4].copy_from_slice(&crc.to_le_bytes());
+    
+    *page_seq += 1;
+}
 
 #[wasm_bindgen]
 pub struct AudioExtractor {
@@ -425,6 +527,10 @@ pub struct AudioExtractor {
     bytes_written: u64,
     byte_index: Option<Vec<u64>>,
     last_indexed_sec: usize,
+    init_segments: Vec<String>,
+    // Ogg Muxer state
+    ogg_page_seq: u32,
+    first_chunk: bool,
     // Pre-allocated reusable buffer for chunks to avoid per-call allocations
     chunk_buffer: Vec<u8>,
     // Pre-allocated reusable buffer for building the manifest JSON string
@@ -563,15 +669,74 @@ impl AudioExtractor {
             0
         };
 
+        let mut chunk_buffer = Vec::with_capacity(1024 * 1024);
+        let mut ogg_page_seq = 0;
+        let mut init_segments = Vec::new();
+
+        // If Opus or Vorbis, we must synthesize the setup Ogg Pages (Page 0 and Page 1)
+        // directly into the chunk buffer so the final .ogg file is locally playable.
+        // We also base64-encode these headers for the manifest for S3 custom players.
+        if codec == AudioCodec::Opus {
+            if let Some(extra) = &track.codec_params.extra_data {
+                write_ogg_page(&mut chunk_buffer, extra, 0, track_id, &mut ogg_page_seq, true, false);
+                init_segments.push(base64_encode(extra));
+                
+                // Synthesize OpusTags
+                let mut tags = Vec::new();
+                tags.extend_from_slice(b"OpusTags");
+                tags.extend_from_slice(&[9, 0, 0, 0]); // vendor length
+                tags.extend_from_slice(b"Symphonia");
+                tags.extend_from_slice(&[0, 0, 0, 0]); // comments length
+                
+                write_ogg_page(&mut chunk_buffer, &tags, 0, track_id, &mut ogg_page_seq, false, false);
+                init_segments.push(base64_encode(&tags));
+            }
+        } else if codec == AudioCodec::Vorbis {
+            if let Some(extra) = &track.codec_params.extra_data {
+                // Parse Xiph lacing for Vorbis headers
+                if extra.len() > 0 && extra[0] == 2 {
+                    let mut offset = 1;
+                    let mut len1 = 0;
+                    while offset < extra.len() {
+                        let b = extra[offset]; offset += 1; len1 += b as usize;
+                        if b < 255 { break; }
+                    }
+                    let mut len2 = 0;
+                    while offset < extra.len() {
+                        let b = extra[offset]; offset += 1; len2 += b as usize;
+                        if b < 255 { break; }
+                    }
+                    if offset + len1 + len2 <= extra.len() {
+                        let h1 = &extra[offset..offset+len1];
+                        let h2 = &extra[offset+len1..offset+len1+len2];
+                        let h3 = &extra[offset+len1+len2..];
+                        
+                        write_ogg_page(&mut chunk_buffer, h1, 0, track_id, &mut ogg_page_seq, true, false);
+                        write_ogg_page(&mut chunk_buffer, h2, 0, track_id, &mut ogg_page_seq, false, false);
+                        write_ogg_page(&mut chunk_buffer, h3, 0, track_id, &mut ogg_page_seq, false, false);
+                        
+                        init_segments.push(base64_encode(h1));
+                        init_segments.push(base64_encode(h2));
+                        init_segments.push(base64_encode(h3));
+                    }
+                }
+            }
+        }
+
+        let bytes_written = chunk_buffer.len() as u64;
+
         Ok(AudioExtractor {
             reader, track_id, codec, sample_rate, channels, aac_sr_idx,
             time_base_numer: tb_numer,
             time_base_denom: tb_denom,
             pos_ref, total_size,
-            bytes_written: 0,
+            bytes_written,
             byte_index,
             last_indexed_sec: 0,
-            chunk_buffer: Vec::with_capacity(1024 * 1024), // 1MB pre-allocation
+            init_segments,
+            ogg_page_seq,
+            first_chunk: true,
+            chunk_buffer,
             manifest_buffer: String::with_capacity(manifest_cap),
         })
     }
@@ -612,7 +777,11 @@ impl AudioExtractor {
     /// Uses a pre-allocated internal buffer to guarantee zero allocations
     /// during the extraction loop.
     pub fn pull_chunk(&mut self, max_bytes: usize) -> Uint8Array {
-        self.chunk_buffer.clear();
+        if self.first_chunk {
+            self.first_chunk = false; // Preserve pre-filled Ogg initialization pages
+        } else {
+            self.chunk_buffer.clear();
+        }
         
         while self.chunk_buffer.len() < max_bytes {
             match self.reader.next_packet() {
@@ -635,9 +804,21 @@ impl AudioExtractor {
                             self.chunk_buffer.extend_from_slice(packet_data);
                         }
                         AudioCodec::Opus | AudioCodec::Vorbis => {
-                            // Raw packet passthrough for now.
-                            // Phase 2: wrap in Ogg pages for standalone playability.
-                            self.chunk_buffer.extend_from_slice(packet_data);
+                            // Calculate proper granule_pos.
+                            // Opus requires granule_pos to be exactly 48kHz samples.
+                            // Vorbis uses the original track sample rate.
+                            let target_sr = if matches!(self.codec, AudioCodec::Opus) { 48000 } else { self.sample_rate };
+                            let pcm_samples = (packet.ts as f64 * self.time_base_numer as f64 / self.time_base_denom as f64 * target_sr as f64) as u64;
+                            
+                            write_ogg_page(
+                                &mut self.chunk_buffer,
+                                packet_data,
+                                pcm_samples,
+                                self.track_id,
+                                &mut self.ogg_page_seq,
+                                false,
+                                false
+                            );
                         }
                     }
 
@@ -695,15 +876,28 @@ impl AudioExtractor {
             self.manifest_buffer.reserve(required_cap - self.manifest_buffer.capacity());
         }
 
+        let mut init_segments_json = String::new();
+        if !self.init_segments.is_empty() {
+            init_segments_json.push('[');
+            for (i, seg) in self.init_segments.iter().enumerate() {
+                if i > 0 { init_segments_json.push(','); }
+                init_segments_json.push_str(&format!(r#""{}""#, seg));
+            }
+            init_segments_json.push(']');
+        } else {
+            init_segments_json.push_str("[]");
+        }
+
         // Write the JSON prefix
         let _ = write!(
             self.manifest_buffer,
-            r#"{{"codec":"{}","extension":"{}","mime":"{}","sample_rate":{},"channels":{},"duration_sec":{},"total_bytes":{},"pre_roll_ms":{},"byte_index":["#,
+            r#"{{"codec":"{}","extension":"{}","mime":"{}","sample_rate":{},"channels":{},"duration_sec":{},"total_bytes":{},"pre_roll_ms":{},"init_segments":{},"byte_index":["#,
             codec_str, ext, mime,
             self.sample_rate, self.channels,
             idx.len().saturating_sub(1),
             self.bytes_written,
-            pre_roll_ms
+            pre_roll_ms,
+            init_segments_json
         );
 
         // Write the array elements

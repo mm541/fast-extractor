@@ -37,6 +37,8 @@ export interface AudioManifest {
   total_bytes: number;
   /** Milliseconds of pre-roll needed before a seek target for clean playback */
   pre_roll_ms: number;
+  /** Base64-encoded initialization headers required to prime the decoder. (Ogg Page 0/1 for Opus/Vorbis) */
+  init_segments?: string[];
   /** Per-second byte offset index. byte_index[N] = byte offset at second N. */
   byte_index: number[];
 }
