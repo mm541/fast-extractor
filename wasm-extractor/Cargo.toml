@@ -25,8 +25,6 @@ features = [
     "isomp4", # MP4/M4A container support
     "mkv",    # Matroska (MKV/WebM) container support
     "ogg",    # Ogg container support (Opus + Vorbis)
-    "aac",    # AAC audio codec
-    "mp3",    # MP3 audio codec (self-framing)
-    "vorbis", # Vorbis audio codec
-    # Opus: demuxed by ogg/mkv format readers — no separate codec feature needed
+    # Note: We ONLY need container formats (demuxers), NOT audio decoders (codecs).
+    # We extract raw compressed packets and do not decode PCM audio.
 ]
