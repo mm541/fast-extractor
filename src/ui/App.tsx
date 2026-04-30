@@ -397,13 +397,21 @@ const App: React.FC = () => {
                             await audioWritable.close();
                             audioWritable = null;
                         }
-                        const audioH = await artifactsDir.getFileHandle(`audio_${sessionId}.aac`);
-                        const audioFile = await audioH.getFile();
-                        const url = URL.createObjectURL(audioFile);
-                        urlsToCleanup.current.push(url);
-                        setAudioUrl(url);
-                        setFileName(event.fileName);
-                        setStatus('Audio Ready! Harvesting Slides...');
+                        if (event.fileName) {
+                            const audioH = await artifactsDir.getFileHandle(`audio_${sessionId}.aac`);
+                            const audioFile = await audioH.getFile();
+                            const url = URL.createObjectURL(audioFile);
+                            urlsToCleanup.current.push(url);
+                            setAudioUrl(url);
+                            setFileName(event.fileName);
+                            setStatus('Audio Ready! Harvesting Slides...');
+                        } else {
+                            // Audio extraction failed gracefully. Clean up the empty OPFS file.
+                            try {
+                                await artifactsDir.removeEntry(`audio_${sessionId}.aac`);
+                            } catch (e) {}
+                            setStatus('Audio unavailable. Extracting slides only...');
+                        }
                         break;
                     }
 

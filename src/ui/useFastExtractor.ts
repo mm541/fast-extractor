@@ -140,8 +140,10 @@ export function useFastExtractor(options?: FastExtractorOptions): UseFastExtract
               break;
 
             case 'audio_done': {
-              const blob = new Blob(audioChunksRef.current, { type: 'audio/aac' });
-              setAudioBlob(blob);
+              if (audioChunksRef.current.length > 0) {
+                const blob = new Blob(audioChunksRef.current, { type: 'audio/aac' });
+                setAudioBlob(blob);
+              }
               audioChunksRef.current = []; // free memory
               break;
             }

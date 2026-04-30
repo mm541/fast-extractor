@@ -171,6 +171,7 @@ self.onmessage = async (e: MessageEvent) => {
                 const reason = e?.message ?? 'unsupported format';
                 console.warn('[Worker] Audio extraction failed:', reason);
                 postMessage({ type: 'STATUS', status: `⚠️ Audio unavailable: ${reason}. Extracting slides only...` });
+                postMessage({ type: 'AUDIO_DONE', fileName: null });
             } finally {
                 if (audioExtractor) try { audioExtractor.free(); } catch(_) {}
                 if (syncHandle) {
