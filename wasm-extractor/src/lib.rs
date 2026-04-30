@@ -414,6 +414,8 @@ pub struct AudioExtractor {
     codec: AudioCodec,
     sample_rate: u32,
     channels: u8,
+    time_base_numer: u32,
+    time_base_denom: u32,
     // AAC-specific: ADTS sample rate index (only meaningful for AAC)
     aac_sr_idx: u8,
     // OPFS position tracking (shared with SharedPosReader)
@@ -423,8 +425,6 @@ pub struct AudioExtractor {
     bytes_written: u64,
     byte_index: Option<Vec<u64>>,
     last_indexed_sec: usize,
-    // Timestamp accumulator for codecs that report packet duration
-    samples_decoded: u64,
     // Pre-allocated reusable buffer for chunks to avoid per-call allocations
     chunk_buffer: Vec<u8>,
     // Pre-allocated reusable buffer for building the manifest JSON string
@@ -516,6 +516,12 @@ impl AudioExtractor {
         let track_id = track.id;
         let sample_rate = track.codec_params.sample_rate.unwrap_or(44100);
         let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(2) as u8;
+        
+        // Extract time base for accurate absolute timestamps (fallback to 1/sample_rate)
+        let (tb_numer, tb_denom) = match track.codec_params.time_base {
+            Some(tb) => (tb.numer, tb.denom),
+            None => (1, sample_rate),
+        };
 
         let (codec, aac_sr_idx) = match track.codec_params.codec {
             CODEC_TYPE_AAC => {
@@ -559,11 +565,12 @@ impl AudioExtractor {
 
         Ok(AudioExtractor {
             reader, track_id, codec, sample_rate, channels, aac_sr_idx,
+            time_base_numer: tb_numer,
+            time_base_denom: tb_denom,
             pos_ref, total_size,
             bytes_written: 0,
             byte_index,
             last_indexed_sec: 0,
-            samples_decoded: 0,
             chunk_buffer: Vec::with_capacity(1024 * 1024), // 1MB pre-allocation
             manifest_buffer: String::with_capacity(manifest_cap),
         })
@@ -638,18 +645,11 @@ impl AudioExtractor {
                     self.bytes_written += framed_size;
 
                     // ── Manifest: update per-second byte index ──
-                    // Track cumulative samples for sample-accurate timestamps.
-                    // AAC: 1024 samples/frame. MP3: 1152 samples/frame.
-                    // Opus/Vorbis: variable (packet.dur gives exact count).
-                    let samples_per_frame = match self.codec {
-                        AudioCodec::Aac => 1024u64,
-                        AudioCodec::Mp3 => 1152,
-                        AudioCodec::Opus | AudioCodec::Vorbis => packet.dur,
-                    };
-                    self.samples_decoded += samples_per_frame;
-
+                    // Use the absolute packet timestamp to calculate the current second.
+                    // This is universally accurate and doesn't rely on packet.dur (which
+                    // is often 0 for Opus inside WebM).
                     if let Some(ref mut idx) = self.byte_index {
-                        let current_sec = (self.samples_decoded / self.sample_rate as u64) as usize;
+                        let current_sec = (packet.ts as f64 * self.time_base_numer as f64 / self.time_base_denom as f64) as usize;
                         // Fill any gaps (in case a packet spans multiple seconds)
                         while self.last_indexed_sec < current_sec {
                             self.last_indexed_sec += 1;
