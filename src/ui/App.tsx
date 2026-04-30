@@ -147,6 +147,8 @@ const App: React.FC = () => {
     const [ignoreMask, setIgnoreMask] = useState<bigint>(0n);
     const [extractAudio, setExtractAudio] = useState(true);
     const [extractSlides, setExtractSlides] = useState(true);
+    const [buildManifest, setBuildManifest] = useState(false);
+    const [audioManifest, setAudioManifest] = useState<any>(null);
     
     const [metrics, setMetrics] = useState<any>(null);
     const [capabilities, setCapabilities] = useState<DeviceCapabilities | null>(null);
@@ -336,6 +338,7 @@ const App: React.FC = () => {
         setIsExtracting(true);
         setStatus('Initializing Processing Engine...');
         setSlides([]);
+        setAudioManifest(null);
         setProgress(0);
         setMetrics(null);
         setJobMetrics({ start: performance.now(), end: null });
@@ -349,6 +352,7 @@ const App: React.FC = () => {
             ignoreMask,
             extractAudio,
             extractSlides,
+            buildManifest,
             ...config,
         });
 
@@ -396,6 +400,9 @@ const App: React.FC = () => {
                         if (audioWritable) {
                             await audioWritable.close();
                             audioWritable = null;
+                        }
+                        if (event.manifest) {
+                            setAudioManifest(event.manifest);
                         }
                         if (event.fileName) {
                             const audioH = await artifactsDir.getFileHandle(`audio_${sessionId}.aac`);
@@ -616,6 +623,15 @@ const App: React.FC = () => {
                                     disabled={isExtracting}
                                 />
                                 🎧 Extract Audio
+                            </label>
+                            <label className={`extract-toggle-btn ${buildManifest ? 'active' : ''}`}>
+                                <input
+                                    type="checkbox"
+                                    checked={buildManifest}
+                                    onChange={e => setBuildManifest(e.target.checked)}
+                                    disabled={isExtracting || !extractAudio}
+                                />
+                                📄 Build Manifest
                             </label>
                             <label className={`extract-toggle-btn ${extractSlides ? 'active' : ''}`}>
                                 <input
@@ -851,7 +867,18 @@ const App: React.FC = () => {
                                     className="progress-bar-inner" 
                                     style={{ '--width': `${progress}%` } as React.CSSProperties}
                                 ></div>
-                            </div>
+                                {audioManifest && (
+                    <div className="manifest-container" style={{ marginTop: '20px', padding: '15px', background: '#2c2c2c', borderRadius: '8px', border: '1px solid #444', textAlign: 'left' }}>
+                        <h4 style={{ margin: '0 0 10px 0', color: '#ffb300' }}>Audio Manifest (S3 Range Query Index)</h4>
+                        <details>
+                            <summary style={{ cursor: 'pointer', color: '#888' }}>View JSON</summary>
+                            <pre style={{ overflowX: 'auto', background: '#1e1e1e', padding: '10px', borderRadius: '4px', fontSize: '12px', color: '#a6e22e' }}>
+                                {JSON.stringify(audioManifest, null, 2)}
+                            </pre>
+                        </details>
+                    </div>
+                )}
+            </div>
                         )}
                     </div>
                 </div>
