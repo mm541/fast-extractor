@@ -350,6 +350,14 @@ export class SlideExtractor {
   constructor(wasm: WasmModule, options?: Partial<SlideExtractorOptions>) {
     this.wasm = wasm;
     this.options = { ...DEFAULT_OPTIONS, ...options };
+    
+    // In turbo mode, keyframes can be 5-10 seconds apart. Requiring 2 static 
+    // keyframes (10-20 seconds of silence) is too strict and causes dropped slides.
+    // So we relax it to 1 frame for turbo mode unless explicitly overridden.
+    if (this.options.mode === 'turbo' && options?.cumulativeSettledFrames === undefined) {
+      this.options.cumulativeSettledFrames = 1;
+    }
+    
     this.wasm.init_arena();
   }
 
