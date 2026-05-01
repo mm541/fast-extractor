@@ -644,11 +644,15 @@ export class SlideExtractor {
       const allowedDrift = Math.max(this.noiseFloor * 2, Math.floor(blockThreshold * 0.3));
       
       if (driftBlocks <= allowedDrift) {
-        // SETTLED! The slide has stopped moving. Confirm the candidate.
-        // No dHash here — drift settlement is the confirmation mechanism.
-        this.emitBitmap(this.pendingCandidate.bitmap, this.pendingCandidate.timestamp);
+        // SETTLED! The slide has stopped moving.
+        // We emit the CURRENT frame (which is clean and settled) but use the
+        // timestamp from when the transition was first detected (pendingCandidate.timestamp)
+        // so the timeline boundary aligns with the start of the slide.
+        this.emitBitmap(this.captureCanvasBitmap(), this.pendingCandidate.timestamp);
         this.copyBufferBToA(); // Current frame is the new Baseline
         this.lastSlideTime = this.pendingCandidate.timestamp;
+        
+        this.pendingCandidate.bitmap.close();
         this.pendingCandidate = null;
         
         // Reset drift metrics because a transition just finished
