@@ -303,6 +303,7 @@ export class SlideExtractor {
   private cumulativeDrift = 0;   // accumulated block changes (Prev vs B)
   private driftFrames = 0;       // how many frames contributed drift
   private staticCount = 0;       // consecutive frames with zero drift
+  private driftStartTime = 0;    // timestamp when the current drift sequence started
 
   // Adaptive noise floor — calibrates blockThreshold from video noise level
   private noiseFloor = 0;
@@ -680,6 +681,9 @@ export class SlideExtractor {
     // Track cumulative drift
     const staticDriftLimit = Math.max(this.noiseFloor * 2, Math.floor(blockThreshold * 0.1));
     if (driftBlocks > staticDriftLimit) {
+      if (this.cumulativeDrift === 0) {
+        this.driftStartTime = timestamp;
+      }
       this.cumulativeDrift += driftBlocks;
       this.driftFrames++;
       this.staticCount = 0;
@@ -708,6 +712,8 @@ export class SlideExtractor {
     }
 
     let shouldEmit = false;
+    let emitInstantly = false;
+    let emitTimestamp = timestamp;
 
     if (!candidateConfirmedThisFrame && !this.pendingCandidate) {
       // Condition 1: Direct threshold — A vs B shows big change
@@ -735,6 +741,8 @@ export class SlideExtractor {
         this.staticCount >= this.options.cumulativeSettledFrames
       ) {
         shouldEmit = true;
+        emitInstantly = true;
+        emitTimestamp = this.driftStartTime;
       }
 
       // Condition 3: Partial main + partial drift — combined signal
@@ -745,6 +753,8 @@ export class SlideExtractor {
         this.staticCount >= this.options.cumulativeSettledFrames
       ) {
         shouldEmit = true;
+        emitInstantly = true;
+        emitTimestamp = this.driftStartTime;
       }
 
       // Condition 4: Color-only change — grayscale missed it but color shifted significantly
@@ -760,24 +770,24 @@ export class SlideExtractor {
     } // End of !candidateConfirmedThisFrame
 
     if (shouldEmit) {
-      if (this.options.useDeferredEmit) {
+      if (this.options.useDeferredEmit && !emitInstantly) {
         // Buffer the frame as a candidate instead of emitting instantly
         if (this.pendingCandidate) {
           this.pendingCandidate.bitmap.close(); // Clean up old candidate
         }
         this.pendingCandidate = {
           bitmap: this.captureCanvasBitmap(),
-          timestamp: timestamp,
+          timestamp: emitTimestamp,
           colorSig: colorSig
         };
       } else {
-        // Instant Emit Mode (Fallback)
+        // Instant Emit Mode (Fallback or Bypassed Cumulative Drift)
         const dhash = this.wasm.compute_dhash(true);
         if (!this.isDuplicate(dhash)) {
           this.savedHashes.push(dhash);
-          this.emitSlideFromCanvas(timestamp);
+          this.emitSlideFromCanvas(emitTimestamp);
           this.copyBufferBToA();
-          this.lastSlideTime = timestamp;
+          this.lastSlideTime = emitTimestamp;
         }
         this.cumulativeDrift = 0;
         this.driftFrames = 0;
