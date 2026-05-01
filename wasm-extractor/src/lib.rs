@@ -873,19 +873,14 @@ impl AudioExtractor {
                         }
                     }
 
-                    let framed_size = (self.chunk_buffer.len() - framed_start) as u64;
-                    self.bytes_written += framed_size;
-
                     // ── Manifest: update per-second byte index ──
                     // Use the absolute packet timestamp to calculate the current second.
-                    // This is universally accurate and doesn't rely on packet.dur (which
-                    // is often 0 for Opus inside WebM).
+                    // Do this BEFORE updating bytes_written so the index points to the
+                    // exact START of the packet that crosses the second boundary.
                     if let Some(ref mut idx) = self.byte_index {
                         let current_sec = (packet.ts as f64 * self.time_base_numer as f64 / self.time_base_denom as f64) as usize;
-                        // Fill any gaps (in case a packet spans multiple seconds)
                         while self.last_indexed_sec < current_sec {
                             self.last_indexed_sec += 1;
-                            // Grow the vec if duration was unknown at construction time
                             if self.last_indexed_sec >= idx.len() {
                                 idx.push(self.bytes_written);
                             } else {
@@ -893,6 +888,9 @@ impl AudioExtractor {
                             }
                         }
                     }
+
+                    let framed_size = (self.chunk_buffer.len() - framed_start) as u64;
+                    self.bytes_written += framed_size;
                 }
                 _ => break,
             }
