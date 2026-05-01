@@ -42,7 +42,6 @@
  *                  (dark mode toggle, background color swap)
  *
  *   NOISE SUPPRESSION:
- *     - Blank frames (brightness < blankBrightnessThreshold) are skipped
  *     - Duplicate slides are suppressed via 64-bit dHash comparison
  *     - Cumulative drift resets after noiseResetFrames without a trigger
  *
@@ -154,9 +153,6 @@
  *     Two slides with distance ≤ this value are considered duplicates.
  *     0 = exact match only, 10 = tolerant of minor differences.
  *
- *   blankBrightnessThreshold (0-50, default 8)
- *     Average pixel brightness below which a frame is considered blank/black.
- *     Skipped entirely to avoid emitting transition frames.
  *
  *   cumulativeDriftMultiplier (1-5, default 2)
  *     Factor applied to blockThreshold for cumulative drift trigger.
@@ -194,7 +190,6 @@ export interface SlideExtractorOptions {
   minSlideDuration: number;
   dhashDuplicateThreshold: number;
   // Three-pointer drift detection
-  blankBrightnessThreshold: number;     // skip frames darker than this (0-255)
   cumulativeDriftMultiplier: number;    // cumulative drift must reach blockThreshold * this
   cumulativeSettledFrames: number;      // frames of stability before emitting on drift or partial match
   partialThresholdRatio: number;        // fraction of blockThreshold for partial match (0-1)
@@ -240,7 +235,6 @@ export const DEFAULT_OPTIONS: SlideExtractorOptions = {
   edgeThreshold: 30, blockThreshold: 8, densityThresholdPct: 4,
   minSlideDuration: 3, dhashDuplicateThreshold: 4,
   // Three-pointer defaults
-  blankBrightnessThreshold: 8,
   cumulativeDriftMultiplier: 2,
   cumulativeSettledFrames: 2,
   partialThresholdRatio: 0.5,
@@ -610,10 +604,6 @@ export class SlideExtractor {
 
     // Step 3: Convert RGBA → grayscale for block comparison
     this.convertRgbaToGray();
-
-    // Edge case: Skip near-black/blank frames (transitions, fades)
-    const brightness = this.wasm.get_avg_brightness();
-    if (brightness < this.options.blankBrightnessThreshold) return;
 
     if (!this.hasBaseline) {
       this.copyBufferBToA();

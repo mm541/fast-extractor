@@ -131,7 +131,6 @@ const App: React.FC = () => {
         useDeferredEmit: true,
 
         // Drift detection
-        blankBrightnessThreshold: 0,
         cumulativeDriftMultiplier: 2,
         cumulativeSettledFrames: 2,
         partialThresholdRatio: 0.5,
@@ -794,15 +793,6 @@ const App: React.FC = () => {
 
                         {showAdvanced && (
                             <div className="settings-grid advanced-grid">
-                                <div className="setting-item">
-                                    <label>Blank Brightness: <strong>{config.blankBrightnessThreshold}</strong></label>
-                                    <input 
-                                        type="range" min="0" max="50" step="1" 
-                                        value={config.blankBrightnessThreshold} onChange={e => setConfig({...config, blankBrightnessThreshold: Number(e.target.value)})} 
-                                        disabled={isExtracting}
-                                        aria-label="Blank frame brightness threshold"
-                                    />
-                                </div>
                                 <div className="setting-item">
                                     <label>Drift Multiplier: <strong>{config.cumulativeDriftMultiplier}×</strong></label>
                                     <input 
