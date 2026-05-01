@@ -61,8 +61,6 @@ export interface SlideEvent {
   timestamp: string;
   /** Start time in milliseconds (when this slide first appeared) */
   startMs: number;
-  /** End time in milliseconds (when the next slide replaced this one) */
-  endMs: number;
 }
 
 /** Progress update from the extraction engine. */
@@ -225,7 +223,7 @@ export interface ExtractorCallbacks {
   /** Called when audio extraction is complete. */
   onAudioDone?: (fileName: string | null, manifest?: AudioManifest | null) => void;
   /** Called when a new slide is detected. */
-  onSlide?: (slide: { imageBuffer: ArrayBuffer; timestamp: string; startMs: number; endMs: number }) => void;
+  onSlide?: (slide: { imageBuffer: ArrayBuffer; timestamp: string; startMs: number }) => void;
   /** Called on progress updates. */
   onProgress?: (percent: number, message: string, metrics?: ProgressEvent['metrics']) => void;
  

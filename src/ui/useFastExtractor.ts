@@ -34,8 +34,6 @@ export interface SlideResult {
   timestamp: string;
   /** Start time in milliseconds */
   startMs: number;
-  /** End time in milliseconds */
-  endMs: number;
   /** Raw image ArrayBuffer (WebP) — for programmatic use */
   buffer: ArrayBuffer;
 }
@@ -172,7 +170,6 @@ export function useFastExtractor(options?: FastExtractorOptions): UseFastExtract
                 url,
                 timestamp: value.timestamp,
                 startMs: value.startMs,
-                endMs: value.endMs,
                 buffer: value.imageBuffer,
               }]);
               break;

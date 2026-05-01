@@ -271,7 +271,6 @@ export class FastExtractor {
                     imageBuffer: e.data.buffer,
                     timestamp: e.data.timestamp,
                     startMs: e.data.startMs ?? 0,
-                    endMs: e.data.endMs ?? 0,
                   });
                   break;
 
@@ -505,7 +504,6 @@ export class FastExtractor {
               imageBuffer: value.imageBuffer,
               timestamp: value.timestamp,
               startMs: value.startMs,
-              endMs: value.endMs,
             });
             break;
           case 'progress':

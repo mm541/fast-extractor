@@ -226,7 +226,6 @@ self.onmessage = async (e: MessageEvent) => {
                             buffer: ab,
                             timestamp: formatTime(timestamp),
                             startMs: boundaryMs,
-                            endMs: boundaryMs, // Dummy value, the UI will override this based on the next slide's startMs
                         }, [ab]);
                     } catch (e: any) {
                         console.warn('[Worker] onSlide buffer read failed:', e.message);
