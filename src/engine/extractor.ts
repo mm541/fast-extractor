@@ -508,6 +508,23 @@ export class SlideExtractor {
     if (this.pendingCandidate) {
       this.emitBitmap(this.pendingCandidate.bitmap, this.pendingCandidate.timestamp);
       this.pendingCandidate = null;
+    } else if (this.exportCanvas && this.metrics.lastFrameTimestamp !== undefined) {
+      // If the video ended in the middle of a slow drawing transition, it never reached the 
+      // staticCount required to trigger Condition 2 or 3.
+      // We check if the final frame (Buffer B) is meaningfully different from the last emitted slide (Buffer A).
+      const mainChanges = this.wasm.compare_frames(
+        this.options.edgeThreshold, 
+        this.options.densityThresholdPct, 
+        this.options.ignoreMask
+      );
+      
+      const partialThreshold = Math.floor(this.getEffectiveBlockThreshold() * this.options.partialThresholdRatio);
+      
+      if (mainChanges >= partialThreshold) {
+        // Emit the final state of the video
+        const emitTs = this.cumulativeDrift > 0 ? this.driftStartTime : this.metrics.lastFrameTimestamp;
+        this.emitBitmap(this.captureCanvasBitmap(), emitTs);
+      }
     }
 
     // Await all queued background encodes to prevent dropping slides
