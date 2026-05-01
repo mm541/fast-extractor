@@ -266,14 +266,10 @@ const App: React.FC = () => {
                         for (let i = 0; i < slides.length; i++) {
                             const slide = slides[i];
                             const startSec = Math.floor(slide.startMs / 1000);
-                            const nextStartSec = slides[i+1] ? Math.floor(slides[i+1].startMs / 1000) : (metrics?.videoDurationSec ? Math.floor(metrics.videoDurationSec) : startSec);
-                            const endSec = slides[i+1] ? Math.max(startSec, nextStartSec - 1) : nextStartSec;
-                            
                             const startStr = formatMs(startSec * 1000).replace(/:/g, '-');
-                            const endStr = formatMs(endSec * 1000).replace(/:/g, '-');
                             
                             const blob = slidesFile.slice(slide.offset, slide.offset + slide.length, mimeType);
-                            yield { name: `slides/slide_${String(i+1).padStart(3, '0')}_${startStr}_to_${endStr}.${ext}`, input: blob };
+                            yield { name: `slides/slide_${String(i+1).padStart(3, '0')}_${startStr}.${ext}`, input: blob };
                         }
                     } catch (e) {
                         console.warn("Slides file not found in OPFS, skipping.");
@@ -946,12 +942,7 @@ const App: React.FC = () => {
                                         onClick={() => { setLightboxIndex(i); setLightboxZoom(1); }}
                                     />
                                     <span className="timestamp">
-                                        {(() => {
-                                            const startSec = Math.floor(slide.startMs / 1000);
-                                            const nextStartSec = slides[i+1] ? Math.floor(slides[i+1].startMs / 1000) : (metrics?.videoDurationSec ? Math.floor(metrics.videoDurationSec) : startSec);
-                                            const endSec = slides[i+1] ? Math.max(startSec, nextStartSec - 1) : nextStartSec;
-                                            return `${formatMs(startSec * 1000)} → ${formatMs(endSec * 1000)}`;
-                                        })()}
+                                        {formatMs(Math.floor(slide.startMs / 1000) * 1000)}
                                     </span>
                                 </div>
                             ))}
@@ -981,12 +972,7 @@ const App: React.FC = () => {
                             />
                         </div>
                         <div className="lightbox-info">
-                            {(() => {
-                                const startSec = Math.floor(slides[lightboxIndex].startMs / 1000);
-                                const nextStartSec = slides[lightboxIndex+1] ? Math.floor(slides[lightboxIndex+1].startMs / 1000) : (metrics?.videoDurationSec ? Math.floor(metrics.videoDurationSec) : startSec);
-                                const endSec = slides[lightboxIndex+1] ? Math.max(startSec, nextStartSec - 1) : nextStartSec;
-                                return `${formatMs(startSec * 1000)} → ${formatMs(endSec * 1000)}`;
-                            })()}
+                            {formatMs(Math.floor(slides[lightboxIndex].startMs / 1000) * 1000)}
                         </div>
                         <div className="lightbox-controls" onClick={(e) => e.stopPropagation()}>
                             <button className="lightbox-btn" onClick={() => setLightboxZoom(prev => Math.max(1, prev - 0.5))}>⊖</button>
