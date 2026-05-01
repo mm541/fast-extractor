@@ -12,6 +12,11 @@ export class AudioExtractor {
      */
     build_manifest(): string;
     /**
+     * Write the Ogg End-of-Stream page. Must be called after the last pull_chunk().
+     * Returns the final bytes (EOS page) for Opus/Vorbis, or empty for AAC/MP3.
+     */
+    finalize(): Uint8Array;
+    /**
      * File extension for the output audio file ("aac", "mp3", "ogg").
      */
     get_extension(): string;
@@ -38,8 +43,8 @@ export class AudioExtractor {
      * Each codec is framed appropriately:
      *   AAC    → 7-byte ADTS header injected per packet
      *   MP3    → direct passthrough (self-framing)
-     *   Opus   → raw packets (Ogg muxing deferred)
-     *   Vorbis → raw packets (Ogg muxing deferred)
+     *   Opus   → wrapped in Ogg pages with correct granule_pos
+     *   Vorbis → wrapped in Ogg pages with correct granule_pos
      *
      * Uses a pre-allocated internal buffer to guarantee zero allocations
      * during the extraction loop.
@@ -104,6 +109,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_audioextractor_free: (a: number, b: number) => void;
     readonly audioextractor_build_manifest: (a: number) => [number, number];
+    readonly audioextractor_finalize: (a: number) => any;
     readonly audioextractor_get_extension: (a: number) => [number, number];
     readonly audioextractor_get_mime: (a: number) => [number, number];
     readonly audioextractor_get_progress: (a: number) => number;

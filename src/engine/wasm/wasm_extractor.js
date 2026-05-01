@@ -31,6 +31,15 @@ export class AudioExtractor {
         }
     }
     /**
+     * Write the Ogg End-of-Stream page. Must be called after the last pull_chunk().
+     * Returns the final bytes (EOS page) for Opus/Vorbis, or empty for AAC/MP3.
+     * @returns {Uint8Array}
+     */
+    finalize() {
+        const ret = wasm.audioextractor_finalize(this.__wbg_ptr);
+        return ret;
+    }
+    /**
      * File extension for the output audio file ("aac", "mp3", "ogg").
      * @returns {string}
      */

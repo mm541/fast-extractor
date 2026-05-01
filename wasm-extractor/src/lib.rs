@@ -469,6 +469,11 @@ fn base64_encode(input: &[u8]) -> String {
     out
 }
 
+/// Max payload per Ogg page: 255 segments × 255 bytes = 65,025 bytes.
+const OGG_MAX_PAGE_PAYLOAD: usize = 255 * 255;
+
+/// Write one or more Ogg pages for a single packet.
+/// Handles continuation pages automatically if payload > 65,025 bytes.
 fn write_ogg_page(
     buf: &mut Vec<u8>,
     payload: &[u8],
@@ -478,35 +483,71 @@ fn write_ogg_page(
     is_bos: bool,
     is_eos: bool,
 ) {
-    let header_start = buf.len();
-    let header_type: u8 = if is_bos { 0x02 } else if is_eos { 0x04 } else { 0x00 };
-    
-    buf.extend_from_slice(b"OggS");
-    buf.push(0);
-    buf.push(header_type);
-    buf.extend_from_slice(&granule_pos.to_le_bytes());
-    buf.extend_from_slice(&serial.to_le_bytes());
-    buf.extend_from_slice(&page_seq.to_le_bytes());
-    
-    let checksum_pos = buf.len();
-    buf.extend_from_slice(&[0, 0, 0, 0]);
-    
-    let segments = (payload.len() / 255) + 1;
-    buf.push(segments as u8);
-    
-    let mut rem = payload.len();
-    for _ in 0..segments {
-        let s = std::cmp::min(255, rem);
-        buf.push(s as u8);
-        rem -= s;
+    let mut offset = 0;
+    let total = payload.len();
+    let page_count = if total == 0 { 1 } else { (total + OGG_MAX_PAGE_PAYLOAD - 1) / OGG_MAX_PAGE_PAYLOAD };
+
+    for page_idx in 0..page_count {
+        let is_first_page = page_idx == 0;
+        let is_last_page = page_idx == page_count - 1;
+        let chunk_end = std::cmp::min(offset + OGG_MAX_PAGE_PAYLOAD, total);
+        let chunk = &payload[offset..chunk_end];
+
+        let header_start = buf.len();
+
+        // Header type flags: BOS, EOS, and continuation
+        let mut header_type: u8 = 0x00;
+        if is_bos && is_first_page { header_type |= 0x02; }
+        if is_eos && is_last_page { header_type |= 0x04; }
+        if !is_first_page { header_type |= 0x01; } // continuation
+
+        // Only the last page of a multi-page packet carries the real granule_pos.
+        // Earlier continuation pages use granule_pos = -1 (0xFFFFFFFFFFFFFFFF).
+        let page_granule = if is_last_page { granule_pos } else { u64::MAX };
+
+        buf.extend_from_slice(b"OggS");     // capture pattern
+        buf.push(0);                         // stream structure version
+        buf.push(header_type);               // header type flag
+        buf.extend_from_slice(&page_granule.to_le_bytes()); // granule position
+        buf.extend_from_slice(&serial.to_le_bytes());       // bitstream serial
+        buf.extend_from_slice(&page_seq.to_le_bytes());     // page sequence number
+
+        let checksum_pos = buf.len();
+        buf.extend_from_slice(&[0, 0, 0, 0]); // CRC32 placeholder
+
+        // Segment table: each segment is max 255 bytes.
+        // A packet boundary is signaled by a segment < 255.
+        // If chunk.len() is an exact multiple of 255, we append a trailing 0 segment.
+        let full_segments = chunk.len() / 255;
+        let remainder = chunk.len() % 255;
+        let num_segments = if chunk.len() == 0 {
+            1  // empty packet still needs one 0-length segment
+        } else if remainder == 0 && is_last_page {
+            full_segments + 1  // trailing 0 to close the packet
+        } else if remainder == 0 {
+            full_segments  // continuation: no trailing 0
+        } else {
+            full_segments + 1  // partial final segment
+        };
+        buf.push(num_segments as u8);
+
+        for i in 0..num_segments {
+            if i < full_segments {
+                buf.push(255);
+            } else {
+                buf.push(remainder as u8);
+            }
+        }
+
+        buf.extend_from_slice(chunk);
+
+        // Backpatch CRC32
+        let crc = ogg_crc(&buf[header_start..]);
+        buf[checksum_pos..checksum_pos + 4].copy_from_slice(&crc.to_le_bytes());
+
+        *page_seq += 1;
+        offset = chunk_end;
     }
-    
-    buf.extend_from_slice(payload);
-    
-    let crc = ogg_crc(&buf[header_start..]);
-    buf[checksum_pos..checksum_pos+4].copy_from_slice(&crc.to_le_bytes());
-    
-    *page_seq += 1;
 }
 
 #[wasm_bindgen]
@@ -530,6 +571,7 @@ pub struct AudioExtractor {
     init_segments: Vec<String>,
     // Ogg Muxer state
     ogg_page_seq: u32,
+    last_granule_pos: u64,
     first_chunk: bool,
     // Pre-allocated reusable buffer for chunks to avoid per-call allocations
     chunk_buffer: Vec<u8>,
@@ -742,6 +784,7 @@ impl AudioExtractor {
             last_indexed_sec: 0,
             init_segments,
             ogg_page_seq,
+            last_granule_pos: 0,
             first_chunk: true,
             chunk_buffer,
             manifest_buffer: String::with_capacity(manifest_cap),
@@ -816,6 +859,7 @@ impl AudioExtractor {
                             // Vorbis uses the original track sample rate.
                             let target_sr = if matches!(self.codec, AudioCodec::Opus) { 48000 } else { self.sample_rate };
                             let pcm_samples = (packet.ts as f64 * self.time_base_numer as f64 / self.time_base_denom as f64 * target_sr as f64) as u64;
+                            self.last_granule_pos = pcm_samples;
                             
                             write_ogg_page(
                                 &mut self.chunk_buffer,
@@ -852,6 +896,27 @@ impl AudioExtractor {
                 }
                 _ => break,
             }
+        }
+        Uint8Array::from(&self.chunk_buffer[..])
+    }
+
+    /// Write the Ogg End-of-Stream page. Must be called after the last pull_chunk().
+    /// Returns the final bytes (EOS page) for Opus/Vorbis, or empty for AAC/MP3.
+    pub fn finalize(&mut self) -> Uint8Array {
+        self.chunk_buffer.clear();
+        if matches!(self.codec, AudioCodec::Opus | AudioCodec::Vorbis) {
+            // Write an empty EOS page with the final granule position
+            write_ogg_page(
+                &mut self.chunk_buffer,
+                &[],
+                self.last_granule_pos,
+                self.track_id,
+                &mut self.ogg_page_seq,
+                false,
+                true, // EOS
+            );
+            let eos_size = self.chunk_buffer.len() as u64;
+            self.bytes_written += eos_size;
         }
         Uint8Array::from(&self.chunk_buffer[..])
     }

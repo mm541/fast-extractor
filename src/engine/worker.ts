@@ -167,6 +167,13 @@ self.onmessage = async (e: MessageEvent) => {
                     }
                 }
 
+                // Finalize the Ogg stream (writes EOS page for Opus/Vorbis, no-op for AAC/MP3)
+                const eosChunk = audioExtractor.finalize();
+                if (eosChunk.length > 0) {
+                    const ab = eosChunk.slice().buffer as ArrayBuffer;
+                    postMessage({ type: 'AUDIO_CHUNK', buffer: ab }, [ab]);
+                }
+
                 // Read extension and manifest from WASM (codec-agnostic)
                 const ext = audioExtractor.get_extension();
                 const manifest = buildManifest ? JSON.parse(audioExtractor.build_manifest()) : null;

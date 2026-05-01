@@ -3,6 +3,7 @@
 export const memory: WebAssembly.Memory;
 export const __wbg_audioextractor_free: (a: number, b: number) => void;
 export const audioextractor_build_manifest: (a: number) => [number, number];
+export const audioextractor_finalize: (a: number) => any;
 export const audioextractor_get_extension: (a: number) => [number, number];
 export const audioextractor_get_mime: (a: number) => [number, number];
 export const audioextractor_get_progress: (a: number) => number;
