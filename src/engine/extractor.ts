@@ -712,45 +712,51 @@ export class SlideExtractor {
     if (!candidateConfirmedThisFrame && !this.pendingCandidate) {
       // Condition 1: Direct threshold — A vs B shows big change
       if (mainChanges >= blockThreshold) {
-      // --- Camera Shake Filter ---
-      // If the change is diffuse (all blocks changed a little), it's shake, not a slide.
-      // Confirm with a stricter density check: if few blocks pass 3× density, it's shake.
-      if (this.options.shakeFilterStrictMultiplier > 0) {
-        const strictDensity = Math.min(densityThresholdPct * this.options.shakeFilterStrictMultiplier, 100);
-        const strictChanges = this.wasm.compare_frames(edgeThreshold, strictDensity, mask);
-        if (strictChanges >= blockThreshold * 0.3) {
-          // Concentrated change → real slide transition
+        // --- Camera Shake Filter ---
+        // If the change is diffuse (all blocks changed a little), it's shake, not a slide.
+        // Confirm with a stricter density check: if few blocks pass 3× density, it's shake.
+        if (this.options.shakeFilterStrictMultiplier > 0) {
+          const strictDensity = Math.min(densityThresholdPct * this.options.shakeFilterStrictMultiplier, 100);
+          const strictChanges = this.wasm.compare_frames(edgeThreshold, strictDensity, mask);
+          if (strictChanges >= blockThreshold * 0.3) {
+            // Concentrated change → real slide transition
+            shouldEmit = true;
+          }
+          // else: diffuse change → camera shake, suppress
+        } else {
           shouldEmit = true;
         }
-        // else: diffuse change → camera shake, suppress
-      } else {
+      }
+
+      // Condition 2: Cumulative drift — small changes piled up AND content settled
+      if (
+        !shouldEmit &&
+        this.cumulativeDrift >= blockThreshold * this.options.cumulativeDriftMultiplier &&
+        this.staticCount >= this.options.cumulativeSettledFrames
+      ) {
         shouldEmit = true;
       }
-    }
-    // Condition 2: Cumulative drift — small changes piled up AND content settled
-    else if (
-      this.cumulativeDrift >= blockThreshold * this.options.cumulativeDriftMultiplier &&
-      this.staticCount >= this.options.cumulativeSettledFrames
-    ) {
-      shouldEmit = true;
-    }
-    // Condition 3: Partial main + partial drift — combined signal
-    else if (
-      mainChanges >= Math.floor(blockThreshold * this.options.partialThresholdRatio) &&
-      this.cumulativeDrift >= blockThreshold &&
-      this.staticCount >= this.options.cumulativeSettledFrames
-    ) {
-      shouldEmit = true;
-    }
-    // Condition 4: Color-only change — grayscale missed it but color shifted significantly
-    // Note: color signature is computed over the ENTIRE frame (not per-block), so it
-    // does not respect the grid mask. Skip this condition if all blocks are masked.
-    else if (
-      mask !== 0xFFFFFFFFFFFFFFFFn &&
-      colorDelta >= this.options.colorChangeThreshold
-    ) {
-      shouldEmit = true;
-    }
+
+      // Condition 3: Partial main + partial drift — combined signal
+      if (
+        !shouldEmit &&
+        mainChanges >= Math.floor(blockThreshold * this.options.partialThresholdRatio) &&
+        this.cumulativeDrift >= blockThreshold &&
+        this.staticCount >= this.options.cumulativeSettledFrames
+      ) {
+        shouldEmit = true;
+      }
+
+      // Condition 4: Color-only change — grayscale missed it but color shifted significantly
+      // Note: color signature is computed over the ENTIRE frame (not per-block), so it
+      // does not respect the grid mask. Skip this condition if all blocks are masked.
+      if (
+        !shouldEmit &&
+        mask !== 0xFFFFFFFFFFFFFFFFn &&
+        colorDelta >= this.options.colorChangeThreshold
+      ) {
+        shouldEmit = true;
+      }
     } // End of !candidateConfirmedThisFrame
 
     if (shouldEmit) {
