@@ -225,6 +225,7 @@ export class FastExtractor {
             extractAudio = true,         // default: extract audio
             extractSlides = true,        // default: extract slides
             cleanupAfterExtraction = true, // default: clean up OPFS after extraction
+            buildManifest: _buildManifest, // consumed by audio pipeline, don't forward to slide detection
             ...detectionConfig
           } = this.options;
 

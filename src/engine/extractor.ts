@@ -497,6 +497,18 @@ export class SlideExtractor {
     }
     this.decoder = null;
 
+    // Flush the last buffered candidate from deferred emit.
+    // With useDeferredEmit, the final detected slide sits in pendingCandidate
+    // waiting for the next frame to confirm it settled. But there IS no next
+    // frame — the video ended. Emit it unconditionally: the candidate already
+    // passed all detection gates (threshold, shake filter, color delta) before
+    // being buffered. No dHash check here — WASM buffer B contains the last
+    // processed frame, not the candidate's frame data.
+    if (this.pendingCandidate) {
+      this.emitBitmap(this.pendingCandidate.bitmap, this.pendingCandidate.timestamp);
+      this.pendingCandidate = null;
+    }
+
     // Await all queued background encodes to prevent dropping slides
     // when the worker terminates
     await this.lastEmitPromise;
