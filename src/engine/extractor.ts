@@ -678,7 +678,8 @@ export class SlideExtractor {
     }
 
     // Track cumulative drift
-    if (driftBlocks > 0) {
+    const staticDriftLimit = Math.max(this.noiseFloor * 2, Math.floor(blockThreshold * 0.1));
+    if (driftBlocks > staticDriftLimit) {
       this.cumulativeDrift += driftBlocks;
       this.driftFrames++;
       this.staticCount = 0;
@@ -708,7 +709,7 @@ export class SlideExtractor {
 
     let shouldEmit = false;
 
-    if (!candidateConfirmedThisFrame) {
+    if (!candidateConfirmedThisFrame && !this.pendingCandidate) {
       // Condition 1: Direct threshold — A vs B shows big change
       if (mainChanges >= blockThreshold) {
       // --- Camera Shake Filter ---
