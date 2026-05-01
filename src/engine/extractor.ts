@@ -645,15 +645,10 @@ export class SlideExtractor {
       
       if (driftBlocks <= allowedDrift) {
         // SETTLED! The slide has stopped moving. Confirm the candidate.
-        const dhash = this.wasm.compute_dhash(true);
-        if (!this.isDuplicate(dhash)) {
-          this.savedHashes.push(dhash);
-          this.emitBitmap(this.pendingCandidate.bitmap, this.pendingCandidate.timestamp);
-          this.copyBufferBToA(); // Current frame is the new Baseline
-          this.lastSlideTime = this.pendingCandidate.timestamp;
-        } else {
-          this.pendingCandidate.bitmap.close(); // Clean up if duplicate
-        }
+        // No dHash here — drift settlement is the confirmation mechanism.
+        this.emitBitmap(this.pendingCandidate.bitmap, this.pendingCandidate.timestamp);
+        this.copyBufferBToA(); // Current frame is the new Baseline
+        this.lastSlideTime = this.pendingCandidate.timestamp;
         this.pendingCandidate = null;
         
         // Reset drift metrics because a transition just finished
