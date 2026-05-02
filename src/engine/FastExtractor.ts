@@ -229,6 +229,8 @@ export class FastExtractor {
     this._extracting = true;
 
     let worker: Worker | null = null;
+    let tempFileName: string = '';
+    const isPreIngested = 'type' in input && input.type === 'ingested_file';
 
     const stream = new ReadableStream<ExtractorEvent>({
       start: async (controller) => {
@@ -335,7 +337,9 @@ export class FastExtractor {
                   worker = null;
                   controller.close();
                   // Clean up OPFS temp file AFTER worker is fully done
-                  cleanupTempFile(this.options, tempFileName).catch(() => {});
+                  if (!isPreIngested) {
+                    cleanupTempFile(this.options, tempFileName).catch(() => {});
+                  }
                   break;
 
                 case 'ERROR': {
@@ -390,13 +394,21 @@ export class FastExtractor {
             });
 
           // 7. Instantiate WorkspaceManager and run the extraction pipeline
-          let tempFileName: string;
-          const isPreIngested = 'type' in input && input.type === 'ingested_file';
-          
+          // 4. Ingest file to OPFS
           if (isPreIngested) {
             tempFileName = (input as IngestedFile).opfsFileName;
           } else {
             tempFileName = `extract_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.mp4`;
+            
+            // Ingest to OPFS. This pipes the File straight into an OPFS FileSystemSyncAccessHandle
+            // which the worker can access synchronously.
+            await ingestFile(input as File, tempFileName, (status, percent) => {
+              controller.enqueue({
+                type: 'progress',
+                percent,
+                message: status,
+              });
+            }, signal);
           }
           
           let unackedChunks = 0;
@@ -404,14 +416,6 @@ export class FastExtractor {
           
           const runPipeline = async () => {
             try {
-              if (!isPreIngested) {
-                await ingestFile(input as File, tempFileName, (status, progress) => {
-                  try {
-                    controller.enqueue({ type: 'progress', percent: progress, message: status });
-                  } catch { /* stream closed */ }
-                }, signal);
-              }
-
               // Trigger audio extraction on the worker
               if (this.options.extractAudio !== false) {
                 const root = await navigator.storage.getDirectory();
@@ -494,12 +498,14 @@ export class FastExtractor {
         }
       },
 
-      cancel() {
+      cancel: () => {
         // Consumer cancelled the stream (e.g. user navigated away)
         worker?.terminate();
         worker = null;
-        // Clean up the OPFS file immediately
-        FastExtractor.cleanupStorage().catch(e => console.warn('Cancel cleanup failed:', e));
+        // Clean up the OPFS file immediately if we implicitly created it
+        if (!isPreIngested) {
+          cleanupTempFile(this.options, tempFileName).catch(e => console.warn('Cancel cleanup failed:', e));
+        }
       },
     });
 
