@@ -675,8 +675,8 @@ const App: React.FC = () => {
                         {isIngesting && (
                             <div style={{ marginTop: '15px', textAlign: 'center' }}>
                                 <div style={{ color: 'var(--accent)', fontSize: '0.9rem', marginBottom: '8px' }}>{status}</div>
-                                <div className="progress-bar-container" style={{ margin: '0 auto 10px auto', width: '80%' }}>
-                                    <div className="progress-bar-fill" style={{ width: `${progress}%`, transition: 'width 0.2s' }}></div>
+                                <div className="progress-container" style={{ margin: '0 auto 10px auto', width: '80%' }}>
+                                    <div className="progress-bar-inner" style={{ '--width': `${progress}%` } as React.CSSProperties}></div>
                                 </div>
                                 <button 
                                     className="btn-halt" 
@@ -951,11 +951,11 @@ const App: React.FC = () => {
                                         {isExtracting ? 'Processing...' : '▶ Start Extraction'}
                                     </button>
                                 )}
-                                {slides.length > 0 && (
+                                {!isExtracting && slides.length > 0 && (
                                     <button 
                                         className="btn-download"
                                         onClick={downloadAsZip}
-                                        disabled={isExtracting || isZipping}
+                                        disabled={isZipping}
                                     >
                                         {isZipping ? 'Zipping...' : '💾 Export ZIP'}
                                     </button>
