@@ -951,15 +951,6 @@ const App: React.FC = () => {
                                         {isExtracting ? 'Processing...' : '▶ Start Extraction'}
                                     </button>
                                 )}
-                                {!isExtracting && slides.length > 0 && (
-                                    <button 
-                                        className="btn-download"
-                                        onClick={downloadAsZip}
-                                        disabled={isZipping}
-                                    >
-                                        {isZipping ? 'Zipping...' : '💾 Export ZIP'}
-                                    </button>
-                                )}
                             </div>
                         )}
                         
@@ -1043,14 +1034,13 @@ const App: React.FC = () => {
                 )}
                 
                 {!isExtracting && (slides.length > 0 || audioUrl) && (
-                     <div className="result-card slide-up" style={{ textAlign: 'right' }}>
+                     <div className="result-card slide-up" style={{ textAlign: 'center' }}>
                         <button 
                             onClick={downloadAsZip} 
                             disabled={isZipping}
-                            className="btn-download" 
-                            style={{ backgroundColor: '#2b2b2b', color: '#fff', border: '1px solid #444' }}
+                            className="btn-export-zip" 
                         >
-                            {isZipping ? '⌛ Zipping...' : '📦 Download All as ZIP'}
+                            {isZipping ? '⌛ Packaging...' : '📦 Export All as ZIP'}
                         </button>
                      </div>
                 )}
