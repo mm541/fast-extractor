@@ -312,7 +312,7 @@ const App: React.FC = () => {
     };
 
     const downloadAsZip = async () => {
-        if (!file) return;
+        if (slides.length === 0 && !audioUrl) return;
         try {
             setIsZipping(true);
             
@@ -356,7 +356,8 @@ const App: React.FC = () => {
             }
 
             const zipStream = downloadZip(yieldFiles());
-            const downloadName = `${file.name.replace(/\.[^/.]+$/, "")}_extracted.zip`;
+            const baseName = file?.name ?? ingestedFile?.originalName ?? 'extraction';
+            const downloadName = `${baseName.replace(/\.[^/.]+$/, "")}_extracted.zip`;
 
             // Modern Streaming Download via OPFS or File System Access API
             if ('showSaveFilePicker' in window) {
