@@ -65,6 +65,7 @@ import type {
   ExtractorCallbacks,
   FastExtractorOptions,
   BrowserSupport,
+  IngestedFile,
 } from './types';
 import { ingestFile, extractVideoChunks, cleanupTempFile } from './pipeline';
 
@@ -133,6 +134,35 @@ export class FastExtractor {
   }
 
   /**
+   * Statically ingests a video file into OPFS prior to extraction.
+   * This is extremely useful on Android to prevent SAF "File Access Expired" errors,
+   * as you can ingest the file immediately upon user selection.
+   * 
+   * @param file - The raw File object from the browser
+   * @param options - Callbacks and cancellation signals
+   * @returns An IngestedFile descriptor that can be passed directly to extract()
+   */
+  static async ingest(
+    file: File, 
+    options?: { 
+      onProgress?: (percent: number, message: string) => void;
+      signal?: AbortSignal;
+    }
+  ): Promise<IngestedFile> {
+    const tempFileName = `extract_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.mp4`;
+    await ingestFile(file, tempFileName, (status, progress) => {
+      options?.onProgress?.(progress, status);
+    }, options?.signal);
+    
+    return {
+      type: 'ingested_file',
+      opfsFileName: tempFileName,
+      originalName: file.name,
+      size: file.size,
+    };
+  }
+
+  /**
    * Manually clean up OPFS temp files left from previous extractions.
    * Only cleans files inside the `.fast_extractor/` subfolder — never touches
    * the consumer's own OPFS data.
@@ -184,10 +214,10 @@ export class FastExtractor {
    * The stream completes when extraction is done.
    * Cancel the stream (or use an AbortSignal) to stop extraction early.
    *
-   * @param file - The video File object (from <input type="file"> or drag-and-drop)
+   * @param input - The video File object or a pre-ingested file descriptor
    * @param signal - Optional AbortSignal for cancellation
    */
-  extract(file: File, signal?: AbortSignal): ReadableStream<ExtractorEvent> {
+  extract(input: File | IngestedFile, signal?: AbortSignal): ReadableStream<ExtractorEvent> {
     // Guard: if using a shared custom worker, prevent concurrent extractions
     // that would corrupt the worker's module-scoped state (syncHandle, wasmBuffer, etc.)
     if (this._extracting && this.options.worker) {
@@ -360,17 +390,27 @@ export class FastExtractor {
             });
 
           // 7. Instantiate WorkspaceManager and run the extraction pipeline
-          const tempFileName = `extract_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.mp4`;
+          let tempFileName: string;
+          const isPreIngested = 'type' in input && input.type === 'ingested_file';
+          
+          if (isPreIngested) {
+            tempFileName = (input as IngestedFile).opfsFileName;
+          } else {
+            tempFileName = `extract_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.mp4`;
+          }
+          
           let unackedChunks = 0;
           let unblockMainThread: (() => void) | null = null;
           
           const runPipeline = async () => {
             try {
-              await ingestFile(file, tempFileName, (status, progress) => {
-                try {
-                  controller.enqueue({ type: 'progress', percent: progress, message: status });
-                } catch { /* stream closed */ }
-              });
+              if (!isPreIngested) {
+                await ingestFile(input as File, tempFileName, (status, progress) => {
+                  try {
+                    controller.enqueue({ type: 'progress', percent: progress, message: status });
+                  } catch { /* stream closed */ }
+                }, signal);
+              }
 
               // Trigger audio extraction on the worker
               if (this.options.extractAudio !== false) {
@@ -391,7 +431,7 @@ export class FastExtractor {
                   worker!.addEventListener('message', handleAudioMessage);
                   worker!.postMessage({
                     type: 'EXTRACT_AUDIO',
-                    fileName: file.name,
+                    fileName: isPreIngested ? (input as IngestedFile).originalName : (input as File).name,
                     fileHandle,
                     buildManifest: this.options.buildManifest ?? false,
                   });

@@ -52,6 +52,17 @@ export interface AudioDoneEvent {
   manifest?: AudioManifest | null;
 }
 
+/** Pre-ingested file reference in OPFS to bypass re-reading and permission drops. */
+export interface IngestedFile {
+  type: 'ingested_file';
+  /** The unique internal name assigned in the OPFS sandbox. */
+  opfsFileName: string;
+  /** The original file's name. */
+  originalName: string;
+  /** The total size of the file in bytes. */
+  size: number;
+}
+
 /** A slide image was detected and captured. */
 export interface SlideEvent {
   type: 'slide';

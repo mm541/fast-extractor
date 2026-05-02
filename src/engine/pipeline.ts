@@ -25,7 +25,8 @@ import type { FastExtractorOptions } from './types';
 export async function ingestFile(
   file: File,
   tempFileName: string,
-  onProgress: (status: string, progress: number) => void
+  onProgress: (status: string, progress: number) => void,
+  signal?: AbortSignal
 ): Promise<void> {
   if (!navigator.storage?.getDirectory) {
     throw new Error('OPFS is not supported in this browser.');
@@ -58,8 +59,17 @@ export async function ingestFile(
 
   try {
     // Android SAF: pipe the file immediately before permissions expire
-    await file.stream().pipeThrough(progressTracker).pipeTo(writable);
+    await file.stream().pipeThrough(progressTracker).pipeTo(writable, { signal });
   } catch (err: any) {
+    if (err.name === 'AbortError') {
+      // Clean up partial file on abort
+      try {
+        const root = await navigator.storage.getDirectory();
+        const feDir = await root.getDirectoryHandle('.fast_extractor');
+        await feDir.removeEntry(tempFileName);
+      } catch {}
+      throw err;
+    }
     throw new Error(`FILE_ACCESS_EXPIRED: ${err.message}`);
   }
 }

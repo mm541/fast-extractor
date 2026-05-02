@@ -50,6 +50,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import GridMaskPicker from './GridMaskPicker';
 import { FastExtractor } from '../engine';
+import type { IngestedFile } from '../engine/types';
 import { downloadZip } from 'client-zip';
 import './App.css';
 
@@ -111,6 +112,9 @@ const App: React.FC = () => {
     const [file, setFile] = useState<File | null>(null);
     const [status, setStatus] = useState<string>('Ready to extract');
     const [isExtracting, setIsExtracting] = useState(false);
+    const [isIngesting, setIsIngesting] = useState(false);
+    const [ingestedFile, setIngestedFile] = useState<IngestedFile | null>(null);
+    const ingestAbortRef = useRef<AbortController | null>(null);
     
     type SlideIndexEntry = { offset: number, length: number, time: string, startMs: number, url: string };
     const [slides, setSlides] = useState<SlideIndexEntry[]>([]);
@@ -214,7 +218,7 @@ const App: React.FC = () => {
         urlsToCleanup.current = [];
     };
 
-    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files[0]) {
             const f = e.target.files[0];
             setFile(f);
@@ -222,14 +226,54 @@ const App: React.FC = () => {
             cleanupPreviousSession();
             setAudioUrl(null);
             setSlides([]);
-            setStatus('File selected: ' + f.name);
-
-            // Auto-retry extraction if this was a re-select after SAF failure
-            if (retryPending.current) {
-                retryPending.current = false;
-                // Small delay to let React state settle
-                setTimeout(() => startExtraction(), 100);
+            setIngestedFile(null);
+            
+            if (ingestAbortRef.current) {
+                ingestAbortRef.current.abort();
             }
+            
+            setStatus('Caching file to local sandbox...');
+            setIsIngesting(true);
+            setProgress(0);
+            
+            const controller = new AbortController();
+            ingestAbortRef.current = controller;
+
+            try {
+                const ingested = await FastExtractor.ingest(f, {
+                    onProgress: (pct, msg) => {
+                        setProgress(pct);
+                        setStatus(msg);
+                    },
+                    signal: controller.signal
+                });
+                setIngestedFile(ingested);
+                setStatus('Ready to extract');
+                
+                // Auto-retry extraction if this was a re-select after SAF failure
+                if (retryPending.current) {
+                    retryPending.current = false;
+                    setTimeout(() => startExtraction(), 100);
+                }
+            } catch (err: any) {
+                if (err.name !== 'AbortError') {
+                    setStatus('Ingestion failed: ' + err.message);
+                } else {
+                    setStatus('Ingestion halted.');
+                }
+                setFile(null);
+                fileRef.current = null;
+            } finally {
+                setIsIngesting(false);
+                setProgress(0);
+            }
+        }
+    };
+
+    const haltIngestion = () => {
+        if (ingestAbortRef.current) {
+            ingestAbortRef.current.abort();
+            ingestAbortRef.current = null;
         }
     };
 
@@ -382,7 +426,8 @@ const App: React.FC = () => {
             const BATCH_LIMIT = 25 * 1024 * 1024; // 25MB RAM Buffer for Slides
             let slideIndexBuffer: SlideIndexEntry[] = [];
 
-            const stream = extractor.extract(fileRef.current!, controller.signal);
+            const inputTarget = ingestedFile || fileRef.current!;
+            const stream = extractor.extract(inputTarget, controller.signal);
             const reader = stream.getReader();
 
             while (true) {
@@ -593,9 +638,28 @@ const App: React.FC = () => {
                     <div className="upload-zone">
                         <label className={`file-label ${file ? 'has-file' : ''}`}>
                             {file ? '📄 ' + file.name : 'Select Video File'}
-                            <input ref={fileInputRef} type="file" accept="video/*" onChange={handleFileChange} disabled={isExtracting} />
+                            <input ref={fileInputRef} type="file" accept="video/*" onChange={handleFileChange} disabled={isExtracting || isIngesting} />
                         </label>
-                        <p className="hint">Tip: Use <b>"Turbo"</b> mode for 10x faster sampling of long videos.</p>
+                        
+                        {isIngesting && (
+                            <div style={{ marginTop: '15px', textAlign: 'center' }}>
+                                <div style={{ color: 'var(--accent)', fontSize: '0.9rem', marginBottom: '8px' }}>{status}</div>
+                                <div className="progress-bar-container" style={{ margin: '0 auto 10px auto', width: '80%' }}>
+                                    <div className="progress-bar-fill" style={{ width: `${progress}%`, transition: 'width 0.2s' }}></div>
+                                </div>
+                                <button 
+                                    className="btn-halt" 
+                                    onClick={haltIngestion}
+                                    style={{ background: '#ff4d4d', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer' }}
+                                >
+                                    🛑 Halt
+                                </button>
+                            </div>
+                        )}
+                        
+                        {file && !isIngesting && (
+                            <>
+                                <p className="hint">Tip: Use <b>"Turbo"</b> mode for 10x faster sampling of long videos.</p>
                         
                         <div className="mode-toggle">
                             <button 
@@ -836,14 +900,35 @@ const App: React.FC = () => {
                                 </div>
                             </div>
                         )}
-
-                        <button 
-                            className="btn-extract" 
-                            onClick={startExtraction} 
-                            disabled={!file || isExtracting || (capabilities !== null && !capabilities.canExtract)}
-                        >
-                            {isExtracting ? <span className="spinner"></span> : (capabilities && !capabilities.canExtract ? '⚠ Not Supported' : '🚀 Start Extraction')}
-                        </button>
+                        
+                        {file && !isIngesting && (
+                            <div className="action-row" style={{ marginTop: '20px' }}>
+                                <button 
+                                    className={`btn-extract ${isExtracting ? 'extracting' : ''}`}
+                                    onClick={startExtraction}
+                                    disabled={isExtracting}
+                                >
+                                    {isExtracting ? 'Processing...' : '▶ Start Extraction'}
+                                </button>
+                                {slides.length > 0 && (
+                                    <button 
+                                        className="btn-download"
+                                        onClick={downloadAsZip}
+                                        disabled={isExtracting || isZipping}
+                                    >
+                                        {isZipping ? 'Zipping...' : '💾 Export ZIP'}
+                                    </button>
+                                )}
+                            </div>
+                        )}
+                        
+                        {!file && !isIngesting && (
+                            <p style={{ marginTop: '20px', color: 'var(--text-secondary)', textAlign: 'center', fontSize: '0.9rem' }}>
+                                Settings will appear after you select a file.
+                            </p>
+                        )}
+                        
+                        </>)}
                     </div>
 
                     <div className="status-box">
@@ -852,7 +937,8 @@ const App: React.FC = () => {
                             <span>{status}</span>
                             {isExtracting && <span className="pct">{progress}%</span>}
                         </div>
-                        {isExtracting && (
+                        {/* Progress UI */}
+                        {isExtracting && !isIngesting && (
                             <div className="progress-container">
                                 <div 
                                     className="progress-bar-inner" 

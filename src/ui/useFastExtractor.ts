@@ -23,6 +23,7 @@ import type {
   FastExtractorOptions,
   ProgressEvent,
   AudioManifest,
+  IngestedFile
 } from '../engine/types';
 
 // ─── Hook State Types ───
@@ -110,7 +111,7 @@ export function useFastExtractor(options?: FastExtractorOptions): UseFastExtract
     setIsExtracting(false);
   }, []);
 
-  const extract = useCallback((file: File) => {
+  const extract = useCallback((file: File | IngestedFile) => {
     // Cancel any in-progress extraction
     abortRef.current?.abort();
 
