@@ -62,7 +62,7 @@ export async function ingestFile(
     await file.stream().pipeThrough(progressTracker).pipeTo(writable, { signal });
   } catch (err: any) {
     if (err.name === 'AbortError') {
-      // Clean up partial file on abort
+      // Clean up OPFS temp file if we created it (direct File path)
       try {
         const root = await navigator.storage.getDirectory();
         const feDir = await root.getDirectoryHandle('.fast_extractor');
@@ -185,8 +185,8 @@ export async function extractVideoChunks(
 /**
  * Delete the temporary video file from OPFS after extraction completes.
  * Only deletes the named video file — leaves other artifacts intact.
- * Lifecycle note: only called for non-pre-ingested files (legacy File path).
- * Pre-ingested files are cleaned up explicitly by the consumer via cleanupStorage().
+ * Lifecycle note: only called for the direct File path (non-pre-ingested).
+ * Pre-ingested files are cleaned up explicitly by calling resetApp / cleanupStorage, and direct File paths auto-clean.
  */
 export async function cleanupTempFile(
   tempFileName: string

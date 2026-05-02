@@ -166,7 +166,7 @@ export class FastExtractor {
    * Manually clean up OPFS temp files left from previous extractions.
    * Only needed if you want to proactively free OPFS space.
    * In the normal flow, pre-ingested files are cleaned up when the consumer
-   * calls resetApp / cleanupStorage, and legacy File paths auto-clean.
+   * calls resetApp / cleanupStorage, and direct File paths auto-clean.
    * Safe to call at any time — it's a no-op if no temp files exist.
    *
    * @example
@@ -245,7 +245,7 @@ export class FastExtractor {
               worker?.terminate();
               worker = null;
               try { controller.close(); } catch { /* stream already closed/errored */ }
-              // Clean up OPFS temp file if we created it (legacy File path)
+              // Clean up OPFS temp file if we created it (direct File path)
               if (!isPreIngested && tempFileName) {
                 cleanupTempFile(tempFileName).catch(() => {});
               }
