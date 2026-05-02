@@ -233,6 +233,11 @@ const App: React.FC = () => {
         if (fileInputRef.current) {
             fileInputRef.current.value = '';
         }
+        
+        // Proactively clean up OPFS storage since the session is discarded
+        FastExtractor.cleanupStorage().catch(console.warn);
+        cleanupAppStorage().catch(console.warn);
+
         window.scrollTo({ top: 0, behavior: 'smooth' });
     };
 
@@ -399,10 +404,6 @@ const App: React.FC = () => {
         }
 
         cleanupPreviousSession();
-
-        // Clean stale OPFS files from crashed/previous tabs before starting
-        await FastExtractor.cleanupStorage();
-        await cleanupAppStorage();
 
         // Generate unique session ID for this extraction's OPFS files
         const sessionId = `${Date.now()}`;

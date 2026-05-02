@@ -244,7 +244,11 @@ export class FastExtractor {
               this._extracting = false;
               worker?.terminate();
               worker = null;
-              controller.close();
+              try { controller.close(); } catch { /* stream already closed/errored */ }
+              // Clean up OPFS temp file if we created it (legacy File path)
+              if (!isPreIngested && tempFileName) {
+                cleanupTempFile(this.options, tempFileName).catch(() => {});
+              }
             }, { once: true });
           }
 
@@ -393,8 +397,7 @@ export class FastExtractor {
               worker = null;
             });
 
-          // 7. Instantiate WorkspaceManager and run the extraction pipeline
-          // 4. Ingest file to OPFS
+          // 7. Ingest file to OPFS (or reuse pre-ingested handle)
           if (isPreIngested) {
             tempFileName = (input as IngestedFile).opfsFileName;
           } else {
@@ -476,19 +479,17 @@ export class FastExtractor {
           pipelinePromise.catch((err: any) => {
             // Pipeline will throw if SAF permissions expire or pipeline fails
             const msg = err?.message ?? String(err ?? 'Unknown pipeline error');
-            const isRecoverable = msg.includes('File ingest failed') || msg.includes('could not be read') || msg.includes('FILE_ACCESS_EXPIRED');
             this._extracting = false;
+            worker = null;
             
-            if (isRecoverable) {
-              try {
+            const isRecoverable = msg.includes('File ingest failed') || msg.includes('could not be read') || msg.includes('FILE_ACCESS_EXPIRED');
+            try {
+              if (isRecoverable) {
                 controller.error(new ExtractorError('ERR_FILE_INGEST', 'File could not be read'));
-                controller.close();
-              } catch { /* stream already closed */ }
-              worker = null;
-            } else {
-              worker = null;
-              try { controller.error(err instanceof Error ? err : new Error(msg)); } catch { /* stream already closed */ }
-            }
+              } else {
+                controller.error(err instanceof Error ? err : new Error(msg));
+              }
+            } catch { /* stream already closed/errored */ }
           });
 
         } catch (err) {
