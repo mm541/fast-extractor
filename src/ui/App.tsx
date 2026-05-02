@@ -52,61 +52,14 @@ import GridMaskPicker from './GridMaskPicker';
 import { FastExtractor } from '../engine';
 import type { IngestedFile } from '../engine/types';
 import { downloadZip } from 'client-zip';
+import CapabilityBanner from './components/CapabilityBanner';
+import MetricsDashboard from './components/MetricsDashboard';
+import SlideGallery from './components/SlideGallery';
+import Lightbox from './components/Lightbox';
+import { formatMs, cleanupAppStorage } from './utils';
+import type { DeviceCapabilities, SlideIndexEntry } from './types';
 import './App.css';
 
-interface DeviceCapabilities {
-    webCodecs: boolean;
-    opfs: boolean;
-    offscreenCanvas: boolean;
-    deviceMemoryGb: number | null;
-    hardwareConcurrency: number;
-    webGpu: boolean;
-    isMobile: boolean;
-    canExtract: boolean;
-}
-
-/** Convert milliseconds to HH:MM:SS */
-function formatMs(ms: number): string {
-    const totalSec = Math.floor(ms / 1000);
-    const h = Math.floor(totalSec / 3600);
-    const m = Math.floor((totalSec % 3600) / 60);
-    const s = totalSec % 60;
-    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-}
-
-async function cleanupAppStorage(): Promise<void> {
-    if (!navigator.storage?.getDirectory) return;
-    try {
-      const opfsRoot = await navigator.storage.getDirectory();
-      let artifactsDir: FileSystemDirectoryHandle;
-      try {
-        artifactsDir = await opfsRoot.getDirectoryHandle('.app_artifacts');
-      } catch {
-        return; // folder doesn't exist — nothing to clean
-      }
-      const entries: string[] = [];
-      // @ts-ignore — OPFS entries()
-      for await (const [name] of (artifactsDir as any).entries()) {
-        entries.push(name);
-      }
-      await Promise.all(entries.map(async (name) => {
-        try {
-          if (navigator.locks) {
-            await navigator.locks.request(
-              `app_${name}`, { ifAvailable: true },
-              async (lock) => {
-                if (lock) await artifactsDir.removeEntry(name);
-              }
-            );
-          } else {
-            await artifactsDir.removeEntry(name);
-          }
-        } catch {}
-      }));
-    } catch (e) {
-      console.warn('[App] cleanupAppStorage failed:', e);
-    }
-}
 
 const App: React.FC = () => {
     const [file, setFile] = useState<File | null>(null);
@@ -116,7 +69,6 @@ const App: React.FC = () => {
     const [ingestedFile, setIngestedFile] = useState<IngestedFile | null>(null);
     const ingestAbortRef = useRef<AbortController | null>(null);
     
-    type SlideIndexEntry = { offset: number, length: number, time: string, startMs: number, url: string };
     const [slides, setSlides] = useState<SlideIndexEntry[]>([]);
     const [audioUrl, setAudioUrl] = useState<string | null>(null);
     const [fileName, setFileName] = useState<string>('');
@@ -646,23 +598,7 @@ const App: React.FC = () => {
                 </section>
 
                 {capabilities && (
-                    <div className={`capability-banner ${capabilities.canExtract ? 'supported' : 'unsupported'}`}>
-                        <div className="cap-row">
-                            <span className={capabilities.webCodecs ? 'cap-ok' : 'cap-fail'}>WebCodecs {capabilities.webCodecs ? '✓' : '✗'}</span>
-                            <span className={capabilities.opfs ? 'cap-ok' : 'cap-fail'}>OPFS {capabilities.opfs ? '✓' : '✗'}</span>
-                            <span className={capabilities.offscreenCanvas ? 'cap-ok' : 'cap-warn'}>OffscreenCanvas {capabilities.offscreenCanvas ? '✓' : '⚠'}</span>
-                            {capabilities.deviceMemoryGb && <span className="cap-info">{capabilities.deviceMemoryGb}GB RAM</span>}
-                        </div>
-                        {!capabilities.canExtract && (
-                            <p className="cap-error">Your browser does not support the required APIs (WebCodecs + OPFS). Try Chrome 102+ on desktop or Android.</p>
-                        )}
-                        {capabilities.isMobile && capabilities.canExtract && (
-                            <p className="cap-warning">Mobile detected — auto-selected Turbo mode with reduced resolution for stability.</p>
-                        )}
-                        {!capabilities.isMobile && capabilities.canExtract && capabilities.deviceMemoryGb && capabilities.deviceMemoryGb <= 4 && (
-                            <p className="cap-warning">Low memory ({capabilities.deviceMemoryGb}GB) — auto-selected Turbo mode to prevent crashes.</p>
-                        )}
-                    </div>
+                    <CapabilityBanner capabilities={capabilities} />
                 )}
 
                 <div className="glass-panel">
@@ -993,33 +929,7 @@ const App: React.FC = () => {
                 </div>
 
                 {metrics && metrics.startTime && (
-                    <div className="metrics-dashboard slide-up">
-                        <div className="metric-card">
-                            <span className="label">Total Job Time</span>
-                            <span className="value">
-                                {jobMetrics.end ? ((jobMetrics.end - jobMetrics.start) / 1000).toFixed(1) : ((performance.now() - jobMetrics.start) / 1000).toFixed(1)}s
-                            </span>
-                        </div>
-                        <div className="metric-card">
-                            <span className="label">Decode Speed</span>
-                            <span className="value">
-                                {metrics.totalFrames ? (metrics.totalFrames / (((metrics.endTime || performance.now()) - metrics.startTime) / 1000)).toFixed(1) : '0'} 
-                                {extractionMode === 'turbo' ? ' Keyframes/s' : ' FPS'}
-                            </span>
-                        </div>
-                        <div className="metric-card">
-                            <span className="label">Peak RAM</span>
-                            <span className="value">{metrics.peakRamMb > 0 ? `${Math.round(metrics.peakRamMb)}MB` : 'N/A'}</span>
-                        </div>
-                        <div className="metric-card">
-                            <span className="label">Frame Analysis Time</span>
-                            <span className="value">{metrics.avgFrameProcessTimeMs?.toFixed(1) ?? 'N/A'}ms</span>
-                        </div>
-                        <div className="metric-card">
-                            <span className="label">Detection</span>
-                            <span className="value">{metrics.totalSlides ?? 0} Slides</span>
-                        </div>
-                    </div>
+                    <MetricsDashboard metrics={metrics} jobMetrics={jobMetrics} extractionMode={extractionMode} />
                 )}
 
                 {audioUrl && (
@@ -1046,57 +956,16 @@ const App: React.FC = () => {
                 )}
 
                 {slides.length > 0 && (
-                    <section className="gallery-section">
-                        <h2>📌 Detected Slides ({slides.length})</h2>
-                        <div className="filmstrip">
-                            {slides.map((slide, i) => (
-                                <div key={i} className="slide-item">
-                                    <img 
-                                        src={slide.url} 
-                                        alt={`Slide ${i}`} 
-                                        loading="lazy" 
-                                        style={{ cursor: 'pointer' }}
-                                        onClick={() => { setLightboxIndex(i); setLightboxZoom(1); }}
-                                    />
-                                    <span className="timestamp">
-                                        {formatMs(Math.floor(slide.startMs / 1000) * 1000)}
-                                    </span>
-                                </div>
-                            ))}
-                        </div>
-                    </section>
+                    <SlideGallery slides={slides} onSlideClick={(i) => { setLightboxIndex(i); setLightboxZoom(1); }} />
                 )}
                 {lightboxIndex !== null && (
-                    <div className="lightbox-overlay" onClick={() => setLightboxIndex(null)}>
-                        <button className="lightbox-close" onClick={() => setLightboxIndex(null)}>&times;</button>
-                        {lightboxIndex > 0 && (
-                            <button className="lightbox-nav prev" onClick={(e) => { e.stopPropagation(); setLightboxZoom(1); setLightboxIndex(lightboxIndex - 1); }}>&#10094;</button>
-                        )}
-                        {lightboxIndex < slides.length - 1 && (
-                            <button className="lightbox-nav next" onClick={(e) => { e.stopPropagation(); setLightboxZoom(1); setLightboxIndex(lightboxIndex + 1); }}>&#10095;</button>
-                        )}
-                        <div className="lightbox-content" onClick={(e) => e.stopPropagation()}>
-                            <img 
-                                src={slides[lightboxIndex].url} 
-                                className="lightbox-img" 
-                                style={{ transform: `scale(${lightboxZoom})` }}
-                                onWheel={(e) => {
-                                    e.preventDefault();
-                                    const zoomFactor = Math.exp(-e.deltaY * 0.002);
-                                    setLightboxZoom(prev => Math.max(1, Math.min(prev * zoomFactor, 5)));
-                                }}
-                                alt="Slide larger view" 
-                            />
-                        </div>
-                        <div className="lightbox-info">
-                            {formatMs(Math.floor(slides[lightboxIndex].startMs / 1000) * 1000)}
-                        </div>
-                        <div className="lightbox-controls" onClick={(e) => e.stopPropagation()}>
-                            <button className="lightbox-btn" onClick={() => setLightboxZoom(prev => Math.max(1, prev - 0.5))}>⊖</button>
-                            <span style={{ color: 'white', lineHeight: '24px' }}>{Math.round(lightboxZoom * 100)}%</span>
-                            <button className="lightbox-btn" onClick={() => setLightboxZoom(prev => Math.min(5, prev + 0.5))}>⊕</button>
-                        </div>
-                    </div>
+                    <Lightbox
+                        slides={slides}
+                        lightboxIndex={lightboxIndex}
+                        lightboxZoom={lightboxZoom}
+                        setLightboxIndex={setLightboxIndex}
+                        setLightboxZoom={setLightboxZoom}
+                    />
                 )}
             </main>
         </div>
