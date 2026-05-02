@@ -184,14 +184,13 @@ export async function extractVideoChunks(
 
 /**
  * Delete the temporary video file from OPFS after extraction completes.
- * Only deletes the video — leaves slides.dat and audio.aac artifacts intact.
+ * Only deletes the named video file — leaves other artifacts intact.
+ * Lifecycle note: only called for non-pre-ingested files (legacy File path).
+ * Pre-ingested files are cleaned up explicitly by the consumer via cleanupStorage().
  */
 export async function cleanupTempFile(
-  options: FastExtractorOptions,
   tempFileName: string
 ): Promise<void> {
-  if (options.cleanupAfterExtraction === false) return;
-  
   try {
     const root = await navigator.storage.getDirectory();
     const feDir = await root.getDirectoryHandle('.fast_extractor');

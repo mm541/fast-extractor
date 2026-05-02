@@ -164,9 +164,9 @@ export class FastExtractor {
 
   /**
    * Manually clean up OPFS temp files left from previous extractions.
-   * Only cleans files inside the `.fast_extractor/` subfolder — never touches
-   * the consumer's own OPFS data.
-   * Only needed when `cleanupAfterExtraction: false` was used.
+   * Only needed if you want to proactively free OPFS space.
+   * In the normal flow, pre-ingested files are cleaned up when the consumer
+   * calls resetApp / cleanupStorage, and legacy File paths auto-clean.
    * Safe to call at any time — it's a no-op if no temp files exist.
    *
    * @example
@@ -247,7 +247,7 @@ export class FastExtractor {
               try { controller.close(); } catch { /* stream already closed/errored */ }
               // Clean up OPFS temp file if we created it (legacy File path)
               if (!isPreIngested && tempFileName) {
-                cleanupTempFile(this.options, tempFileName).catch(() => {});
+                cleanupTempFile(tempFileName).catch(() => {});
               }
             }, { once: true });
           }
@@ -260,14 +260,13 @@ export class FastExtractor {
             worker: _workerOpt,          // consumed above, don't forward
             extractAudio = true,         // default: extract audio
             extractSlides = true,        // default: extract slides
-            cleanupAfterExtraction = true, // default: clean up OPFS after extraction
             buildManifest: _buildManifest, // consumed by audio pipeline, don't forward to slide detection
             ...detectionConfig
           } = this.options;
 
           worker.postMessage({
             type: 'CONFIG',
-            data: { demuxerWasmUrl, extractAudio, extractSlides, cleanupAfterExtraction },
+            data: { demuxerWasmUrl, extractAudio, extractSlides },
             config: { ...detectionConfig, mode },
           });
 
@@ -342,7 +341,7 @@ export class FastExtractor {
                   controller.close();
                   // Clean up OPFS temp file AFTER worker is fully done
                   if (!isPreIngested) {
-                    cleanupTempFile(this.options, tempFileName).catch(() => {});
+                    cleanupTempFile(tempFileName).catch(() => {});
                   }
                   break;
 
@@ -505,7 +504,7 @@ export class FastExtractor {
         worker = null;
         // Clean up the OPFS file immediately if we implicitly created it
         if (!isPreIngested) {
-          cleanupTempFile(this.options, tempFileName).catch(e => console.warn('Cancel cleanup failed:', e));
+          cleanupTempFile(tempFileName).catch(e => console.warn('Cancel cleanup failed:', e));
         }
       },
     });

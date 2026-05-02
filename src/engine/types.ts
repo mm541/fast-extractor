@@ -207,14 +207,7 @@ export interface FastExtractorOptions {
   /** Max width of output slides (e.g. 1280 or 1920). 0 means original. Default: 0. */
   exportResolution?: number;
 
-  // ─── Storage ───
-  /**
-   * Whether to delete OPFS temp files after extraction completes.
-   * Default: true. Set to false to keep the ingested file in OPFS for
-   * re-extraction with different settings (avoids re-ingesting the same video).
-   * Call FastExtractor.cleanupStorage() explicitly when you're done.
-   */
-  cleanupAfterExtraction?: boolean;
+
 
   // ─── Debugging ───
   /**

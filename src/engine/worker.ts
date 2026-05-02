@@ -52,7 +52,7 @@ let wasmBuffer: ArrayBuffer | undefined;    // Transferred from main thread, fre
 let syncHandle: FileSystemSyncAccessHandle | undefined;  // Exclusive lock on temp video file
 let shouldExtractAudio = true;               // Controlled via CONFIG
 let shouldExtractSlides = true;              // Controlled via CONFIG
-let shouldCleanup = true;
+
 
 // Slide extraction state
 let slideExtractor: SlideExtractor | null = null;
@@ -116,9 +116,8 @@ self.onmessage = async (e: MessageEvent) => {
         if (type === 'CONFIG') {
             if (data?.extractAudio !== undefined) shouldExtractAudio = data.extractAudio;
             if (data?.extractSlides !== undefined) shouldExtractSlides = data.extractSlides;
-            if (data?.cleanupAfterExtraction !== undefined) shouldCleanup = data.cleanupAfterExtraction;
             if (config) detectionConfig = { ...detectionConfig, ...config };
-            console.log("Worker Config Updated:", detectionConfig, { shouldExtractAudio, shouldExtractSlides, shouldCleanup });
+            console.log("Worker Config Updated:", detectionConfig, { shouldExtractAudio, shouldExtractSlides });
             return;
         }
 
