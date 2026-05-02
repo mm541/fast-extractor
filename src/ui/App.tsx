@@ -256,13 +256,24 @@ const App: React.FC = () => {
                     setTimeout(() => startExtraction(), 100);
                 }
             } catch (err: any) {
-                if (err.name !== 'AbortError') {
-                    setStatus('Ingestion failed: ' + err.message);
-                } else {
+                if (err.name === 'AbortError') {
                     setStatus('Ingestion halted.');
+                } else if (err.message.includes('FILE_ACCESS_EXPIRED') || err.message.includes('could not be read') || err.name === 'NotReadableError' || err.name === 'NetworkError') {
+                    setStatus('⚠️ File access expired. Please re-select the same file.');
+                    retryPending.current = true;
+                    if (fileInputRef.current) {
+                        fileInputRef.current.value = '';
+                        fileInputRef.current.click();
+                    }
+                } else {
+                    setStatus('Ingestion failed: ' + err.message);
                 }
-                setFile(null);
-                fileRef.current = null;
+                
+                // Only clear the file if it wasn't a retry prompt
+                if (!retryPending.current) {
+                    setFile(null);
+                    fileRef.current = null;
+                }
             } finally {
                 setIsIngesting(false);
                 setProgress(0);
