@@ -218,6 +218,24 @@ const App: React.FC = () => {
         urlsToCleanup.current = [];
     };
 
+    const resetApp = () => {
+        setFile(null);
+        fileRef.current = null;
+        cleanupPreviousSession();
+        setAudioUrl(null);
+        setSlides([]);
+        setIngestedFile(null);
+        setStatus('Ready to extract');
+        setProgress(0);
+        setJobMetrics({ start: 0, end: null });
+        setMetrics(null);
+        setAudioManifest(null);
+        if (fileInputRef.current) {
+            fileInputRef.current.value = '';
+        }
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    };
+
     const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files[0]) {
             const f = e.target.files[0];
@@ -914,13 +932,23 @@ const App: React.FC = () => {
                         
                         {file && !isIngesting && (
                             <div className="action-row" style={{ marginTop: '20px' }}>
-                                <button 
-                                    className={`btn-extract ${isExtracting ? 'extracting' : ''}`}
-                                    onClick={startExtraction}
-                                    disabled={isExtracting}
-                                >
-                                    {isExtracting ? 'Processing...' : '▶ Start Extraction'}
-                                </button>
+                                {(!isExtracting && (slides.length > 0 || audioUrl)) ? (
+                                    <button 
+                                        className="btn-extract"
+                                        onClick={resetApp}
+                                        style={{ backgroundColor: '#2b2b2b', color: '#fff', border: '1px solid #444' }}
+                                    >
+                                        🔄 Extract Another Video
+                                    </button>
+                                ) : (
+                                    <button 
+                                        className={`btn-extract ${isExtracting ? 'extracting' : ''}`}
+                                        onClick={startExtraction}
+                                        disabled={isExtracting}
+                                    >
+                                        {isExtracting ? 'Processing...' : '▶ Start Extraction'}
+                                    </button>
+                                )}
                                 {slides.length > 0 && (
                                     <button 
                                         className="btn-download"
