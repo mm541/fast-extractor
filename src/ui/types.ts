@@ -20,3 +20,21 @@ export type SlideIndexEntry = {
     startMs: number;
     url: string;
 };
+
+export interface ExtractionConfig {
+    sampleFps: number;
+    edgeThreshold: number;
+    blockThreshold: number;
+    densityThresholdPct: number;
+    minSlideDuration: number;
+    dhashDuplicateThreshold: number;
+    useDeferredEmit: boolean;
+    cumulativeDriftMultiplier: number;
+    cumulativeSettledFrames: number;
+    partialThresholdRatio: number;
+    noiseResetFrames: number;
+    noiseMainRatio: number;
+    imageQuality: number;
+    imageFormat: 'webp' | 'jpeg';
+    exportResolution: number;
+}
