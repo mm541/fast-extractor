@@ -265,7 +265,8 @@ await FastExtractor.cleanupStorage();
 | Edge 102+ | ✅ Full support | Chromium-based |
 | Firefox 130+ | ✅ Full support | WebCodecs enabled by default |
 | Brave / Vivaldi | ✅ Full support | Chromium-based |
-| Safari (macOS/iOS) | ❌ Unsupported | No OPFS SyncAccessHandle |
+| Safari 16.4+ (macOS) | ⚠️ Expected to work (untested) | Has WebCodecs, OPFS, SyncAccessHandle |
+| Safari 16.4+ (iOS) | ⚠️ Expected to work (untested) | API support present, not field-tested |
 
 **Required:** Secure Context (HTTPS), WebCodecs, OPFS with `SyncAccessHandle`
 

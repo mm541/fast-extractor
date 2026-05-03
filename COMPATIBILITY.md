@@ -18,8 +18,9 @@ To run the extraction engine, the browser MUST support:
 | **Chrome** / Edge | Windows, Mac, Linux | ✅ Fully Supported | Chrome 102+ required for OPFS SyncAccessHandle. |
 | **Chrome for Android** | Android | ✅ Fully Supported | Works perfectly on Chrome 102+. Automatically degrades to `turbo` mode on devices with $\le$ 4GB RAM to prevent Out-Of-Memory (OOM) crashes. |
 | **Brave / Vivaldi** | Desktop, Android | ✅ Fully Supported | Same as Chrome. |
-| **Safari** | macOS | ❌ Unsupported | Apple has not implemented OPFS `FileSystemSyncAccessHandle` for synchronous reading. |
-| **Safari / WebKit** | iOS, iPadOS | ❌ Unsupported | iOS does not support WebCodecs or OPFS synchronous access. |
+| **Safari 16.4+** | macOS | ⚠️ Expected to work (untested) | Safari 16.4+ has WebCodecs, OPFS SyncAccessHandle, and OffscreenCanvas. Should work but has not been field-tested. |
+| **Safari 16.4+** | iOS, iPadOS | ⚠️ Expected to work (untested) | API support present since Safari 16.4. Not field-tested — iOS memory constraints may affect long videos. |
+| **Safari < 16.4** | macOS / iOS | ❌ Unsupported | Missing WebCodecs and/or OPFS SyncAccessHandle. |
 | **Firefox** | Windows, Mac, Linux | ✅ Fully Supported | Firefox 130+ enabled WebCodecs by default. Requires OPFS support. |
 
 ### 🔍 Feature Detection
