@@ -86,5 +86,7 @@ Mobile devices have aggressive memory management and background-task throttling.
 | Component | Architecture Limitation | Why it's designed this way |
 | :--- | :--- | :--- |
 | **WASM Memory** | 894KB Static Arena (`UnsafeCell`) | No garbage collection (GC) pauses. Buffers are pre-allocated once at init. Zero per-frame allocations. |
-| **Frame Resizing**| Fixed 427x240 compute grid | Fast perceptual hashing and edge detection. Pixel-perfect 4K comparison is too slow and produces false-positives for noise/compression artifacts. |
+| **Frame Resizing**| Fixed 424×240 compute grid | Fast perceptual hashing and edge detection. Pixel-perfect 4K comparison is too slow and produces false-positives from noise/compression artifacts. |
 | **Turbo Mode** | Reads Demuxer Keyframes | Hardware decoders hate reverse-seeking. Turbo mode only feeds keyframes to WebCodecs, skipping P/B-frames entirely, resulting in $\approx$ 10x speedup. |
+| **Audio Extraction** | Symphonia (Rust/WASM) over OPFS `SyncAccessHandle` | Reads the ingested file via synchronous random-access in the Worker. Pulls raw codec packets (AAC/MP3/Opus/Vorbis) in 1MB chunks — zero re-encoding, zero main-thread blocking. |
+| **Audio Manifest** | Per-second byte-offset index | Enables S3-style HTTP Range queries for arbitrary seek-to-second. Built during extraction with zero extra passes over the file. |
