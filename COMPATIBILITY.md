@@ -85,6 +85,6 @@ Mobile devices have aggressive memory management and background-task throttling.
 
 | Component | Architecture Limitation | Why it's designed this way |
 | :--- | :--- | :--- |
-| **WASM Memory** | 100MB Fixed Arena | No garbage collection (GC) pauses. Arrays are pre-allocated. Prevents memory ballooning during heavy seeking. |
+| **WASM Memory** | 894KB Static Arena (`UnsafeCell`) | No garbage collection (GC) pauses. Buffers are pre-allocated once at init. Zero per-frame allocations. |
 | **Frame Resizing**| Fixed 427x240 compute grid | Fast perceptual hashing and edge detection. Pixel-perfect 4K comparison is too slow and produces false-positives for noise/compression artifacts. |
 | **Turbo Mode** | Reads Demuxer Keyframes | Hardware decoders hate reverse-seeking. Turbo mode only feeds keyframes to WebCodecs, skipping P/B-frames entirely, resulting in $\approx$ 10x speedup. |
