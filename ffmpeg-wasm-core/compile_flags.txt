@@ -1,0 +1,2 @@
+-I
+/home/azam/personal/fun/audio-extractor/ffmpeg-wasm-core/ffmpeg_build/ffmpeg-6.1.1

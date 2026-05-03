@@ -34,3 +34,6 @@ wasm-extractor/pkg/
 !.dev.vars.example
 .env*
 !.env.example
+# FFmpeg WASM Core Build Artifacts
+ffmpeg-wasm-core/target/
+ffmpeg-wasm-core/ffmpeg_build/
