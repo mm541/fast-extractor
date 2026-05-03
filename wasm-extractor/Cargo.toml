@@ -23,6 +23,8 @@ version = "0.5.3"
 default-features = false
 features = [
     "isomp4", # MP4/M4A container support
-    "mkv",     # Matroska (MKV) container support
-    "aac"      # AAC audio format support
+    "mkv",    # Matroska (MKV/WebM) container support
+    "ogg",    # Ogg container support (Opus + Vorbis)
+    # Note: We ONLY need container formats (demuxers), NOT audio decoders (codecs).
+    # We extract raw compressed packets and do not decode PCM audio.
 ]

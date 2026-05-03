@@ -52,11 +52,10 @@ let wasmBuffer: ArrayBuffer | undefined;    // Transferred from main thread, fre
 let syncHandle: FileSystemSyncAccessHandle | undefined;  // Exclusive lock on temp video file
 let shouldExtractAudio = true;               // Controlled via CONFIG
 let shouldExtractSlides = true;              // Controlled via CONFIG
-let shouldCleanup = true;
+
 
 // Slide extraction state
 let slideExtractor: SlideExtractor | null = null;
-let pendingSlide: { buffer: ArrayBuffer; startMs: number; timestamp: string } | null = null;
 let pendingSlideEncodes = 0;
 let drainResolve: (() => void) | null = null;
 /**
@@ -117,9 +116,8 @@ self.onmessage = async (e: MessageEvent) => {
         if (type === 'CONFIG') {
             if (data?.extractAudio !== undefined) shouldExtractAudio = data.extractAudio;
             if (data?.extractSlides !== undefined) shouldExtractSlides = data.extractSlides;
-            if (data?.cleanupAfterExtraction !== undefined) shouldCleanup = data.cleanupAfterExtraction;
             if (config) detectionConfig = { ...detectionConfig, ...config };
-            console.log("Worker Config Updated:", detectionConfig, { shouldExtractAudio, shouldExtractSlides, shouldCleanup });
+            console.log("Worker Config Updated:", detectionConfig, { shouldExtractAudio, shouldExtractSlides });
             return;
         }
 
@@ -132,7 +130,7 @@ self.onmessage = async (e: MessageEvent) => {
         }
 
         if (type === 'EXTRACT_AUDIO') {
-            const { fileName, fileHandle } = e.data;
+            const { fileName, fileHandle, buildManifest = false, duration = 0 } = e.data;
             
             // Wait up to 30s for background WASM fetch to arrive
             let retries = 0;
@@ -151,7 +149,7 @@ self.onmessage = async (e: MessageEvent) => {
 
             let audioExtractor: any = null;
             try {
-                audioExtractor = new AudioExtractor(syncHandle);
+                audioExtractor = new AudioExtractor(syncHandle, buildManifest, duration);
 
                 let lastReport = 0;
                 while (true) {
@@ -167,11 +165,28 @@ self.onmessage = async (e: MessageEvent) => {
                         lastReport = progress;
                     }
                 }
-                postMessage({ type: 'AUDIO_DONE', fileName: fileName.replace(/\.[^/.]+$/, "") + ".aac" });
+
+                // Finalize the Ogg stream (writes EOS page for Opus/Vorbis, no-op for AAC/MP3)
+                const eosChunk = audioExtractor.finalize();
+                if (eosChunk.length > 0) {
+                    const ab = eosChunk.slice().buffer as ArrayBuffer;
+                    postMessage({ type: 'AUDIO_CHUNK', buffer: ab }, [ab]);
+                }
+
+                // Read extension and manifest from WASM (codec-agnostic)
+                const ext = audioExtractor.get_extension();
+                const manifest = buildManifest ? JSON.parse(audioExtractor.build_manifest()) : null;
+
+                postMessage({
+                    type: 'AUDIO_DONE',
+                    fileName: fileName.replace(/\.[^/.]+$/, "") + "." + ext,
+                    manifest,
+                });
             } catch (e: any) {
                 const reason = e?.message ?? 'unsupported format';
                 console.warn('[Worker] Audio extraction failed:', reason);
                 postMessage({ type: 'STATUS', status: `⚠️ Audio unavailable: ${reason}. Extracting slides only...` });
+                postMessage({ type: 'AUDIO_DONE', fileName: null, manifest: null });
             } finally {
                 if (audioExtractor) try { audioExtractor.free(); } catch(_) {}
                 if (syncHandle) {
@@ -203,19 +218,14 @@ self.onmessage = async (e: MessageEvent) => {
                     pendingSlideEncodes++;
                     try {
                         const ab = await blob.arrayBuffer();
-                        const startMs = Math.round(timestamp * 1000);
+                        const boundaryMs = Math.round(timestamp * 1000);
 
-                        if (pendingSlide) {
-                            self.postMessage({
-                                type: 'SLIDE',
-                                buffer: pendingSlide.buffer,
-                                timestamp: pendingSlide.timestamp,
-                                startMs: pendingSlide.startMs,
-                                endMs: startMs,
-                            }, [pendingSlide.buffer]);
-                        }
-
-                        pendingSlide = { buffer: ab, startMs, timestamp: formatTime(timestamp) };
+                        self.postMessage({
+                            type: 'SLIDE',
+                            buffer: ab,
+                            timestamp: formatTime(timestamp),
+                            startMs: boundaryMs,
+                        }, [ab]);
                     } catch (e: any) {
                         console.warn('[Worker] onSlide buffer read failed:', e.message);
                     } finally {
@@ -287,23 +297,7 @@ self.onmessage = async (e: MessageEvent) => {
                     ]);
                 }
 
-                // Flush the last buffered slide
-                if (pendingSlide) {
-                    const videoDurationMs = metrics?.videoDurationSec
-                        ? Math.round(metrics.videoDurationSec * 1000)
-                        : metrics?.lastFrameTimestamp
-                            ? Math.round(metrics.lastFrameTimestamp * 1000)
-                            : pendingSlide.startMs;
-                    
-                    self.postMessage({
-                        type: 'SLIDE',
-                        buffer: pendingSlide.buffer,
-                        timestamp: pendingSlide.timestamp,
-                        startMs: pendingSlide.startMs,
-                        endMs: videoDurationMs,
-                    }, [pendingSlide.buffer]);
-                    pendingSlide = null;
-                }
+
 
                 postMessage({ type: 'ALL_DONE', metrics });
             });

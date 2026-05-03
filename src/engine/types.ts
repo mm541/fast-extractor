@@ -15,15 +15,52 @@ import type { ExtractorError } from './errors';
 /** Audio chunk streamed from the worker (zero-copy transferred ArrayBuffer) */
 export interface AudioChunkEvent {
   type: 'audio';
-  /** Raw AAC audio data (ADTS-framed). Accumulate and wrap in Blob to play. */
+  /** Raw audio data (codec-specific framing: ADTS for AAC, self-framing for MP3, raw for Opus/Vorbis). */
   chunk: ArrayBuffer;
+}
+
+/** Per-second byte-offset manifest for S3 range-query access. */
+export interface AudioManifest {
+  /** Detected codec: "aac", "mp3", "opus", "vorbis" */
+  codec: string;
+  /** File extension: ".aac", ".mp3", ".ogg" */
+  extension: string;
+  /** MIME type: "audio/aac", "audio/mpeg", "audio/ogg; codecs=opus", etc. */
+  mime: string;
+  /** Audio sample rate in Hz */
+  sample_rate: number;
+  /** Number of audio channels */
+  channels: number;
+  /** Total audio duration in seconds */
+  duration_sec: number;
+  /** Total audio file size in bytes */
+  total_bytes: number;
+  /** Milliseconds of pre-roll needed before a seek target for clean playback */
+  pre_roll_ms: number;
+  /** Base64-encoded initialization headers required to prime the decoder. (Ogg Page 0/1 for Opus/Vorbis) */
+  init_segments?: string[];
+  /** Per-second byte offset index. byte_index[N] = byte offset at second N. */
+  byte_index: number[];
 }
 
 /** Audio extraction complete. No more audio events will be emitted. */
 export interface AudioDoneEvent {
   type: 'audio_done';
-  /** Suggested filename (e.g. "lecture.aac") */
-  fileName: string;
+  /** Suggested filename (e.g. "lecture.aac", "lecture.mp3", "lecture.ogg"). Null if extraction failed. */
+  fileName: string | null;
+  /** Per-second byte-offset manifest. Null if buildManifest was false or extraction failed. */
+  manifest?: AudioManifest | null;
+}
+
+/** Pre-ingested file reference in OPFS to bypass re-reading and permission drops. */
+export interface IngestedFile {
+  type: 'ingested_file';
+  /** The unique internal name assigned in the OPFS sandbox. */
+  opfsFileName: string;
+  /** The original file's name. */
+  originalName: string;
+  /** The total size of the file in bytes. */
+  size: number;
 }
 
 /** A slide image was detected and captured. */
@@ -35,8 +72,6 @@ export interface SlideEvent {
   timestamp: string;
   /** Start time in milliseconds (when this slide first appeared) */
   startMs: number;
-  /** End time in milliseconds (when the next slide replaced this one) */
-  endMs: number;
 }
 
 /** Progress update from the extraction engine. */
@@ -127,18 +162,44 @@ export interface FastExtractorOptions {
   densityThresholdPct?: number;
   /** Perceptual hash hamming distance for duplicate detection. Default: 10 */
   dhashDuplicateThreshold?: number;
-  /** Max dHash distance to confirm a turbo candidate as real (not a transition blend).
-   *  Lower = stricter filtering (5-8 for crossfade-heavy videos).
-   *  Higher = more permissive (12-15 for clean-cut transitions). Default: 10 */
-  confirmThreshold?: number;
+  /** 
+   * If true, enables the "Stability Gate" which buffers frames during a transition
+   * and only emits them once the video has stopped moving (driftBlocks drops).
+   * Greatly reduces mid-transition garbage frames.
+   * @default true
+   */
+  useDeferredEmit?: boolean;
   /** 64-bit bitmask: bit (row*8 + col) = 1 skips that 8×8 grid block. Default: 0n (no masking). */
   ignoreMask?: bigint;
+
+  // ─── Advanced Drift & Shake Detection ───
+  /** Cumulative drift must reach blockThreshold * this multiplier to emit a slow-transition slide. Default: 2 */
+  cumulativeDriftMultiplier?: number;
+  /** Frames of stability required before emitting on drift or partial match. Default: 2 */
+  cumulativeSettledFrames?: number;
+  /** Fraction of blockThreshold for partial match (0.0 - 1.0). Default: 0.5 */
+  partialThresholdRatio?: number;
+  /** Reset drift accumulator after this many drift frames if no trigger. Default: 30 */
+  noiseResetFrames?: number;
+  /** Reset drift only if mainChanges < blockThreshold * this ratio. Default: 0.25 */
+  noiseMainRatio?: number;
+  /** max(|ΔR|,|ΔG|,|ΔB|) to trigger color-only slide (0 = disabled). Default: 25 */
+  colorChangeThreshold?: number;
+  /** Density multiplier for camera shake confirmation (0 = disabled). Default: 3 */
+  shakeFilterStrictMultiplier?: number;
 
   // ─── Output selection ───
   /** Extract audio from the video. Default: true */
   extractAudio?: boolean;
   /** Extract slide images from the video. Default: true */
   extractSlides?: boolean;
+  /**
+   * Build a per-second byte-offset manifest during audio extraction.
+   * When true, the WASM engine tracks byte offsets at 1-second granularity,
+   * enabling S3 range-query access to arbitrary audio segments.
+   * The manifest is emitted alongside audio_done. Default: false.
+   */
+  buildManifest?: boolean;
   /** Encoded image quality of the extracted slides (0.01 - 1.0). Default: 0.8 */
   imageQuality?: number;
   /** Output format for extracted slides. Default: 'jpeg' */
@@ -146,14 +207,7 @@ export interface FastExtractorOptions {
   /** Max width of output slides (e.g. 1280 or 1920). 0 means original. Default: 0. */
   exportResolution?: number;
 
-  // ─── Storage ───
-  /**
-   * Whether to delete OPFS temp files after extraction completes.
-   * Default: true. Set to false to keep the ingested file in OPFS for
-   * re-extraction with different settings (avoids re-ingesting the same video).
-   * Call FastExtractor.cleanupStorage() explicitly when you're done.
-   */
-  cleanupAfterExtraction?: boolean;
+
 
   // ─── Debugging ───
   /**
@@ -168,12 +222,12 @@ export interface FastExtractorOptions {
 
 /** Callback-style interface as an alternative to ReadableStream consumption. */
 export interface ExtractorCallbacks {
-  /** Called for each raw AAC audio chunk. */
+  /** Called for each raw audio chunk (codec-agnostic). */
   onAudio?: (chunk: ArrayBuffer) => void;
   /** Called when audio extraction is complete. */
-  onAudioDone?: (fileName: string) => void;
+  onAudioDone?: (fileName: string | null, manifest?: AudioManifest | null) => void;
   /** Called when a new slide is detected. */
-  onSlide?: (slide: { imageBuffer: ArrayBuffer; timestamp: string; startMs: number; endMs: number }) => void;
+  onSlide?: (slide: { imageBuffer: ArrayBuffer; timestamp: string; startMs: number }) => void;
   /** Called on progress updates. */
   onProgress?: (percent: number, message: string, metrics?: ProgressEvent['metrics']) => void;
  

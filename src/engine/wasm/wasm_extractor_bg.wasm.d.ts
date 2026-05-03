@@ -2,8 +2,12 @@
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
 export const __wbg_audioextractor_free: (a: number, b: number) => void;
+export const audioextractor_build_manifest: (a: number) => [number, number];
+export const audioextractor_finalize: (a: number) => any;
+export const audioextractor_get_extension: (a: number) => [number, number];
+export const audioextractor_get_mime: (a: number) => [number, number];
 export const audioextractor_get_progress: (a: number) => number;
-export const audioextractor_new: (a: any) => [number, number, number];
+export const audioextractor_new: (a: any, b: number, c: number) => [number, number, number];
 export const audioextractor_pull_chunk: (a: number, b: number) => any;
 export const compare_frames: (a: number, b: number, c: bigint) => number;
 export const compare_prev_current: (a: number, b: number, c: bigint) => number;

@@ -42,14 +42,14 @@
  *                  (dark mode toggle, background color swap)
  *
  *   NOISE SUPPRESSION:
- *     - Blank frames (brightness < blankBrightnessThreshold) are skipped
  *     - Duplicate slides are suppressed via 64-bit dHash comparison
  *     - Cumulative drift resets after noiseResetFrames without a trigger
  *
  * TWO EXTRACTION MODES:
  *   TURBO:    Decode only keyframes (IDR). ~10-20s for a 1-hour video.
  *             One pipelined VideoDecoder (no per-frame flush — see perf warning).
- *             
+ *             Emits immediately (same as sequential). Timestamps use the
+ *             previous keyframe's time as boundary (stretch-left).
  *
  *   SEQUENTIAL: Decode EVERY frame in 300s (5-min) chunks. ~120-150s for a 1-hour video.
  *             Decoder is recycled per chunk to bound RAM.
@@ -120,6 +120,16 @@
  *   specific use case, check against savedHashes[0..N] — but be aware
  *   it becomes O(N) per frame and changes the user-facing behavior.
  *
+ * 💡 CONSIDERATION: TIMESTAMP BOUNDARY (stretch-left)
+ *   When a slide transition is detected at keyframe T, the previous keyframe
+ *   T_prev was the last confirmed sighting of the old slide. We use T_prev
+ *   as the boundary: old slide endMs = T_prev, new slide startMs = T_prev.
+ *   This "stretches left" — the new slide claims the gap between T_prev
+ *   and T. This is safe for downstream AI (Synthizer) because the AI can
+ *   visually verify the new slide's content against the transcript.
+ *   The alternative (stretching right) is dangerous: it makes the old slide
+ *   "claim" transcript that belongs to the new slide's content.
+ *
  * CONFIGURATION REFERENCE:
  *   edgeThreshold (10-100, default 30)
  *     Per-pixel luminance difference required to count as "changed".
@@ -143,9 +153,6 @@
  *     Two slides with distance ≤ this value are considered duplicates.
  *     0 = exact match only, 10 = tolerant of minor differences.
  *
- *   blankBrightnessThreshold (0-50, default 8)
- *     Average pixel brightness below which a frame is considered blank/black.
- *     Skipped entirely to avoid emitting transition frames.
  *
  *   cumulativeDriftMultiplier (1-5, default 2)
  *     Factor applied to blockThreshold for cumulative drift trigger.
@@ -183,7 +190,6 @@ export interface SlideExtractorOptions {
   minSlideDuration: number;
   dhashDuplicateThreshold: number;
   // Three-pointer drift detection
-  blankBrightnessThreshold: number;     // skip frames darker than this (0-255)
   cumulativeDriftMultiplier: number;    // cumulative drift must reach blockThreshold * this
   cumulativeSettledFrames: number;      // frames of stability before emitting on drift or partial match
   partialThresholdRatio: number;        // fraction of blockThreshold for partial match (0-1)
@@ -195,12 +201,10 @@ export interface SlideExtractorOptions {
   shakeFilterStrictMultiplier: number;  // density multiplier for shake confirmation (0=disabled)
   // Region-of-interest masking
   ignoreMask: bigint;                   // 64-bit bitmask: bit (row*8+col)=1 skips that grid block
-  // Turbo deferred-emit confirmation
-  /** Max dHash hamming distance to confirm a candidate as real (not a transition blend). Default: 10.
-   *  Lower = stricter (more transition frames filtered, but might drop fast slides).
-   *  Higher = looser (more slides captured, but more transition frames leak through). */
-  confirmThreshold: number;
   
+  // Transition Filter (Stability Gate)
+  useDeferredEmit: boolean;
+
   /** Encoded image quality (0.01 - 1.0). Default: 0.8 */
   imageQuality?: number;
   /** Output format for extracted slides. Default: 'jpeg' */
@@ -209,6 +213,7 @@ export interface SlideExtractorOptions {
   exportResolution?: number;
 
   onProgress: (percent: number, message: string, metrics?: ExtractionMetrics) => void;
+  /** @param timestamp - exact timestamp (seconds) of the frame that triggered the slide */
   onSlide: (blob: Blob, timestamp: number) => void;
 }
 
@@ -230,7 +235,6 @@ export const DEFAULT_OPTIONS: SlideExtractorOptions = {
   edgeThreshold: 30, blockThreshold: 8, densityThresholdPct: 4,
   minSlideDuration: 3, dhashDuplicateThreshold: 4,
   // Three-pointer defaults
-  blankBrightnessThreshold: 8,
   cumulativeDriftMultiplier: 2,
   cumulativeSettledFrames: 2,
   partialThresholdRatio: 0.5,
@@ -242,8 +246,7 @@ export const DEFAULT_OPTIONS: SlideExtractorOptions = {
   shakeFilterStrictMultiplier: 3,
   // Grid masking: 0n = compare all 64 blocks (no masking)
   ignoreMask: 0n,
-  // Turbo confirmation: 10 = moderate strictness
-  confirmThreshold: 10,
+  useDeferredEmit: true,
   onProgress: () => {}, onSlide: () => {},
 };
 
@@ -283,6 +286,12 @@ export class SlideExtractor {
   private savedHashes: bigint[] = [];
   private lastSlideTime = -10;
 
+  private pendingCandidate: {
+    bitmap: ImageBitmap;
+    timestamp: number;
+    colorSig: [number, number, number];
+  } | null = null;
+
   private compareCanvas: OffscreenCanvas | null = null;
   private compareCtx: OffscreenCanvasRenderingContext2D | null = null;
   private exportCanvas: OffscreenCanvas | null = null;
@@ -294,6 +303,7 @@ export class SlideExtractor {
   private cumulativeDrift = 0;   // accumulated block changes (Prev vs B)
   private driftFrames = 0;       // how many frames contributed drift
   private staticCount = 0;       // consecutive frames with zero drift
+  private driftStartTime = 0;    // timestamp when the current drift sequence started
 
   // Adaptive noise floor — calibrates blockThreshold from video noise level
   private noiseFloor = 0;
@@ -302,10 +312,6 @@ export class SlideExtractor {
 
   // Color-aware detection — tracks average RGB to detect color-only changes
   private prevColorSig: [number, number, number] | null = null;
-
-
-  // Turbo deferred-emit: buffers one candidate to filter transition frames
-  private pendingCandidate: { bitmap: ImageBitmap; timestamp: number; hash: bigint } | null = null;
 
   // Chunk-fed decoder state
   private decoder: VideoDecoder | null = null;
@@ -364,8 +370,6 @@ export class SlideExtractor {
     this.hasBaseline = false;
     this.savedHashes = [];
     this.lastEmitPromise = Promise.resolve();
-    if (this.pendingCandidate) { this.pendingCandidate.bitmap.close(); }
-    this.pendingCandidate = null;
     this.lastSlideTime = -10;
     this.needsKeyframe = true;
     this.nextCaptureTime = 0;
@@ -494,13 +498,33 @@ export class SlideExtractor {
     }
     this.decoder = null;
 
-    // Flush last buffered candidate (turbo deferred-emit)
-    // MUST await here — fire-and-forget would race against worker termination.
-    const lc = this.pendingCandidate as { bitmap: ImageBitmap; timestamp: number; hash: bigint } | null;
-    if (lc) {
-      this.savedHashes.push(lc.hash);
-      await this.emitBitmapAsync(lc.bitmap, lc.timestamp);
+    // Flush the last buffered candidate from deferred emit.
+    // With useDeferredEmit, the final detected slide sits in pendingCandidate
+    // waiting for the next frame to confirm it settled. But there IS no next
+    // frame — the video ended. Emit it unconditionally: the candidate already
+    // passed all detection gates (threshold, shake filter, color delta) before
+    // being buffered. No dHash check here — WASM buffer B contains the last
+    // processed frame, not the candidate's frame data.
+    if (this.pendingCandidate) {
+      this.emitBitmap(this.pendingCandidate.bitmap, this.pendingCandidate.timestamp);
       this.pendingCandidate = null;
+    } else if (this.exportCanvas && this.metrics.lastFrameTimestamp !== undefined) {
+      // If the video ended in the middle of a slow drawing transition, it never reached the 
+      // staticCount required to trigger Condition 2 or 3.
+      // We check if the final frame (Buffer B) is meaningfully different from the last emitted slide (Buffer A).
+      const mainChanges = this.wasm.compare_frames(
+        this.options.edgeThreshold, 
+        this.options.densityThresholdPct, 
+        this.options.ignoreMask
+      );
+      
+      const partialThreshold = Math.floor(this.getEffectiveBlockThreshold() * this.options.partialThresholdRatio);
+      
+      if (mainChanges >= partialThreshold) {
+        // Emit the final state of the video
+        const emitTs = this.cumulativeDrift > 0 ? this.driftStartTime : this.metrics.lastFrameTimestamp;
+        this.emitBitmap(this.captureCanvasBitmap(), emitTs);
+      }
     }
 
     // Await all queued background encodes to prevent dropping slides
@@ -611,27 +635,6 @@ export class SlideExtractor {
     // Step 3: Convert RGBA → grayscale for block comparison
     this.convertRgbaToGray();
 
-    // Edge case: Skip near-black/blank frames (transitions, fades)
-    const brightness = this.wasm.get_avg_brightness();
-    if (brightness < this.options.blankBrightnessThreshold) return;
-
-    // Turbo deferred-emit: confirm or discard the pending candidate
-    // by checking if the current frame is similar (real slide persisted)
-    // or different (candidate was a transition frame).
-    if (this.options.mode === 'turbo' && this.pendingCandidate) {
-      const currentHash = this.wasm.compute_dhash(true);
-      const dist = SlideExtractor.hammingDistance(this.pendingCandidate.hash, currentHash);
-      if (dist <= this.options.confirmThreshold) {
-        // Next frame is similar → candidate was a real slide, emit it
-        this.savedHashes.push(this.pendingCandidate.hash);
-        this.emitBitmap(this.pendingCandidate.bitmap, this.pendingCandidate.timestamp);
-      } else {
-        // Next frame is different → candidate was a transition frame, discard
-        this.pendingCandidate.bitmap.close();
-      }
-      this.pendingCandidate = null;
-    }
-
     if (!this.hasBaseline) {
       this.copyBufferBToA();
       this.savedHashes.push(this.wasm.compute_dhash(true));
@@ -653,6 +656,31 @@ export class SlideExtractor {
     // Pointer 2→3: Previous (Prev) vs Current (B) — consecutive drift
     const driftBlocks = this.wasm.compare_prev_current(edgeThreshold, densityThresholdPct, mask);
 
+    // --- Transition Filter (Deferred Emit) ---
+    let candidateConfirmedThisFrame = false;
+    if (this.options.useDeferredEmit && this.pendingCandidate) {
+      const allowedDrift = Math.max(this.noiseFloor * 2, Math.floor(blockThreshold * 0.3));
+      
+      if (driftBlocks <= allowedDrift) {
+        // SETTLED! The slide has stopped moving.
+        // We emit the CURRENT frame (which is clean and settled) but use the
+        // timestamp from when the transition was first detected (pendingCandidate.timestamp)
+        // so the timeline boundary aligns with the start of the slide.
+        this.emitBitmap(this.captureCanvasBitmap(), this.pendingCandidate.timestamp);
+        this.copyBufferBToA(); // Current frame is the new Baseline
+        this.lastSlideTime = this.pendingCandidate.timestamp;
+        
+        this.pendingCandidate.bitmap.close();
+        this.pendingCandidate = null;
+        
+        // Reset drift metrics because a transition just finished
+        this.cumulativeDrift = 0;
+        this.driftFrames = 0;
+        this.staticCount = 0;
+        candidateConfirmedThisFrame = true;
+      }
+    }
+
     // --- Adaptive Noise Floor Calibration ---
     // Collect drift samples during the first 10 frames where content is stable
     // (drift > 0 but no big change = codec noise, not a real transition)
@@ -668,7 +696,11 @@ export class SlideExtractor {
     }
 
     // Track cumulative drift
-    if (driftBlocks > 0) {
+    const staticDriftLimit = Math.max(this.noiseFloor * 2, Math.floor(blockThreshold * 0.1));
+    if (driftBlocks > staticDriftLimit) {
+      if (this.cumulativeDrift === 0) {
+        this.driftStartTime = timestamp;
+      }
       this.cumulativeDrift += driftBlocks;
       this.driftFrames++;
       this.staticCount = 0;
@@ -691,77 +723,97 @@ export class SlideExtractor {
     const timeSinceLastSlide = timestamp - this.lastSlideTime;
     const minTime = this.options.minSlideDuration;
 
-    if (timeSinceLastSlide < minTime) return;
+    if (timeSinceLastSlide < minTime) {
+      // If we are still cooling down, do not trigger new slides.
+      return;
+    }
 
     let shouldEmit = false;
+    let emitInstantly = false;
+    let emitTimestamp = timestamp;
 
-    // Condition 1: Direct threshold — A vs B shows big change
-    if (mainChanges >= blockThreshold) {
-      // --- Camera Shake Filter ---
-      // If the change is diffuse (all blocks changed a little), it's shake, not a slide.
-      // Confirm with a stricter density check: if few blocks pass 3× density, it's shake.
-      if (this.options.shakeFilterStrictMultiplier > 0) {
-        const strictDensity = Math.min(densityThresholdPct * this.options.shakeFilterStrictMultiplier, 100);
-        const strictChanges = this.wasm.compare_frames(edgeThreshold, strictDensity, mask);
-        if (strictChanges >= blockThreshold * 0.3) {
-          // Concentrated change → real slide transition
+    if (!candidateConfirmedThisFrame && !this.pendingCandidate) {
+      // Condition 1: Direct threshold — A vs B shows big change
+      if (mainChanges >= blockThreshold) {
+        // --- Camera Shake Filter ---
+        // If the change is diffuse (all blocks changed a little), it's shake, not a slide.
+        // Confirm with a stricter density check: if few blocks pass 3× density, it's shake.
+        if (this.options.shakeFilterStrictMultiplier > 0) {
+          const strictDensity = Math.min(densityThresholdPct * this.options.shakeFilterStrictMultiplier, 100);
+          const strictChanges = this.wasm.compare_frames(edgeThreshold, strictDensity, mask);
+          if (strictChanges >= blockThreshold * 0.3) {
+            // Concentrated change → real slide transition
+            shouldEmit = true;
+          }
+          // else: diffuse change → camera shake, suppress
+        } else {
           shouldEmit = true;
         }
-        // else: diffuse change → camera shake, suppress
-      } else {
+      }
+
+      // Condition 2: Cumulative drift — small changes piled up AND content settled
+      if (
+        !shouldEmit &&
+        this.cumulativeDrift >= blockThreshold * this.options.cumulativeDriftMultiplier &&
+        this.staticCount >= this.options.cumulativeSettledFrames
+      ) {
+        shouldEmit = true;
+        emitInstantly = true;
+        emitTimestamp = this.driftStartTime;
+      }
+
+      // Condition 3: Partial main + partial drift — combined signal
+      if (
+        !shouldEmit &&
+        mainChanges >= Math.floor(blockThreshold * this.options.partialThresholdRatio) &&
+        this.cumulativeDrift >= blockThreshold &&
+        this.staticCount >= this.options.cumulativeSettledFrames
+      ) {
+        shouldEmit = true;
+        emitInstantly = true;
+        emitTimestamp = this.driftStartTime;
+      }
+
+      // Condition 4: Color-only change — grayscale missed it but color shifted significantly
+      // Note: color signature is computed over the ENTIRE frame (not per-block), so it
+      // does not respect the grid mask. Skip this condition if all blocks are masked.
+      if (
+        !shouldEmit &&
+        mask !== 0xFFFFFFFFFFFFFFFFn &&
+        colorDelta >= this.options.colorChangeThreshold
+      ) {
         shouldEmit = true;
       }
-    }
-    // Condition 2: Cumulative drift — small changes piled up AND content settled
-    else if (
-      this.cumulativeDrift >= blockThreshold * this.options.cumulativeDriftMultiplier &&
-      this.staticCount >= this.options.cumulativeSettledFrames
-    ) {
-      shouldEmit = true;
-    }
-    // Condition 3: Partial main + partial drift — combined signal
-    else if (
-      mainChanges >= Math.floor(blockThreshold * this.options.partialThresholdRatio) &&
-      this.cumulativeDrift >= blockThreshold &&
-      this.staticCount >= this.options.cumulativeSettledFrames
-    ) {
-      shouldEmit = true;
-    }
-    // Condition 4: Color-only change — grayscale missed it but color shifted significantly
-    // Note: color signature is computed over the ENTIRE frame (not per-block), so it
-    // does not respect the grid mask. Skip this condition if all blocks are masked.
-    else if (
-      mask !== 0xFFFFFFFFFFFFFFFFn &&
-      colorDelta >= this.options.colorChangeThreshold
-    ) {
-      shouldEmit = true;
-    }
+    } // End of !candidateConfirmedThisFrame
 
     if (shouldEmit) {
-      const dhash = this.wasm.compute_dhash(true);
-      if (!this.isDuplicate(dhash)) {
-        if (this.options.mode === 'turbo') {
-          // Turbo: defer emit — buffer as candidate for confirmation on next keyframe.
-          // Transition frames (crossfades, dissolves) will be discarded when the
-          // next frame doesn't match. Real slides persist across keyframes.
-          const bitmap = this.captureCanvasBitmap();
-          if (this.pendingCandidate) this.pendingCandidate.bitmap.close();
-          this.pendingCandidate = { bitmap, timestamp, hash: dhash };
-        } else {
-          // Accurate: emit immediately (has frame-level temporal resolution)
-          this.savedHashes.push(dhash);
-          this.emitSlideFromCanvas(timestamp);
+      if (this.options.useDeferredEmit && !emitInstantly) {
+        // Buffer the frame as a candidate instead of emitting instantly
+        if (this.pendingCandidate) {
+          this.pendingCandidate.bitmap.close(); // Clean up old candidate
         }
-        this.copyBufferBToA();
-        this.lastSlideTime = timestamp;
+        this.pendingCandidate = {
+          bitmap: this.captureCanvasBitmap(),
+          timestamp: emitTimestamp,
+          colorSig: colorSig
+        };
+      } else {
+        // Instant Emit Mode (Fallback or Bypassed Cumulative Drift)
+        const dhash = this.wasm.compute_dhash(true);
+        if (!this.isDuplicate(dhash)) {
+          this.savedHashes.push(dhash);
+          this.emitSlideFromCanvas(emitTimestamp);
+          this.copyBufferBToA();
+          this.lastSlideTime = emitTimestamp;
+        }
+        this.cumulativeDrift = 0;
+        this.driftFrames = 0;
+        this.staticCount = 0;
       }
-      // Reset drift regardless (baseline updated or duplicate skipped)
-      this.cumulativeDrift = 0;
-      this.driftFrames = 0;
-      this.staticCount = 0;
     }
     // Reset drift if too long without trigger (prevents webcam noise buildup)
     else if (
+      !candidateConfirmedThisFrame &&
       this.driftFrames > this.options.noiseResetFrames &&
       mainChanges < Math.floor(blockThreshold * this.options.noiseMainRatio)
     ) {
@@ -775,9 +827,6 @@ export class SlideExtractor {
   // Comparison canvas: small for fast WASM processing
   private static readonly CMP_W = 424;
   private static readonly CMP_H = 240;
-
-  // Deferred-emit: max hamming distance to confirm a candidate is real (not a transition blend)
-  // Now configurable via options.confirmThreshold (default: 10)
 
   /**
    * Copy VideoFrame pixels into the WASM RGBA buffer.
@@ -867,15 +916,7 @@ export class SlideExtractor {
     });
   }
 
-  /**
-   * Awaitable version of emitBitmap — used ONLY for the final candidate flush
-   * at extraction end. Enqueues the final candidate and returns the promise
-   * for the entire chain.
-   */
-  private emitBitmapAsync(bitmap: ImageBitmap, timestamp: number): Promise<void> {
-    this.emitBitmap(bitmap, timestamp);
-    return this.lastEmitPromise;
-  }
+
 
   private async renderBitmapToBlob(bitmap: ImageBitmap): Promise<Blob> {
     const w = bitmap.width, h = bitmap.height;

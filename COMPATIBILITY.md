@@ -18,8 +18,9 @@ To run the extraction engine, the browser MUST support:
 | **Chrome** / Edge | Windows, Mac, Linux | ✅ Fully Supported | Chrome 102+ required for OPFS SyncAccessHandle. |
 | **Chrome for Android** | Android | ✅ Fully Supported | Works perfectly on Chrome 102+. Automatically degrades to `turbo` mode on devices with $\le$ 4GB RAM to prevent Out-Of-Memory (OOM) crashes. |
 | **Brave / Vivaldi** | Desktop, Android | ✅ Fully Supported | Same as Chrome. |
-| **Safari** | macOS | ❌ Unsupported | Apple has not implemented OPFS `FileSystemSyncAccessHandle` for synchronous reading. |
-| **Safari / WebKit** | iOS, iPadOS | ❌ Unsupported | iOS does not support WebCodecs or OPFS synchronous access. |
+| **Safari 16.4+** | macOS | ⚠️ Expected to work (untested) | Safari 16.4+ has WebCodecs, OPFS SyncAccessHandle, and OffscreenCanvas. Should work but has not been field-tested. |
+| **Safari 16.4+** | iOS, iPadOS | ⚠️ Expected to work (untested) | API support present since Safari 16.4. Not field-tested — iOS memory constraints may affect long videos. |
+| **Safari < 16.4** | macOS / iOS | ❌ Unsupported | Missing WebCodecs and/or OPFS SyncAccessHandle. |
 | **Firefox** | Windows, Mac, Linux | ✅ Fully Supported | Firefox 130+ enabled WebCodecs by default. Requires OPFS support. |
 
 ### 🔍 Feature Detection
@@ -46,11 +47,11 @@ Fast-Extractor relies on **WebCodecs (`VideoDecoder`)** to decode frames and **w
 *   **Resolution & Framerate:** Any (up to 4K / 60fps). WebCodecs will leverage GPU acceleration.
 
 ### Audio Formats
-Audio extraction is handled via the `Symphonia` Rust crate compiled to WASM. To maintain an extremely small WASM footprint, audio decoding is restricted.
+Audio extraction is handled via the `Symphonia` Rust crate compiled to WASM.
 
-*   **Supported Audio Codec:** `AAC` ONLY.
-*   **Behavior:** The engine demuxes the AAC track and streams out raw ADTS packets. It does not re-encode.
-*   **What if it's not AAC?** (e.g., WebM with `Opus` or `Vorbis`, or an MP4 with `MP3`):
+*   **Supported Audio Codecs:** `AAC`, `MP3`, `Opus`, `Vorbis`.
+*   **Behavior:** The engine demuxes the audio track and streams out raw codec packets (ADTS for AAC, self-framing for MP3, raw for Opus/Vorbis). No re-encoding is performed.
+*   **What if the codec is unsupported?**
     *   Audio extraction will gracefully fail.
     *   A `warning` progress event is emitted: `⚠️ Audio unavailable: unsupported format. Extracting slides only...`
     *   The video slide extraction **continues uninterrupted.**
@@ -76,7 +77,7 @@ Mobile devices have aggressive memory management and background-task throttling.
 *   **Quotas:** OPFS counts towards the browser's origin storage quota. If the disk is nearly full, ingestion will fail with a `QuotaExceededError`.
 *   **File Lifespans:** Temporary files are aggressively cleaned up:
     *   On startup, stale files from previously crashed tabs are wiped.
-    *   On success, the ingested video is deleted (unless configured with `cleanupAfterExtraction: false`).
+    *   On reset/new extraction, all temporary OPFS files are deleted. Call `FastExtractor.cleanupStorage()` to manually trigger cleanup.
 
 ---
 
@@ -84,6 +85,8 @@ Mobile devices have aggressive memory management and background-task throttling.
 
 | Component | Architecture Limitation | Why it's designed this way |
 | :--- | :--- | :--- |
-| **WASM Memory** | 100MB Fixed Arena | No garbage collection (GC) pauses. Arrays are pre-allocated. Prevents memory ballooning during heavy seeking. |
-| **Frame Resizing**| Fixed 427x240 compute grid | Fast perceptual hashing and edge detection. Pixel-perfect 4K comparison is too slow and produces false-positives for noise/compression artifacts. |
+| **WASM Memory** | 894KB Static Arena (`UnsafeCell`) | No garbage collection (GC) pauses. Buffers are pre-allocated once at init. Zero per-frame allocations. |
+| **Frame Resizing**| Fixed 424×240 compute grid | Fast perceptual hashing and edge detection. Pixel-perfect 4K comparison is too slow and produces false-positives from noise/compression artifacts. |
 | **Turbo Mode** | Reads Demuxer Keyframes | Hardware decoders hate reverse-seeking. Turbo mode only feeds keyframes to WebCodecs, skipping P/B-frames entirely, resulting in $\approx$ 10x speedup. |
+| **Audio Extraction** | Symphonia (Rust/WASM) over OPFS `SyncAccessHandle` | Reads the ingested file via synchronous random-access in the Worker. Pulls raw codec packets (AAC/MP3/Opus/Vorbis) in 1MB chunks — zero re-encoding, zero main-thread blocking. |
+| **Audio Manifest** | Per-second byte-offset index | Enables S3-style HTTP Range queries for arbitrary seek-to-second. Built during extraction with zero extra passes over the file. |

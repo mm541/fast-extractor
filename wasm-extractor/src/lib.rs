@@ -58,7 +58,7 @@ use wasm_bindgen::prelude::*;
 use symphonia::core::formats::FormatReader;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::probe::Hint;
-use symphonia::core::codecs::CODEC_TYPE_AAC;
+use symphonia::core::codecs::{CODEC_TYPE_AAC, CODEC_TYPE_MP3, CODEC_TYPE_VORBIS, CODEC_TYPE_OPUS};
 
 // ════════════════════════════════════════════════
 // 1. JS OPFS BINDINGS
@@ -366,35 +366,243 @@ pub fn compute_color_signature() -> u64 {
 
 
 // ════════════════════════════════════════════════
-// 3. AUDIO EXTRACTOR (Symphonia based)
+// 3. AUDIO EXTRACTOR (Symphonia-based, multi-codec)
 // ════════════════════════════════════════════════
-// ... Same AudioExtractor implementation as before ...
+//
+// Supported codecs (priority order during probing):
+//   1. AAC  — packets framed with 7-byte ADTS headers
+//   2. MP3  — self-framing, direct passthrough
+//   3. Opus — raw packets (Ogg muxing deferred to Phase 2)
+//   4. Vorbis — raw packets (Ogg muxing deferred to Phase 2)
+//
+// ── MANIFEST (optional) ──────────────────────────────────────────────
+//
+//   When `build_manifest=true`, a per-second byte-offset index is built
+//   during extraction. Memory cost: ceil(duration) × 8 bytes (~29KB/hr).
+//   The index is never allocated when disabled (Option::None).
+//
+// ── HARDWARE SYMPATHY ────────────────────────────────────────────────
+//
+//   • SharedPosReader reuses a single 64KB Uint8Array + cached JS Object/key
+//   • pull_chunk() reuses a pre-capacity Vec<u8> (no per-call allocation)
+//   • Codec dispatch is a match on a fieldless enum (compiles to a jump table)
+//   • Manifest JSON is hand-serialized via format!() — no serde dependency
+//
+
+/// Detected audio codec — used for branchless dispatch in the hot loop.
+/// Fieldless variants keep the match cheap (single integer compare).
+#[derive(PartialEq)]
+enum AudioCodec {
+    Aac,
+    Mp3,
+    Opus,
+    Vorbis,
+}
+
+/// Codec priority for probing: AAC > MP3 > Opus > Vorbis.
+/// First match wins. This matches real-world frequency of lecture videos.
+const SUPPORTED_CODECS: &[symphonia::core::codecs::CodecType] = &[
+    CODEC_TYPE_AAC,
+    CODEC_TYPE_MP3,
+    CODEC_TYPE_OPUS,
+    CODEC_TYPE_VORBIS,
+];
+
+// ── ZERO-ALLOCATION OGG MUXER & UTILS ────────────────────────────────
+
+const fn build_ogg_crc_table() -> [u32; 256] {
+    let mut table = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut r = (i as u32) << 24;
+        let mut j = 0;
+        while j < 8 {
+            if (r & 0x8000_0000) != 0 {
+                r = (r << 1) ^ 0x04C11DB7;
+            } else {
+                r <<= 1;
+            }
+            j += 1;
+        }
+        table[i] = r;
+        i += 1;
+    }
+    table
+}
+
+const OGG_CRC_TABLE: [u32; 256] = build_ogg_crc_table();
+
+fn ogg_crc(data: &[u8]) -> u32 {
+    let mut crc = 0u32;
+    for &b in data {
+        let idx = ((crc >> 24) ^ (b as u32)) & 0xFF;
+        crc = (crc << 8) ^ OGG_CRC_TABLE[idx as usize];
+    }
+    crc
+}
+
+const BASE64_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn base64_encode(input: &[u8]) -> String {
+    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    let mut chunks = input.chunks_exact(3);
+    for chunk in &mut chunks {
+        let n = (chunk[0] as u32) << 16 | (chunk[1] as u32) << 8 | (chunk[2] as u32);
+        out.push(BASE64_ALPHABET[(n >> 18) as usize] as char);
+        out.push(BASE64_ALPHABET[((n >> 12) & 0x3F) as usize] as char);
+        out.push(BASE64_ALPHABET[((n >> 6) & 0x3F) as usize] as char);
+        out.push(BASE64_ALPHABET[(n & 0x3F) as usize] as char);
+    }
+    let rem = chunks.remainder();
+    if rem.len() == 1 {
+        let n = (rem[0] as u32) << 16;
+        out.push(BASE64_ALPHABET[(n >> 18) as usize] as char);
+        out.push(BASE64_ALPHABET[((n >> 12) & 0x3F) as usize] as char);
+        out.push_str("==");
+    } else if rem.len() == 2 {
+        let n = (rem[0] as u32) << 16 | (rem[1] as u32) << 8;
+        out.push(BASE64_ALPHABET[(n >> 18) as usize] as char);
+        out.push(BASE64_ALPHABET[((n >> 12) & 0x3F) as usize] as char);
+        out.push(BASE64_ALPHABET[((n >> 6) & 0x3F) as usize] as char);
+        out.push('=');
+    }
+    out
+}
+
+/// Max payload per Ogg page: 255 segments × 255 bytes = 65,025 bytes.
+const OGG_MAX_PAGE_PAYLOAD: usize = 255 * 255;
+
+/// Write one or more Ogg pages for a single packet.
+/// Handles continuation pages automatically if payload > 65,025 bytes.
+fn write_ogg_page(
+    buf: &mut Vec<u8>,
+    payload: &[u8],
+    granule_pos: u64,
+    serial: u32,
+    page_seq: &mut u32,
+    is_bos: bool,
+    is_eos: bool,
+) {
+    let mut offset = 0;
+    let total = payload.len();
+    let page_count = if total == 0 { 1 } else { (total + OGG_MAX_PAGE_PAYLOAD - 1) / OGG_MAX_PAGE_PAYLOAD };
+
+    for page_idx in 0..page_count {
+        let is_first_page = page_idx == 0;
+        let is_last_page = page_idx == page_count - 1;
+        let chunk_end = std::cmp::min(offset + OGG_MAX_PAGE_PAYLOAD, total);
+        let chunk = &payload[offset..chunk_end];
+
+        let header_start = buf.len();
+
+        // Header type flags: BOS, EOS, and continuation
+        let mut header_type: u8 = 0x00;
+        if is_bos && is_first_page { header_type |= 0x02; }
+        if is_eos && is_last_page { header_type |= 0x04; }
+        if !is_first_page { header_type |= 0x01; } // continuation
+
+        // Only the last page of a multi-page packet carries the real granule_pos.
+        // Earlier continuation pages use granule_pos = -1 (0xFFFFFFFFFFFFFFFF).
+        let page_granule = if is_last_page { granule_pos } else { u64::MAX };
+
+        buf.extend_from_slice(b"OggS");     // capture pattern
+        buf.push(0);                         // stream structure version
+        buf.push(header_type);               // header type flag
+        buf.extend_from_slice(&page_granule.to_le_bytes()); // granule position
+        buf.extend_from_slice(&serial.to_le_bytes());       // bitstream serial
+        buf.extend_from_slice(&page_seq.to_le_bytes());     // page sequence number
+
+        let checksum_pos = buf.len();
+        buf.extend_from_slice(&[0, 0, 0, 0]); // CRC32 placeholder
+
+        // Segment table: each segment is max 255 bytes.
+        // A packet boundary is signaled by a segment < 255.
+        // If chunk.len() is an exact multiple of 255, we append a trailing 0 segment.
+        let full_segments = chunk.len() / 255;
+        let remainder = chunk.len() % 255;
+        let num_segments = if chunk.len() == 0 {
+            1  // empty packet still needs one 0-length segment
+        } else if remainder == 0 && is_last_page {
+            full_segments + 1  // trailing 0 to close the packet
+        } else if remainder == 0 {
+            full_segments  // continuation: no trailing 0
+        } else {
+            full_segments + 1  // partial final segment
+        };
+        buf.push(num_segments as u8);
+
+        for i in 0..num_segments {
+            if i < full_segments {
+                buf.push(255);
+            } else {
+                buf.push(remainder as u8);
+            }
+        }
+
+        buf.extend_from_slice(chunk);
+
+        // Backpatch CRC32
+        let crc = ogg_crc(&buf[header_start..]);
+        buf[checksum_pos..checksum_pos + 4].copy_from_slice(&crc.to_le_bytes());
+
+        *page_seq += 1;
+        offset = chunk_end;
+    }
+}
 
 #[wasm_bindgen]
 pub struct AudioExtractor {
     reader: Box<dyn FormatReader>,
     track_id: u32,
-    sample_rate_idx: u8,
+    codec: AudioCodec,
+    sample_rate: u32,
     channels: u8,
+    time_base_numer: u32,
+    time_base_denom: u32,
+    // AAC-specific: ADTS sample rate index (only meaningful for AAC)
+    aac_sr_idx: u8,
+    // OPFS position tracking (shared with SharedPosReader)
     pos_ref: std::sync::Arc<std::sync::atomic::AtomicU64>,
     total_size: u64,
+    // ── Manifest state (all zero-cost when None) ──
+    bytes_written: u64,
+    byte_index: Option<Vec<u64>>,
+    last_indexed_sec: usize,
+    init_segments: Vec<String>,
+    // Ogg Muxer state
+    ogg_page_seq: u32,
+    last_granule_pos: u64,
+    first_chunk: bool,
+    // Pre-allocated reusable buffer for chunks to avoid per-call allocations
+    chunk_buffer: Vec<u8>,
+    // Pre-allocated reusable buffer for building the manifest JSON string
+    manifest_buffer: String,
 }
 
 #[wasm_bindgen]
 impl AudioExtractor {
+    /// Create a new AudioExtractor from an OPFS SyncAccessHandle.
+    ///
+    /// # Arguments
+    /// * `handle` — OPFS SyncAccessHandle for zero-copy reads
+    /// * `build_manifest` — if true, preallocate per-second byte index
+    /// * `duration_sec` — total video duration in seconds (for index preallocation)
     #[wasm_bindgen(constructor)]
-    pub fn new(handle: SyncHandle) -> Result<AudioExtractor, JsValue> {
+    pub fn new(handle: SyncHandle, build_manifest: bool, duration_sec: f64) -> Result<AudioExtractor, JsValue> {
         console_error_panic_hook::set_once();
         let total_size = handle.get_size() as u64;
         let pos_ref = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let reader_pos = pos_ref.clone();
         
+        // ── SharedPosReader (unchanged — preserves zero-alloc invariants) ──
+        // Reuses a single 64KB Uint8Array scratch buffer and a cached JS
+        // Object + "at" key across all reads to avoid per-read JS allocations.
         struct SharedPosReader {
             handle: SyncHandle,
             pos: std::sync::Arc<std::sync::atomic::AtomicU64>,
             scratch: Uint8Array,
-            options: Object,    // reused across reads — avoids per-read JS allocation
-            at_key: JsValue,    // cached "at" string — avoids per-read interning
+            options: Object,
+            at_key: JsValue,
         }
         
         impl Read for SharedPosReader {
@@ -437,52 +645,349 @@ impl AudioExtractor {
         let scratch = Uint8Array::new_with_length(65536);
         let options = Object::new();
         let at_key: JsValue = "at".into();
-        let mss = MediaSourceStream::new(Box::new(SharedPosReader { handle, pos: reader_pos, scratch, options, at_key }), Default::default());
+        let mss = MediaSourceStream::new(
+            Box::new(SharedPosReader { handle, pos: reader_pos, scratch, options, at_key }),
+            Default::default(),
+        );
         let probed = symphonia::default::get_probe()
             .format(&Hint::new(), mss, &Default::default(), &Default::default())
             .map_err(|_| JsValue::from_str("Failed to parse media format"))?;
 
         let reader = probed.format;
+
+        // ── Dynamic codec probing ──
+        // Search tracks in priority order: AAC > MP3 > Opus > Vorbis
         let track = reader.tracks().iter()
-            .find(|t| t.codec_params.codec == CODEC_TYPE_AAC)
-            .ok_or_else(|| JsValue::from_str("No AAC track found"))?;
+            .find(|t| SUPPORTED_CODECS.contains(&t.codec_params.codec))
+            .ok_or_else(|| JsValue::from_str("No supported audio track (AAC/MP3/Opus/Vorbis)"))?;
 
         let track_id = track.id;
         let sample_rate = track.codec_params.sample_rate.unwrap_or(44100);
         let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(2) as u8;
         
-        let sample_rate_idx = match sample_rate {
-            96000 => 0, 88200 => 1, 64000 => 2, 48000 => 3, 44100 => 4,
-            32000 => 5, 24000 => 6, 22050 => 7, 16000 => 8, 12000 => 9,
-            11025 => 10, 8000 => 11, _ => 4,
+        // Extract time base for accurate absolute timestamps (fallback to 1/sample_rate)
+        let (tb_numer, tb_denom) = match track.codec_params.time_base {
+            Some(tb) => (tb.numer, tb.denom),
+            None => (1, sample_rate),
         };
 
-        Ok(AudioExtractor { reader, track_id, sample_rate_idx, channels, pos_ref, total_size })
+        let (codec, aac_sr_idx) = match track.codec_params.codec {
+            CODEC_TYPE_AAC => {
+                let sr_idx = match sample_rate {
+                    96000 => 0, 88200 => 1, 64000 => 2, 48000 => 3, 44100 => 4,
+                    32000 => 5, 24000 => 6, 22050 => 7, 16000 => 8, 12000 => 9,
+                    11025 => 10, 8000 => 11, _ => 4,
+                };
+                (AudioCodec::Aac, sr_idx)
+            }
+            CODEC_TYPE_MP3 => (AudioCodec::Mp3, 0),
+            CODEC_TYPE_OPUS => (AudioCodec::Opus, 0),
+            CODEC_TYPE_VORBIS => (AudioCodec::Vorbis, 0),
+            _ => return Err(JsValue::from_str("Unsupported codec")),
+        };
+
+        // ── Manifest preallocation (zero-cost when disabled) ──
+        // If duration is known, preallocate exactly. If unknown (0), start with
+        // a small vec that grows as we extract. Never allocated when disabled.
+        let byte_index = if build_manifest {
+            let cap = if duration_sec > 0.0 {
+                (duration_sec.ceil() as usize) + 1
+            } else {
+                64 // sensible starting capacity for unknown duration
+            };
+            Some(vec![0u64; cap])
+        } else {
+            None
+        };
+
+        // Smart capacity allocation for the manifest string.
+        // NOTE: We calculate this AFTER init_segments are built (below)
+        // so we can account for their exact Base64 size in the budget.
+
+        let mut chunk_buffer = Vec::with_capacity(1024 * 1024);
+        let mut ogg_page_seq = 0;
+        let mut init_segments = Vec::new();
+
+        // If Opus or Vorbis, we must synthesize the setup Ogg Pages (Page 0 and Page 1)
+        // directly into the chunk buffer so the final .ogg file is locally playable.
+        // We also base64-encode these headers for the manifest for S3 custom players.
+        if codec == AudioCodec::Opus {
+            if let Some(extra) = &track.codec_params.extra_data {
+                write_ogg_page(&mut chunk_buffer, extra, 0, track_id, &mut ogg_page_seq, true, false);
+                init_segments.push(base64_encode(extra));
+                
+                // Synthesize OpusTags
+                let mut tags = Vec::new();
+                tags.extend_from_slice(b"OpusTags");
+                tags.extend_from_slice(&[9, 0, 0, 0]); // vendor length
+                tags.extend_from_slice(b"Symphonia");
+                tags.extend_from_slice(&[0, 0, 0, 0]); // comments length
+                
+                write_ogg_page(&mut chunk_buffer, &tags, 0, track_id, &mut ogg_page_seq, false, false);
+                init_segments.push(base64_encode(&tags));
+            }
+        } else if codec == AudioCodec::Vorbis {
+            if let Some(extra) = &track.codec_params.extra_data {
+                // Parse Xiph lacing for Vorbis headers
+                if extra.len() > 0 && extra[0] == 2 {
+                    let mut offset = 1;
+                    let mut len1 = 0;
+                    while offset < extra.len() {
+                        let b = extra[offset]; offset += 1; len1 += b as usize;
+                        if b < 255 { break; }
+                    }
+                    let mut len2 = 0;
+                    while offset < extra.len() {
+                        let b = extra[offset]; offset += 1; len2 += b as usize;
+                        if b < 255 { break; }
+                    }
+                    if offset + len1 + len2 <= extra.len() {
+                        let h1 = &extra[offset..offset+len1];
+                        let h2 = &extra[offset+len1..offset+len1+len2];
+                        let h3 = &extra[offset+len1+len2..];
+                        
+                        write_ogg_page(&mut chunk_buffer, h1, 0, track_id, &mut ogg_page_seq, true, false);
+                        write_ogg_page(&mut chunk_buffer, h2, 0, track_id, &mut ogg_page_seq, false, false);
+                        write_ogg_page(&mut chunk_buffer, h3, 0, track_id, &mut ogg_page_seq, false, false);
+                        
+                        init_segments.push(base64_encode(h1));
+                        init_segments.push(base64_encode(h2));
+                        init_segments.push(base64_encode(h3));
+                    }
+                }
+            }
+        }
+
+        let bytes_written = chunk_buffer.len() as u64;
+
+        // Now that init_segments are known, compute exact manifest capacity.
+        // Formula: byte_index entries + JSON envelope + init_segments Base64 strings.
+        let init_seg_size: usize = init_segments.iter().map(|s| s.len() + 3).sum(); // +3 for quotes and comma
+        let manifest_cap = if build_manifest {
+            let index_cap = if duration_sec > 0.0 {
+                (duration_sec.ceil() as usize) * 12
+            } else {
+                8192
+            };
+            index_cap + 512 + init_seg_size // 512 for JSON envelope (keys, braces, etc.)
+        } else {
+            0
+        };
+
+        Ok(AudioExtractor {
+            reader, track_id, codec, sample_rate, channels, aac_sr_idx,
+            time_base_numer: tb_numer,
+            time_base_denom: tb_denom,
+            pos_ref, total_size,
+            bytes_written,
+            byte_index,
+            last_indexed_sec: 0,
+            init_segments,
+            ogg_page_seq,
+            last_granule_pos: 0,
+            first_chunk: true,
+            chunk_buffer,
+            manifest_buffer: String::with_capacity(manifest_cap),
+        })
     }
 
+    /// Progress as percentage (0.0 - 100.0), based on bytes read from OPFS.
     pub fn get_progress(&self) -> f64 {
         let pos = self.pos_ref.load(std::sync::atomic::Ordering::SeqCst) as f64;
         (pos / self.total_size as f64) * 100.0
     }
 
+    /// File extension for the output audio file ("aac", "mp3", "ogg").
+    pub fn get_extension(&self) -> String {
+        match self.codec {
+            AudioCodec::Aac => "aac".into(),
+            AudioCodec::Mp3 => "mp3".into(),
+            AudioCodec::Opus | AudioCodec::Vorbis => "ogg".into(),
+        }
+    }
+
+    /// MIME type for the output audio ("audio/aac", "audio/mpeg", etc).
+    pub fn get_mime(&self) -> String {
+        match self.codec {
+            AudioCodec::Aac => "audio/aac".into(),
+            AudioCodec::Mp3 => "audio/mpeg".into(),
+            AudioCodec::Opus => "audio/ogg; codecs=opus".into(),
+            AudioCodec::Vorbis => "audio/ogg; codecs=vorbis".into(),
+        }
+    }
+
+    /// Pull up to `max_bytes` of framed audio data.
+    ///
+    /// Each codec is framed appropriately:
+    ///   AAC    → 7-byte ADTS header injected per packet
+    ///   MP3    → direct passthrough (self-framing)
+    ///   Opus   → wrapped in Ogg pages with correct granule_pos
+    ///   Vorbis → wrapped in Ogg pages with correct granule_pos
+    ///
+    /// Uses a pre-allocated internal buffer to guarantee zero allocations
+    /// during the extraction loop.
     pub fn pull_chunk(&mut self, max_bytes: usize) -> Uint8Array {
-        let mut buffer = Vec::with_capacity(max_bytes);
-        while buffer.len() < max_bytes {
+        if self.first_chunk {
+            self.first_chunk = false; // Preserve pre-filled Ogg initialization pages
+        } else {
+            self.chunk_buffer.clear();
+        }
+        
+        while self.chunk_buffer.len() < max_bytes {
             match self.reader.next_packet() {
                 Ok(packet) => {
-                    if packet.track_id() == self.track_id {
-                        let adts = create_adts_header(packet.data.len(), self.sample_rate_idx, self.channels);
-                        buffer.extend_from_slice(&adts);
-                        buffer.extend_from_slice(&packet.data);
+                    if packet.track_id() != self.track_id { continue; }
+                    
+                    let packet_data = &packet.data;
+                    let framed_start = self.chunk_buffer.len();
+
+                    // ── Codec-specific framing ──
+                    match self.codec {
+                        AudioCodec::Aac => {
+                            let adts = create_adts_header(packet_data.len(), self.aac_sr_idx, self.channels);
+                            self.chunk_buffer.extend_from_slice(&adts);
+                            self.chunk_buffer.extend_from_slice(packet_data);
+                        }
+                        AudioCodec::Mp3 => {
+                            // MP3 frames are self-framing (sync word 0xFFE/0xFFF).
+                            // Direct passthrough — zero framing overhead.
+                            self.chunk_buffer.extend_from_slice(packet_data);
+                        }
+                        AudioCodec::Opus | AudioCodec::Vorbis => {
+                            // Calculate proper granule_pos.
+                            // Opus requires granule_pos to be exactly 48kHz samples.
+                            // Vorbis uses the original track sample rate.
+                            let target_sr = if matches!(self.codec, AudioCodec::Opus) { 48000 } else { self.sample_rate };
+                            let pcm_samples = (packet.ts as f64 * self.time_base_numer as f64 / self.time_base_denom as f64 * target_sr as f64) as u64;
+                            self.last_granule_pos = pcm_samples;
+                            
+                            write_ogg_page(
+                                &mut self.chunk_buffer,
+                                packet_data,
+                                pcm_samples,
+                                self.track_id,
+                                &mut self.ogg_page_seq,
+                                false,
+                                false
+                            );
+                        }
                     }
+
+                    // ── Manifest: update per-second byte index ──
+                    // Use the absolute packet timestamp to calculate the current second.
+                    // Do this BEFORE updating bytes_written so the index points to the
+                    // exact START of the packet that crosses the second boundary.
+                    if let Some(ref mut idx) = self.byte_index {
+                        let current_sec = (packet.ts as f64 * self.time_base_numer as f64 / self.time_base_denom as f64) as usize;
+                        while self.last_indexed_sec < current_sec {
+                            self.last_indexed_sec += 1;
+                            if self.last_indexed_sec >= idx.len() {
+                                idx.push(self.bytes_written);
+                            } else {
+                                idx[self.last_indexed_sec] = self.bytes_written;
+                            }
+                        }
+                    }
+
+                    let framed_size = (self.chunk_buffer.len() - framed_start) as u64;
+                    self.bytes_written += framed_size;
                 }
                 _ => break,
             }
         }
-        Uint8Array::from(&buffer[..])
+        Uint8Array::from(&self.chunk_buffer[..])
+    }
+
+    /// Write the Ogg End-of-Stream page. Must be called after the last pull_chunk().
+    /// Returns the final bytes (EOS page) for Opus/Vorbis, or empty for AAC/MP3.
+    pub fn finalize(&mut self) -> Uint8Array {
+        self.chunk_buffer.clear();
+        if matches!(self.codec, AudioCodec::Opus | AudioCodec::Vorbis) {
+            // Write an empty EOS page with the final granule position
+            write_ogg_page(
+                &mut self.chunk_buffer,
+                &[],
+                self.last_granule_pos,
+                self.track_id,
+                &mut self.ogg_page_seq,
+                false,
+                true, // EOS
+            );
+            let eos_size = self.chunk_buffer.len() as u64;
+            self.bytes_written += eos_size;
+        }
+        Uint8Array::from(&self.chunk_buffer[..])
+    }
+
+    /// Build the manifest as a JSON string. Returns empty string if disabled.
+    ///
+    /// Uses a pre-allocated String buffer and writes directly into it to avoid
+    /// intermediate allocations.
+    pub fn build_manifest(&mut self) -> String {
+        let idx = match &self.byte_index {
+            Some(v) => v,
+            None => return String::new(),
+        };
+
+        let (codec_str, ext, mime, pre_roll_ms) = match self.codec {
+            AudioCodec::Aac => ("aac", ".aac", "audio/aac", 48),
+            AudioCodec::Mp3 => ("mp3", ".mp3", "audio/mpeg", 300),
+            AudioCodec::Opus => ("opus", ".ogg", "audio/ogg; codecs=opus", 80),
+            AudioCodec::Vorbis => ("vorbis", ".ogg", "audio/ogg; codecs=vorbis", 50),
+        };
+
+        use std::fmt::Write;
+        
+        self.manifest_buffer.clear();
+        
+        // Account for init_segments size in capacity check
+        let init_seg_size: usize = self.init_segments.iter().map(|s| s.len() + 3).sum();
+        let required_cap = idx.len() * 12 + 512 + init_seg_size;
+        if self.manifest_buffer.capacity() < required_cap {
+            self.manifest_buffer.reserve(required_cap - self.manifest_buffer.capacity());
+        }
+
+        // Write the JSON prefix (everything before byte_index array)
+        let _ = write!(
+            self.manifest_buffer,
+            r#"{{"codec":"{}","extension":"{}","mime":"{}","sample_rate":{},"channels":{},"duration_sec":{},"total_bytes":{},"pre_roll_ms":{},"init_segments":["#,
+            codec_str, ext, mime,
+            self.sample_rate, self.channels,
+            idx.len().saturating_sub(1),
+            self.bytes_written,
+            pre_roll_ms
+        );
+
+        // Write init_segments directly into manifest_buffer (no intermediate String)
+        for (i, seg) in self.init_segments.iter().enumerate() {
+            if i > 0 { let _ = self.manifest_buffer.write_char(','); }
+            let _ = self.manifest_buffer.write_char('"');
+            let _ = self.manifest_buffer.write_str(seg);
+            let _ = self.manifest_buffer.write_char('"');
+        }
+
+        let _ = self.manifest_buffer.write_str(r#"],"byte_index":["#);
+
+        // Write the array elements
+        for (i, &offset) in idx.iter().enumerate() {
+            if i > 0 { let _ = self.manifest_buffer.write_char(','); }
+            let _ = write!(self.manifest_buffer, "{}", offset);
+        }
+
+        // Close the JSON envelope
+        let _ = self.manifest_buffer.write_str("]}");
+
+        self.manifest_buffer.clone()
     }
 }
 
+/// Build a 7-byte ADTS header for a single AAC Access Unit.
+///
+/// Layout (MPEG-4 AAC-LC, no CRC):
+///   Bytes 0-1: Syncword (0xFFF) + ID=0 + Layer=0 + Protection=1
+///   Byte  2:   Profile(LC=1) + SampleRateIdx + ChannelConfig(hi)
+///   Bytes 3-4: ChannelConfig(lo) + FrameLength(13 bits)
+///   Bytes 5-6: Buffer fullness (0x7FF = VBR) + NumFrames=0
 fn create_adts_header(packet_len: usize, sr_idx: u8, ch: u8) -> [u8; 7] {
     let fl = (packet_len + 7) as u16;
     let mut h = [0u8; 7];

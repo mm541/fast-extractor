@@ -22,6 +22,8 @@ import { FastExtractor } from '../engine/FastExtractor';
 import type {
   FastExtractorOptions,
   ProgressEvent,
+  AudioManifest,
+  IngestedFile
 } from '../engine/types';
 
 // ─── Hook State Types ───
@@ -33,8 +35,6 @@ export interface SlideResult {
   timestamp: string;
   /** Start time in milliseconds */
   startMs: number;
-  /** End time in milliseconds */
-  endMs: number;
   /** Raw image ArrayBuffer (WebP) — for programmatic use */
   buffer: ArrayBuffer;
 }
@@ -59,6 +59,8 @@ export interface UseFastExtractorReturn {
   slides: SlideResult[];
   /** Finalized audio Blob, or null if audio hasn't completed yet */
   audioBlob: Blob | null;
+  /** Audio manifest for S3 range queries (if buildManifest was true), or null */
+  audioManifest: AudioManifest | null;
   /** The last error that occurred, or null */
   error: Error | null;
   /** Final performance metrics (available after extraction completes) */
@@ -96,6 +98,7 @@ export function useFastExtractor(options?: FastExtractorOptions): UseFastExtract
   const [progress, setProgress] = useState<ExtractorProgress>({ percent: 0, message: '' });
   const [slides, setSlides] = useState<SlideResult[]>([]);
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
+  const [audioManifest, setAudioManifest] = useState<AudioManifest | null>(null);
   const [error, setError] = useState<Error | null>(null);
   const [metrics, setMetrics] = useState<ProgressEvent['metrics'] | null>(null);
 
@@ -108,7 +111,7 @@ export function useFastExtractor(options?: FastExtractorOptions): UseFastExtract
     setIsExtracting(false);
   }, []);
 
-  const extract = useCallback((file: File) => {
+  const extract = useCallback((file: File | IngestedFile) => {
     // Cancel any in-progress extraction
     abortRef.current?.abort();
 
@@ -117,6 +120,7 @@ export function useFastExtractor(options?: FastExtractorOptions): UseFastExtract
     setProgress({ percent: 0, message: 'Starting...' });
     setSlides([]);
     setAudioBlob(null);
+    setAudioManifest(null);
     setError(null);
     setMetrics(null);
     audioChunksRef.current = [];
@@ -140,8 +144,22 @@ export function useFastExtractor(options?: FastExtractorOptions): UseFastExtract
               break;
 
             case 'audio_done': {
-              const blob = new Blob(audioChunksRef.current, { type: 'audio/aac' });
-              setAudioBlob(blob);
+              if (audioChunksRef.current.length > 0) {
+                // Determine the correct MIME type dynamically
+                let mimeType = 'audio/aac'; // fallback
+                if (value.manifest) {
+                  mimeType = value.manifest.mime;
+                } else if (value.fileName) {
+                  if (value.fileName.endsWith('.mp3')) mimeType = 'audio/mpeg';
+                  else if (value.fileName.endsWith('.ogg')) mimeType = 'audio/ogg';
+                }
+                
+                const blob = new Blob(audioChunksRef.current, { type: mimeType });
+                setAudioBlob(blob);
+              }
+              if (value.manifest) {
+                setAudioManifest(value.manifest);
+              }
               audioChunksRef.current = []; // free memory
               break;
             }
@@ -153,7 +171,6 @@ export function useFastExtractor(options?: FastExtractorOptions): UseFastExtract
                 url,
                 timestamp: value.timestamp,
                 startMs: value.startMs,
-                endMs: value.endMs,
                 buffer: value.imageBuffer,
               }]);
               break;
@@ -181,7 +198,7 @@ export function useFastExtractor(options?: FastExtractorOptions): UseFastExtract
     })();
   }, [options]);
 
-  return { extract, cancel, isExtracting, progress, slides, audioBlob, error, metrics };
+  return { extract, cancel, isExtracting, progress, slides, audioBlob, audioManifest, error, metrics };
 }
 
 export default useFastExtractor;

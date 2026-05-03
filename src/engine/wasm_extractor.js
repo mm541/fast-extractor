@@ -14,8 +14,8 @@ export class AudioExtractor {
     /**
      * Build the manifest as a JSON string. Returns empty string if disabled.
      *
-     * Uses a pre-allocated String buffer and writes directly into it to avoid
-     * intermediate allocations.
+     * Hand-serialized via format!() to avoid pulling in serde_json (~100KB WASM).
+     * The byte_index array is emitted as a comma-separated list of integers.
      * @returns {string}
      */
     build_manifest() {
@@ -29,15 +29,6 @@ export class AudioExtractor {
         } finally {
             wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
         }
-    }
-    /**
-     * Write the Ogg End-of-Stream page. Must be called after the last pull_chunk().
-     * Returns the final bytes (EOS page) for Opus/Vorbis, or empty for AAC/MP3.
-     * @returns {Uint8Array}
-     */
-    finalize() {
-        const ret = wasm.audioextractor_finalize(this.__wbg_ptr);
-        return ret;
     }
     /**
      * File extension for the output audio file ("aac", "mp3", "ogg").
@@ -105,11 +96,12 @@ export class AudioExtractor {
      * Each codec is framed appropriately:
      *   AAC    → 7-byte ADTS header injected per packet
      *   MP3    → direct passthrough (self-framing)
-     *   Opus   → wrapped in Ogg pages with correct granule_pos
-     *   Vorbis → wrapped in Ogg pages with correct granule_pos
+     *   Opus   → raw packets (Ogg muxing deferred)
+     *   Vorbis → raw packets (Ogg muxing deferred)
      *
-     * Uses a pre-allocated internal buffer to guarantee zero allocations
-     * during the extraction loop.
+     * The per-second byte index is updated inline with zero branch overhead
+     * when the manifest is disabled (the Option check compiles to a single
+     * test-and-jump that the branch predictor trivially learns).
      * @param {number} max_bytes
      * @returns {Uint8Array}
      */

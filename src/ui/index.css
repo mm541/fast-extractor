@@ -231,6 +231,33 @@ input[type="file"] {
     border-radius: 8px;
 }
 
+.btn-export-zip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 14px 32px;
+    border: none;
+    border-radius: 12px;
+    font-weight: 700;
+    font-size: 1rem;
+    cursor: pointer;
+    background: linear-gradient(135deg, var(--accent), #ffea00);
+    color: #000;
+    box-shadow: 0 8px 24px -8px rgba(255, 215, 0, 0.35);
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.btn-export-zip:hover:not(:disabled) {
+    transform: translateY(-2px);
+    box-shadow: 0 12px 32px -8px rgba(255, 215, 0, 0.5);
+}
+
+.btn-export-zip:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+}
+
 .gallery-section {
     margin-top: 60px;
 }

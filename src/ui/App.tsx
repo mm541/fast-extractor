@@ -48,71 +48,27 @@
  *   The "Advanced Drift Detection" section is hidden by default for normal users.
  */
 import React, { useState, useRef, useEffect } from 'react';
-import GridMaskPicker from './GridMaskPicker';
 import { FastExtractor } from '../engine';
+import type { IngestedFile } from '../engine/types';
 import { downloadZip } from 'client-zip';
+import CapabilityBanner from './components/CapabilityBanner';
+import MetricsDashboard from './components/MetricsDashboard';
+import SlideGallery from './components/SlideGallery';
+import Lightbox from './components/Lightbox';
+import ConfigPanel from './components/ConfigPanel';
+import { formatMs, cleanupAppStorage } from './utils';
+import type { DeviceCapabilities, SlideIndexEntry } from './types';
 import './App.css';
 
-interface DeviceCapabilities {
-    webCodecs: boolean;
-    opfs: boolean;
-    offscreenCanvas: boolean;
-    deviceMemoryGb: number | null;
-    hardwareConcurrency: number;
-    webGpu: boolean;
-    isMobile: boolean;
-    canExtract: boolean;
-}
-
-/** Convert milliseconds to HH:MM:SS */
-function formatMs(ms: number): string {
-    const totalSec = Math.floor(ms / 1000);
-    const h = Math.floor(totalSec / 3600);
-    const m = Math.floor((totalSec % 3600) / 60);
-    const s = totalSec % 60;
-    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-}
-
-async function cleanupAppStorage(): Promise<void> {
-    if (!navigator.storage?.getDirectory) return;
-    try {
-      const opfsRoot = await navigator.storage.getDirectory();
-      let artifactsDir: FileSystemDirectoryHandle;
-      try {
-        artifactsDir = await opfsRoot.getDirectoryHandle('.app_artifacts');
-      } catch {
-        return; // folder doesn't exist — nothing to clean
-      }
-      const entries: string[] = [];
-      // @ts-ignore — OPFS entries()
-      for await (const [name] of (artifactsDir as any).entries()) {
-        entries.push(name);
-      }
-      await Promise.all(entries.map(async (name) => {
-        try {
-          if (navigator.locks) {
-            await navigator.locks.request(
-              `app_${name}`, { ifAvailable: true },
-              async (lock) => {
-                if (lock) await artifactsDir.removeEntry(name);
-              }
-            );
-          } else {
-            await artifactsDir.removeEntry(name);
-          }
-        } catch {}
-      }));
-    } catch (e) {
-      console.warn('[App] cleanupAppStorage failed:', e);
-    }
-}
 
 const App: React.FC = () => {
     const [file, setFile] = useState<File | null>(null);
     const [status, setStatus] = useState<string>('Ready to extract');
     const [isExtracting, setIsExtracting] = useState(false);
+    const [isIngesting, setIsIngesting] = useState(false);
+    const [ingestedFile, setIngestedFile] = useState<IngestedFile | null>(null);
+    const ingestAbortRef = useRef<AbortController | null>(null);
     
-    type SlideIndexEntry = { offset: number, length: number, time: string, startMs: number, endMs: number, url: string };
     const [slides, setSlides] = useState<SlideIndexEntry[]>([]);
     const [audioUrl, setAudioUrl] = useState<string | null>(null);
     const [fileName, setFileName] = useState<string>('');
@@ -128,9 +84,9 @@ const App: React.FC = () => {
         densityThresholdPct: 4,
         minSlideDuration: 3,
         dhashDuplicateThreshold: 4,
-        confirmThreshold: 10,
+        useDeferredEmit: true,
+
         // Drift detection
-        blankBrightnessThreshold: 8,
         cumulativeDriftMultiplier: 2,
         cumulativeSettledFrames: 2,
         partialThresholdRatio: 0.5,
@@ -141,11 +97,11 @@ const App: React.FC = () => {
         exportResolution: 0,
     });
     
-    const [showAdvanced, setShowAdvanced] = useState(false);
-    const [showMaskEditor, setShowMaskEditor] = useState(false);
     const [ignoreMask, setIgnoreMask] = useState<bigint>(0n);
     const [extractAudio, setExtractAudio] = useState(true);
     const [extractSlides, setExtractSlides] = useState(true);
+    const [buildManifest, setBuildManifest] = useState(true);
+    const [audioManifest, setAudioManifest] = useState<any>(null);
     
     const [metrics, setMetrics] = useState<any>(null);
     const [capabilities, setCapabilities] = useState<DeviceCapabilities | null>(null);
@@ -212,7 +168,30 @@ const App: React.FC = () => {
         urlsToCleanup.current = [];
     };
 
-    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const resetApp = () => {
+        setFile(null);
+        fileRef.current = null;
+        cleanupPreviousSession();
+        setAudioUrl(null);
+        setSlides([]);
+        setIngestedFile(null);
+        setStatus('Ready to extract');
+        setProgress(0);
+        setJobMetrics({ start: 0, end: null });
+        setMetrics(null);
+        setAudioManifest(null);
+        if (fileInputRef.current) {
+            fileInputRef.current.value = '';
+        }
+        
+        // Proactively clean up OPFS storage since the session is discarded
+        FastExtractor.cleanupStorage().catch(console.warn);
+        cleanupAppStorage().catch(console.warn);
+
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    };
+
+    const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
         if (e.target.files && e.target.files[0]) {
             const f = e.target.files[0];
             setFile(f);
@@ -220,19 +199,70 @@ const App: React.FC = () => {
             cleanupPreviousSession();
             setAudioUrl(null);
             setSlides([]);
-            setStatus('File selected: ' + f.name);
+            setIngestedFile(null);
+            
+            if (ingestAbortRef.current) {
+                ingestAbortRef.current.abort();
+            }
+            
+            setStatus('Caching file to local sandbox...');
+            setIsIngesting(true);
+            setProgress(0);
+            
+            const controller = new AbortController();
+            ingestAbortRef.current = controller;
 
-            // Auto-retry extraction if this was a re-select after SAF failure
-            if (retryPending.current) {
-                retryPending.current = false;
-                // Small delay to let React state settle
-                setTimeout(() => startExtraction(), 100);
+            try {
+                const ingested = await FastExtractor.ingest(f, {
+                    onProgress: (pct, msg) => {
+                        setProgress(pct);
+                        setStatus(msg);
+                    },
+                    signal: controller.signal
+                });
+                setIngestedFile(ingested);
+                setStatus('Ready to extract');
+                
+                // Auto-retry extraction if this was a re-select after SAF failure
+                if (retryPending.current) {
+                    retryPending.current = false;
+                    setTimeout(() => startExtraction(), 100);
+                }
+            } catch (err: any) {
+                if (err.name === 'AbortError') {
+                    setStatus('Ingestion halted.');
+                } else if (err.message.includes('FILE_ACCESS_EXPIRED') || err.message.includes('could not be read') || err.name === 'NotReadableError' || err.name === 'NetworkError') {
+                    setStatus('⚠️ File access expired. Please re-select the same file.');
+                    retryPending.current = true;
+                    if (fileInputRef.current) {
+                        fileInputRef.current.value = '';
+                        fileInputRef.current.click();
+                    }
+                } else {
+                    setStatus('Ingestion failed: ' + err.message);
+                }
+                
+                // Only clear the file if it wasn't a retry prompt
+                if (!retryPending.current) {
+                    setFile(null);
+                    fileRef.current = null;
+                }
+            } finally {
+                setIsIngesting(false);
+                setProgress(0);
             }
         }
     };
 
+    const haltIngestion = () => {
+        if (ingestAbortRef.current) {
+            ingestAbortRef.current.abort();
+            ingestAbortRef.current = null;
+        }
+    };
+
     const downloadAsZip = async () => {
-        if (!file) return;
+        if (slides.length === 0 && !audioUrl) return;
         try {
             setIsZipping(true);
             
@@ -249,6 +279,11 @@ const App: React.FC = () => {
                     }
                 }
                 
+                if (audioManifest) {
+                    const manifestBlob = new Blob([JSON.stringify(audioManifest, null, 2)], { type: 'application/json' });
+                    yield { name: 'manifest.json', input: manifestBlob };
+                }
+                
                 if (slides.length > 0) {
                     try {
                         const slidesH = await artifactsDir.getFileHandle(`slides_${sessionIdRef.current}.dat`);
@@ -258,10 +293,11 @@ const App: React.FC = () => {
                         
                         for (let i = 0; i < slides.length; i++) {
                             const slide = slides[i];
-                            const startStr = formatMs(slide.startMs).replace(/:/g, '-');
-                            const endStr = formatMs(slide.endMs).replace(/:/g, '-');
+                            const startSec = Math.floor(slide.startMs / 1000);
+                            const startStr = formatMs(startSec * 1000).replace(/:/g, '-');
+                            
                             const blob = slidesFile.slice(slide.offset, slide.offset + slide.length, mimeType);
-                            yield { name: `slides/slide_${String(i+1).padStart(3, '0')}_${startStr}_to_${endStr}.${ext}`, input: blob };
+                            yield { name: `slides/slide_${String(i+1).padStart(3, '0')}_${startStr}.${ext}`, input: blob };
                         }
                     } catch (e) {
                         console.warn("Slides file not found in OPFS, skipping.");
@@ -270,7 +306,8 @@ const App: React.FC = () => {
             }
 
             const zipStream = downloadZip(yieldFiles());
-            const downloadName = `${file.name.replace(/\.[^/.]+$/, "")}_extracted.zip`;
+            const baseName = file?.name ?? ingestedFile?.originalName ?? 'extraction';
+            const downloadName = `${baseName.replace(/\.[^/.]+$/, "")}_extracted.zip`;
 
             // Modern Streaming Download via OPFS or File System Access API
             if ('showSaveFilePicker' in window) {
@@ -319,10 +356,6 @@ const App: React.FC = () => {
 
         cleanupPreviousSession();
 
-        // Clean stale OPFS files from crashed/previous tabs before starting
-        await FastExtractor.cleanupStorage();
-        await cleanupAppStorage();
-
         // Generate unique session ID for this extraction's OPFS files
         const sessionId = `${Date.now()}`;
         sessionIdRef.current = sessionId;
@@ -330,6 +363,7 @@ const App: React.FC = () => {
         setIsExtracting(true);
         setStatus('Initializing Processing Engine...');
         setSlides([]);
+        setAudioManifest(null);
         setProgress(0);
         setMetrics(null);
         setJobMetrics({ start: performance.now(), end: null });
@@ -343,6 +377,7 @@ const App: React.FC = () => {
             ignoreMask,
             extractAudio,
             extractSlides,
+            buildManifest,
             ...config,
         });
 
@@ -372,7 +407,8 @@ const App: React.FC = () => {
             const BATCH_LIMIT = 25 * 1024 * 1024; // 25MB RAM Buffer for Slides
             let slideIndexBuffer: SlideIndexEntry[] = [];
 
-            const stream = extractor.extract(fileRef.current!, controller.signal);
+            const inputTarget = ingestedFile || fileRef.current!;
+            const stream = extractor.extract(inputTarget, controller.signal);
             const reader = stream.getReader();
 
             while (true) {
@@ -391,13 +427,24 @@ const App: React.FC = () => {
                             await audioWritable.close();
                             audioWritable = null;
                         }
-                        const audioH = await artifactsDir.getFileHandle(`audio_${sessionId}.aac`);
-                        const audioFile = await audioH.getFile();
-                        const url = URL.createObjectURL(audioFile);
-                        urlsToCleanup.current.push(url);
-                        setAudioUrl(url);
-                        setFileName(event.fileName);
-                        setStatus('Audio Ready! Harvesting Slides...');
+                        if (event.manifest) {
+                            setAudioManifest(event.manifest);
+                        }
+                        if (event.fileName) {
+                            const audioH = await artifactsDir.getFileHandle(`audio_${sessionId}.aac`);
+                            const audioFile = await audioH.getFile();
+                            const url = URL.createObjectURL(audioFile);
+                            urlsToCleanup.current.push(url);
+                            setAudioUrl(url);
+                            setFileName(event.fileName);
+                            setStatus('Audio Ready! Harvesting Slides...');
+                        } else {
+                            // Audio extraction failed gracefully. Clean up the empty OPFS file.
+                            try {
+                                await artifactsDir.removeEntry(`audio_${sessionId}.aac`);
+                            } catch (e) {}
+                            setStatus('Audio unavailable. Extracting slides only...');
+                        }
                         break;
                     }
 
@@ -421,7 +468,6 @@ const App: React.FC = () => {
                                 url: tempUrl,
                                 time: event.timestamp,
                                 startMs: event.startMs,
-                                endMs: event.endMs,
                             };
                             
                             slideIndexBuffer.push(newSlide);
@@ -511,6 +557,8 @@ const App: React.FC = () => {
                 // Recoverable error (e.g. Android SAF permission expired)
                 setStatus('⚠️ File access expired. Please re-select the same file.');
                 setIsExtracting(false);
+                setFile(null);
+                fileRef.current = null;
                 retryPending.current = true;
                 if (fileInputRef.current) {
                     fileInputRef.current.value = '';
@@ -550,273 +598,53 @@ const App: React.FC = () => {
                 </section>
 
                 {capabilities && (
-                    <div className={`capability-banner ${capabilities.canExtract ? 'supported' : 'unsupported'}`}>
-                        <div className="cap-row">
-                            <span className={capabilities.webCodecs ? 'cap-ok' : 'cap-fail'}>WebCodecs {capabilities.webCodecs ? '✓' : '✗'}</span>
-                            <span className={capabilities.opfs ? 'cap-ok' : 'cap-fail'}>OPFS {capabilities.opfs ? '✓' : '✗'}</span>
-                            <span className={capabilities.offscreenCanvas ? 'cap-ok' : 'cap-warn'}>OffscreenCanvas {capabilities.offscreenCanvas ? '✓' : '⚠'}</span>
-                            {capabilities.deviceMemoryGb && <span className="cap-info">{capabilities.deviceMemoryGb}GB RAM</span>}
-                        </div>
-                        {!capabilities.canExtract && (
-                            <p className="cap-error">Your browser does not support the required APIs (WebCodecs + OPFS). Try Chrome 102+ on desktop or Android.</p>
-                        )}
-                        {capabilities.isMobile && capabilities.canExtract && (
-                            <p className="cap-warning">Mobile detected — auto-selected Turbo mode with reduced resolution for stability.</p>
-                        )}
-                        {!capabilities.isMobile && capabilities.canExtract && capabilities.deviceMemoryGb && capabilities.deviceMemoryGb <= 4 && (
-                            <p className="cap-warning">Low memory ({capabilities.deviceMemoryGb}GB) — auto-selected Turbo mode to prevent crashes.</p>
-                        )}
-                    </div>
+                    <CapabilityBanner capabilities={capabilities} />
                 )}
 
                 <div className="glass-panel">
                     <div className="upload-zone">
                         <label className={`file-label ${file ? 'has-file' : ''}`}>
                             {file ? '📄 ' + file.name : 'Select Video File'}
-                            <input ref={fileInputRef} type="file" accept="video/*" onChange={handleFileChange} disabled={isExtracting} />
+                            <input ref={fileInputRef} type="file" accept="video/*" onChange={handleFileChange} disabled={isExtracting || isIngesting} />
                         </label>
-                        <p className="hint">Tip: Use <b>"Turbo"</b> mode for 10x faster sampling of long videos.</p>
                         
-                        <div className="mode-toggle">
-                            <button 
-                                className={`mode-btn ${extractionMode === 'sequential' ? 'active' : ''}`}
-                                onClick={() => setExtractionMode('sequential')}
-                                disabled={isExtracting}
-                            >
-                                🎯 Sequential
-                            </button>
-                            <button 
-                                className={`mode-btn ${extractionMode === 'turbo' ? 'active' : ''}`}
-                                onClick={() => setExtractionMode('turbo')}
-                                disabled={isExtracting}
-                            >
-                                🚀 Turbo
-                            </button>
-                        </div>
-
-                        <div className="extract-toggles">
-                            <label className={`extract-toggle-btn ${extractAudio ? 'active' : ''}`}>
-                                <input
-                                    type="checkbox"
-                                    checked={extractAudio}
-                                    onChange={e => setExtractAudio(e.target.checked)}
-                                    disabled={isExtracting}
-                                />
-                                🎧 Extract Audio
-                            </label>
-                            <label className={`extract-toggle-btn ${extractSlides ? 'active' : ''}`}>
-                                <input
-                                    type="checkbox"
-                                    checked={extractSlides}
-                                    onChange={e => setExtractSlides(e.target.checked)}
-                                    disabled={isExtracting}
-                                />
-                                🖼️ Extract Slides
-                            </label>
-                        </div>
-
-                        {/* Mask Editor Toggle + Picker */}
-                        {file && (
-                            <div style={{ marginTop: '12px' }}>
-                                <button
-                                    className={`mode-btn ${showMaskEditor ? 'active' : ''}`}
-                                    onClick={() => setShowMaskEditor(!showMaskEditor)}
-                                    disabled={isExtracting}
-                                    style={{ width: '100%', fontSize: '13px' }}
+                        {isIngesting && (
+                            <div style={{ marginTop: '15px', textAlign: 'center' }}>
+                                <div style={{ color: 'var(--accent)', fontSize: '0.9rem', marginBottom: '8px' }}>{status}</div>
+                                <div className="progress-container" style={{ margin: '0 auto 10px auto', width: '80%' }}>
+                                    <div className="progress-bar-inner" style={{ '--width': `${progress}%` } as React.CSSProperties}></div>
+                                </div>
+                                <button 
+                                    className="btn-halt" 
+                                    onClick={haltIngestion}
+                                    style={{ background: '#ff4d4d', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '6px', cursor: 'pointer' }}
                                 >
-                                    🎭 {showMaskEditor ? 'Hide' : 'Show'} Region Mask {ignoreMask > 0n ? '(Active)' : ''}
+                                    🛑 Halt
                                 </button>
-                                {showMaskEditor && (
-                                    <div style={{ marginTop: '10px', display: 'flex', justifyContent: 'center', boxSizing: 'border-box', width: '100%', padding: '0 8px' }}>
-                                        <GridMaskPicker
-                                            file={file}
-                                            mask={ignoreMask}
-                                            onMaskChange={setIgnoreMask}
-                                            disabled={isExtracting}
-                                        />
-                                    </div>
-                                )}
                             </div>
                         )}
-
-                        <div className="settings-grid">
-                            {extractionMode === 'sequential' && (
-                                <div className="setting-item">
-                                    <label>Accurate FPS: <strong>{config.sampleFps}</strong></label>
-                                    <input 
-                                        type="range" min="0.2" max="10" step="0.2" 
-                                        value={config.sampleFps} onChange={e => setConfig({...config, sampleFps: Number(e.target.value)})} 
-                                        disabled={isExtracting}
-                                        aria-label="Frames per second to sample in accurate mode"
-                                    />
-                                </div>
-                            )}
-                            <div className="setting-item">
-                                <label>Edge Threshold: <strong>{config.edgeThreshold}</strong></label>
-                                <input 
-                                    type="range" min="10" max="100" step="1" 
-                                    value={config.edgeThreshold} onChange={e => setConfig({...config, edgeThreshold: Number(e.target.value)})} 
-                                    disabled={isExtracting}
-                                    aria-label="Edge detection threshold"
-                                />
-                            </div>
-                            <div className="setting-item">
-                                <label>Min Slide Duration: <strong>{config.minSlideDuration}s</strong></label>
-                                <input 
-                                    type="range" min="1" max="30" step="1" 
-                                    value={config.minSlideDuration} onChange={e => setConfig({...config, minSlideDuration: Number(e.target.value)})} 
-                                    disabled={isExtracting}
-                                    aria-label="Minimum duration between slides"
-                                />
-                            </div>
-                            <div className="setting-item">
-                                <label>Density Threshold: <strong>{config.densityThresholdPct}%</strong></label>
-                                <input 
-                                    type="range" min="1" max="50" step="1" 
-                                    value={config.densityThresholdPct} onChange={e => setConfig({...config, densityThresholdPct: Number(e.target.value)})} 
-                                    disabled={isExtracting}
-                                    aria-label="Density change percentage threshold"
-                                />
-                            </div>
-                            <div className="setting-item">
-                                <label>Block Threshold: <strong>{config.blockThreshold}</strong></label>
-                                <input 
-                                    type="range" min="1" max="64" step="1" 
-                                    value={config.blockThreshold} onChange={e => setConfig({...config, blockThreshold: Number(e.target.value)})} 
-                                    disabled={isExtracting}
-                                    aria-label="Number of changed blocks required"
-                                />
-                            </div>
-                            <div className="setting-item">
-                                <label>DHash Limit: <strong>{config.dhashDuplicateThreshold}</strong></label>
-                                <input 
-                                    type="range" min="0" max="20" step="1" 
-                                    value={config.dhashDuplicateThreshold} onChange={e => setConfig({...config, dhashDuplicateThreshold: Number(e.target.value)})} 
-                                    disabled={isExtracting}
-                                    aria-label="DHash duplicate threshold"
-                                />
-                            </div>
-                            <div className="setting-item">
-                                <label>Transition Filter: <strong>{config.confirmThreshold}</strong></label>
-                                <input 
-                                    type="range" min="3" max="20" step="1" 
-                                    value={config.confirmThreshold} onChange={e => setConfig({...config, confirmThreshold: Number(e.target.value)})} 
-                                    disabled={isExtracting}
-                                    aria-label="Turbo transition filter strictness"
-                                />
-                            </div>
-                            <div className="setting-item">
-                                <label>Image Quality: <strong>{Math.round(config.imageQuality! * 100)}%</strong></label>
-                                <input 
-                                    type="range" min="0.1" max="1.0" step="0.1" 
-                                    value={config.imageQuality} onChange={e => setConfig({...config, imageQuality: Number(e.target.value)})} 
-                                    disabled={isExtracting}
-                                    aria-label="Extracted slide WebP quality"
-                                />
-                            </div>
-                            <div className="setting-item">
-                                <label>Format: <strong>{config.imageFormat === 'jpeg' ? 'JPEG' : 'WebP'}</strong></label>
-                                <select
-                                    value={config.imageFormat}
-                                    onChange={e => setConfig({...config, imageFormat: e.target.value as 'webp' | 'jpeg'})}
-                                    disabled={isExtracting}
-                                    aria-label="Output image format"
-                                >
-                                    <option value="webp">WebP (smaller)</option>
-                                    <option value="jpeg">JPEG (faster)</option>
-                                </select>
-                            </div>
-                            <div className="setting-item">
-                                <label>Export Res: <strong>{config.exportResolution === 0 ? 'Original' : config.exportResolution + 'px'}</strong></label>
-                                <select 
-                                    value={config.exportResolution} 
-                                    onChange={e => setConfig({...config, exportResolution: Number(e.target.value)})} 
-                                    disabled={isExtracting}
-                                    aria-label="Output image max width"
-                                >
-                                    <option value={424}>Low (424px)</option>
-                                    <option value={854}>Medium (854px)</option>
-                                    <option value={1280}>HD (1280px)</option>
-                                    <option value={1920}>Full HD (1920px)</option>
-                                    <option value={0}>Original Size</option>
-                                </select>
-                            </div>
-                        </div>
-
-                        <button 
-                            className="btn-advanced-toggle"
-                            onClick={() => setShowAdvanced(!showAdvanced)}
-                            type="button"
-                        >
-                            {showAdvanced ? '▲ Hide' : '▼ Show'} Drift Detection Settings
-                        </button>
-
-                        {showAdvanced && (
-                            <div className="settings-grid advanced-grid">
-                                <div className="setting-item">
-                                    <label>Blank Brightness: <strong>{config.blankBrightnessThreshold}</strong></label>
-                                    <input 
-                                        type="range" min="0" max="50" step="1" 
-                                        value={config.blankBrightnessThreshold} onChange={e => setConfig({...config, blankBrightnessThreshold: Number(e.target.value)})} 
-                                        disabled={isExtracting}
-                                        aria-label="Blank frame brightness threshold"
-                                    />
-                                </div>
-                                <div className="setting-item">
-                                    <label>Drift Multiplier: <strong>{config.cumulativeDriftMultiplier}×</strong></label>
-                                    <input 
-                                        type="range" min="1" max="5" step="0.5" 
-                                        value={config.cumulativeDriftMultiplier} onChange={e => setConfig({...config, cumulativeDriftMultiplier: Number(e.target.value)})} 
-                                        disabled={isExtracting}
-                                        aria-label="Cumulative drift multiplier"
-                                    />
-                                </div>
-                                <div className="setting-item">
-                                    <label>Settled Frames: <strong>{config.cumulativeSettledFrames}</strong></label>
-                                    <input 
-                                        type="range" min="1" max="10" step="1" 
-                                        value={config.cumulativeSettledFrames} onChange={e => setConfig({...config, cumulativeSettledFrames: Number(e.target.value)})} 
-                                        disabled={isExtracting}
-                                        aria-label="Frames of stability before drift emit"
-                                    />
-                                </div>
-                                <div className="setting-item">
-                                    <label>Partial Ratio: <strong>{config.partialThresholdRatio}</strong></label>
-                                    <input 
-                                        type="range" min="0.1" max="1" step="0.1" 
-                                        value={config.partialThresholdRatio} onChange={e => setConfig({...config, partialThresholdRatio: Number(e.target.value)})} 
-                                        disabled={isExtracting}
-                                        aria-label="Partial threshold ratio"
-                                    />
-                                </div>
-                                <div className="setting-item">
-                                    <label>Noise Reset: <strong>{config.noiseResetFrames}</strong></label>
-                                    <input 
-                                        type="range" min="10" max="100" step="5" 
-                                        value={config.noiseResetFrames} onChange={e => setConfig({...config, noiseResetFrames: Number(e.target.value)})} 
-                                        disabled={isExtracting}
-                                        aria-label="Noise reset frame count"
-                                    />
-                                </div>
-                                <div className="setting-item">
-                                    <label>Noise Ratio: <strong>{config.noiseMainRatio}</strong></label>
-                                    <input 
-                                        type="range" min="0.05" max="0.5" step="0.05" 
-                                        value={config.noiseMainRatio} onChange={e => setConfig({...config, noiseMainRatio: Number(e.target.value)})} 
-                                        disabled={isExtracting}
-                                        aria-label="Noise main change ratio"
-                                    />
-                                </div>
-                            </div>
-                        )}
-
-                        <button 
-                            className="btn-extract" 
-                            onClick={startExtraction} 
-                            disabled={!file || isExtracting || (capabilities !== null && !capabilities.canExtract)}
-                        >
-                            {isExtracting ? <span className="spinner"></span> : (capabilities && !capabilities.canExtract ? '⚠ Not Supported' : '🚀 Start Extraction')}
-                        </button>
+                        
+                        <ConfigPanel
+                            file={file}
+                            config={config}
+                            setConfig={setConfig}
+                            extractionMode={extractionMode}
+                            setExtractionMode={setExtractionMode}
+                            extractAudio={extractAudio}
+                            setExtractAudio={setExtractAudio}
+                            extractSlides={extractSlides}
+                            setExtractSlides={setExtractSlides}
+                            buildManifest={buildManifest}
+                            setBuildManifest={setBuildManifest}
+                            ignoreMask={ignoreMask}
+                            setIgnoreMask={setIgnoreMask}
+                            isExtracting={isExtracting}
+                            isIngesting={isIngesting}
+                            slides={slides}
+                            audioUrl={audioUrl}
+                            startExtraction={startExtraction}
+                            resetApp={resetApp}
+                        />
                     </div>
 
                     <div className="status-box">
@@ -825,45 +653,31 @@ const App: React.FC = () => {
                             <span>{status}</span>
                             {isExtracting && <span className="pct">{progress}%</span>}
                         </div>
-                        {isExtracting && (
+                        {/* Progress UI */}
+                        {isExtracting && !isIngesting && (
                             <div className="progress-container">
                                 <div 
                                     className="progress-bar-inner" 
                                     style={{ '--width': `${progress}%` } as React.CSSProperties}
                                 ></div>
-                            </div>
+                                {audioManifest && (
+                    <div className="manifest-container" style={{ marginTop: '20px', padding: '15px', background: '#2c2c2c', borderRadius: '8px', border: '1px solid #444', textAlign: 'left' }}>
+                        <h4 style={{ margin: '0 0 10px 0', color: '#ffb300' }}>Audio Manifest (S3 Range Query Index)</h4>
+                        <details>
+                            <summary style={{ cursor: 'pointer', color: '#888' }}>View JSON</summary>
+                            <pre style={{ overflowX: 'auto', background: '#1e1e1e', padding: '10px', borderRadius: '4px', fontSize: '12px', color: '#a6e22e' }}>
+                                {JSON.stringify(audioManifest, null, 2)}
+                            </pre>
+                        </details>
+                    </div>
+                )}
+            </div>
                         )}
                     </div>
                 </div>
 
                 {metrics && metrics.startTime && (
-                    <div className="metrics-dashboard slide-up">
-                        <div className="metric-card">
-                            <span className="label">Total Job Time</span>
-                            <span className="value">
-                                {jobMetrics.end ? ((jobMetrics.end - jobMetrics.start) / 1000).toFixed(1) : ((performance.now() - jobMetrics.start) / 1000).toFixed(1)}s
-                            </span>
-                        </div>
-                        <div className="metric-card">
-                            <span className="label">Decode Speed</span>
-                            <span className="value">
-                                {metrics.totalFrames ? (metrics.totalFrames / (((metrics.endTime || performance.now()) - metrics.startTime) / 1000)).toFixed(1) : '0'} 
-                                {extractionMode === 'turbo' ? ' Keyframes/s' : ' FPS'}
-                            </span>
-                        </div>
-                        <div className="metric-card">
-                            <span className="label">Peak RAM</span>
-                            <span className="value">{metrics.peakRamMb > 0 ? `${Math.round(metrics.peakRamMb)}MB` : 'N/A'}</span>
-                        </div>
-                        <div className="metric-card">
-                            <span className="label">Frame Analysis Time</span>
-                            <span className="value">{metrics.avgFrameProcessTimeMs?.toFixed(1) ?? 'N/A'}ms</span>
-                        </div>
-                        <div className="metric-card">
-                            <span className="label">Detection</span>
-                            <span className="value">{metrics.totalSlides ?? 0} Slides</span>
-                        </div>
-                    </div>
+                    <MetricsDashboard metrics={metrics} jobMetrics={jobMetrics} extractionMode={extractionMode} />
                 )}
 
                 {audioUrl && (
@@ -878,68 +692,28 @@ const App: React.FC = () => {
                 )}
                 
                 {!isExtracting && (slides.length > 0 || audioUrl) && (
-                     <div className="result-card slide-up" style={{ textAlign: 'right' }}>
+                     <div className="result-card slide-up" style={{ textAlign: 'center' }}>
                         <button 
                             onClick={downloadAsZip} 
                             disabled={isZipping}
-                            className="btn-download" 
-                            style={{ backgroundColor: '#2b2b2b', color: '#fff', border: '1px solid #444' }}
+                            className="btn-export-zip" 
                         >
-                            {isZipping ? '⌛ Zipping...' : '📦 Download All as ZIP'}
+                            {isZipping ? '⌛ Packaging...' : '📦 Export All as ZIP'}
                         </button>
                      </div>
                 )}
 
                 {slides.length > 0 && (
-                    <section className="gallery-section">
-                        <h2>📌 Detected Slides ({slides.length})</h2>
-                        <div className="filmstrip">
-                            {slides.map((slide, i) => (
-                                <div key={i} className="slide-item">
-                                    <img 
-                                        src={slide.url} 
-                                        alt={`Slide ${i}`} 
-                                        loading="lazy" 
-                                        style={{ cursor: 'pointer' }}
-                                        onClick={() => { setLightboxIndex(i); setLightboxZoom(1); }}
-                                    />
-                                    <span className="timestamp">{formatMs(slide.startMs)} → {formatMs(slide.endMs)}</span>
-                                </div>
-                            ))}
-                        </div>
-                    </section>
+                    <SlideGallery slides={slides} onSlideClick={(i) => { setLightboxIndex(i); setLightboxZoom(1); }} />
                 )}
                 {lightboxIndex !== null && (
-                    <div className="lightbox-overlay" onClick={() => setLightboxIndex(null)}>
-                        <button className="lightbox-close" onClick={() => setLightboxIndex(null)}>&times;</button>
-                        {lightboxIndex > 0 && (
-                            <button className="lightbox-nav prev" onClick={(e) => { e.stopPropagation(); setLightboxZoom(1); setLightboxIndex(lightboxIndex - 1); }}>&#10094;</button>
-                        )}
-                        {lightboxIndex < slides.length - 1 && (
-                            <button className="lightbox-nav next" onClick={(e) => { e.stopPropagation(); setLightboxZoom(1); setLightboxIndex(lightboxIndex + 1); }}>&#10095;</button>
-                        )}
-                        <div className="lightbox-content" onClick={(e) => e.stopPropagation()}>
-                            <img 
-                                src={slides[lightboxIndex].url} 
-                                className="lightbox-img" 
-                                style={{ transform: `scale(${lightboxZoom})` }}
-                                onWheel={(e) => {
-                                    e.preventDefault();
-                                    const zoomFactor = Math.exp(-e.deltaY * 0.002);
-                                    setLightboxZoom(prev => Math.max(1, Math.min(prev * zoomFactor, 5)));
-                                }}
-                                alt="Slide larger view" 
-                            />
-                        </div>
-                        <div className="lightbox-info">
-                            {formatMs(slides[lightboxIndex].startMs)} → {formatMs(slides[lightboxIndex].endMs)}
-                        </div>
-                        <div className="lightbox-controls" onClick={(e) => e.stopPropagation()}>
-                            <button className="lightbox-btn" onClick={() => setLightboxZoom(prev => Math.max(1, prev - 0.5))}>⊖</button>
-                            <span style={{ color: 'white', lineHeight: '24px' }}>{Math.round(lightboxZoom * 100)}%</span>
-                            <button className="lightbox-btn" onClick={() => setLightboxZoom(prev => Math.min(5, prev + 0.5))}>⊕</button>
-                        </div>
-                    </div>
+                    <Lightbox
+                        slides={slides}
+                        lightboxIndex={lightboxIndex}
+                        lightboxZoom={lightboxZoom}
+                        setLightboxIndex={setLightboxIndex}
+                        setLightboxZoom={setLightboxZoom}
+                    />
                 )}
             </main>
         </div>

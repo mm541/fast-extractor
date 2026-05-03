@@ -65,6 +65,7 @@ import type {
   ExtractorCallbacks,
   FastExtractorOptions,
   BrowserSupport,
+  IngestedFile,
 } from './types';
 import { ingestFile, extractVideoChunks, cleanupTempFile } from './pipeline';
 
@@ -133,10 +134,39 @@ export class FastExtractor {
   }
 
   /**
+   * Statically ingests a video file into OPFS prior to extraction.
+   * This is extremely useful on Android to prevent SAF "File Access Expired" errors,
+   * as you can ingest the file immediately upon user selection.
+   * 
+   * @param file - The raw File object from the browser
+   * @param options - Callbacks and cancellation signals
+   * @returns An IngestedFile descriptor that can be passed directly to extract()
+   */
+  static async ingest(
+    file: File, 
+    options?: { 
+      onProgress?: (percent: number, message: string) => void;
+      signal?: AbortSignal;
+    }
+  ): Promise<IngestedFile> {
+    const tempFileName = `extract_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.mp4`;
+    await ingestFile(file, tempFileName, (status, progress) => {
+      options?.onProgress?.(progress, status);
+    }, options?.signal);
+    
+    return {
+      type: 'ingested_file',
+      opfsFileName: tempFileName,
+      originalName: file.name,
+      size: file.size,
+    };
+  }
+
+  /**
    * Manually clean up OPFS temp files left from previous extractions.
-   * Only cleans files inside the `.fast_extractor/` subfolder — never touches
-   * the consumer's own OPFS data.
-   * Only needed when `cleanupAfterExtraction: false` was used.
+   * Only needed if you want to proactively free OPFS space.
+   * In the normal flow, pre-ingested files are cleaned up when the consumer
+   * calls resetApp / cleanupStorage, and direct File paths auto-clean.
    * Safe to call at any time — it's a no-op if no temp files exist.
    *
    * @example
@@ -184,10 +214,10 @@ export class FastExtractor {
    * The stream completes when extraction is done.
    * Cancel the stream (or use an AbortSignal) to stop extraction early.
    *
-   * @param file - The video File object (from <input type="file"> or drag-and-drop)
+   * @param input - The video File object or a pre-ingested file descriptor
    * @param signal - Optional AbortSignal for cancellation
    */
-  extract(file: File, signal?: AbortSignal): ReadableStream<ExtractorEvent> {
+  extract(input: File | IngestedFile, signal?: AbortSignal): ReadableStream<ExtractorEvent> {
     // Guard: if using a shared custom worker, prevent concurrent extractions
     // that would corrupt the worker's module-scoped state (syncHandle, wasmBuffer, etc.)
     if (this._extracting && this.options.worker) {
@@ -199,6 +229,8 @@ export class FastExtractor {
     this._extracting = true;
 
     let worker: Worker | null = null;
+    let tempFileName: string = '';
+    const isPreIngested = 'type' in input && input.type === 'ingested_file';
 
     const stream = new ReadableStream<ExtractorEvent>({
       start: async (controller) => {
@@ -212,7 +244,11 @@ export class FastExtractor {
               this._extracting = false;
               worker?.terminate();
               worker = null;
-              controller.close();
+              try { controller.close(); } catch { /* stream already closed/errored */ }
+              // Clean up OPFS temp file if we created it (direct File path)
+              if (!isPreIngested && tempFileName) {
+                cleanupTempFile(tempFileName).catch(() => {});
+              }
             }, { once: true });
           }
 
@@ -224,13 +260,13 @@ export class FastExtractor {
             worker: _workerOpt,          // consumed above, don't forward
             extractAudio = true,         // default: extract audio
             extractSlides = true,        // default: extract slides
-            cleanupAfterExtraction = true, // default: clean up OPFS after extraction
+            buildManifest: _buildManifest, // consumed by audio pipeline, don't forward to slide detection
             ...detectionConfig
           } = this.options;
 
           worker.postMessage({
             type: 'CONFIG',
-            data: { demuxerWasmUrl, extractAudio, extractSlides, cleanupAfterExtraction },
+            data: { demuxerWasmUrl, extractAudio, extractSlides },
             config: { ...detectionConfig, mode },
           });
 
@@ -260,6 +296,7 @@ export class FastExtractor {
                   controller.enqueue({
                     type: 'audio_done',
                     fileName: e.data.fileName,
+                    manifest: e.data.manifest ?? null,
                   });
                   break;
 
@@ -269,7 +306,6 @@ export class FastExtractor {
                     imageBuffer: e.data.buffer,
                     timestamp: e.data.timestamp,
                     startMs: e.data.startMs ?? 0,
-                    endMs: e.data.endMs ?? 0,
                   });
                   break;
 
@@ -304,7 +340,9 @@ export class FastExtractor {
                   worker = null;
                   controller.close();
                   // Clean up OPFS temp file AFTER worker is fully done
-                  cleanupTempFile(this.options, tempFileName).catch(() => {});
+                  if (!isPreIngested) {
+                    cleanupTempFile(tempFileName).catch(() => {});
+                  }
                   break;
 
                 case 'ERROR': {
@@ -358,19 +396,28 @@ export class FastExtractor {
               worker = null;
             });
 
-          // 7. Instantiate WorkspaceManager and run the extraction pipeline
-          const tempFileName = `extract_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.mp4`;
+          // 7. Ingest file to OPFS (or reuse pre-ingested handle)
+          if (isPreIngested) {
+            tempFileName = (input as IngestedFile).opfsFileName;
+          } else {
+            tempFileName = `extract_${Date.now()}_${Math.random().toString(36).substring(2, 7)}.mp4`;
+            
+            // Ingest to OPFS. This pipes the File straight into an OPFS FileSystemSyncAccessHandle
+            // which the worker can access synchronously.
+            await ingestFile(input as File, tempFileName, (status, percent) => {
+              controller.enqueue({
+                type: 'progress',
+                percent,
+                message: status,
+              });
+            }, signal);
+          }
+          
           let unackedChunks = 0;
           let unblockMainThread: (() => void) | null = null;
           
           const runPipeline = async () => {
             try {
-              await ingestFile(file, tempFileName, (status, progress) => {
-                try {
-                  controller.enqueue({ type: 'progress', percent: progress, message: status });
-                } catch { /* stream closed */ }
-              });
-
               // Trigger audio extraction on the worker
               if (this.options.extractAudio !== false) {
                 const root = await navigator.storage.getDirectory();
@@ -388,7 +435,12 @@ export class FastExtractor {
                     }
                   };
                   worker!.addEventListener('message', handleAudioMessage);
-                  worker!.postMessage({ type: 'EXTRACT_AUDIO', fileName: file.name, fileHandle });
+                  worker!.postMessage({
+                    type: 'EXTRACT_AUDIO',
+                    fileName: isPreIngested ? (input as IngestedFile).originalName : (input as File).name,
+                    fileHandle,
+                    buildManifest: this.options.buildManifest ?? false,
+                  });
                 });
               }
 
@@ -426,19 +478,17 @@ export class FastExtractor {
           pipelinePromise.catch((err: any) => {
             // Pipeline will throw if SAF permissions expire or pipeline fails
             const msg = err?.message ?? String(err ?? 'Unknown pipeline error');
-            const isRecoverable = msg.includes('File ingest failed') || msg.includes('could not be read') || msg.includes('FILE_ACCESS_EXPIRED');
             this._extracting = false;
+            worker = null;
             
-            if (isRecoverable) {
-              try {
+            const isRecoverable = msg.includes('File ingest failed') || msg.includes('could not be read') || msg.includes('FILE_ACCESS_EXPIRED');
+            try {
+              if (isRecoverable) {
                 controller.error(new ExtractorError('ERR_FILE_INGEST', 'File could not be read'));
-                controller.close();
-              } catch { /* stream already closed */ }
-              worker = null;
-            } else {
-              worker = null;
-              try { controller.error(err instanceof Error ? err : new Error(msg)); } catch { /* stream already closed */ }
-            }
+              } else {
+                controller.error(err instanceof Error ? err : new Error(msg));
+              }
+            } catch { /* stream already closed/errored */ }
           });
 
         } catch (err) {
@@ -448,12 +498,14 @@ export class FastExtractor {
         }
       },
 
-      cancel() {
+      cancel: () => {
         // Consumer cancelled the stream (e.g. user navigated away)
         worker?.terminate();
         worker = null;
-        // Clean up the OPFS file immediately
-        FastExtractor.cleanupStorage().catch(e => console.warn('Cancel cleanup failed:', e));
+        // Clean up the OPFS file immediately if we implicitly created it
+        if (!isPreIngested) {
+          cleanupTempFile(tempFileName).catch(e => console.warn('Cancel cleanup failed:', e));
+        }
       },
     });
 
@@ -498,7 +550,6 @@ export class FastExtractor {
               imageBuffer: value.imageBuffer,
               timestamp: value.timestamp,
               startMs: value.startMs,
-              endMs: value.endMs,
             });
             break;
           case 'progress':

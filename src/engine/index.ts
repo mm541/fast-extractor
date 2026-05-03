@@ -22,6 +22,7 @@ export type {
   ExtractorEvent,
   AudioChunkEvent,
   AudioDoneEvent,
+  AudioManifest,
   SlideEvent,
   ProgressEvent,
 } from './types';
