@@ -46,11 +46,11 @@ Fast-Extractor relies on **WebCodecs (`VideoDecoder`)** to decode frames and **w
 *   **Resolution & Framerate:** Any (up to 4K / 60fps). WebCodecs will leverage GPU acceleration.
 
 ### Audio Formats
-Audio extraction is handled via the `Symphonia` Rust crate compiled to WASM. To maintain an extremely small WASM footprint, audio decoding is restricted.
+Audio extraction is handled via the `Symphonia` Rust crate compiled to WASM.
 
-*   **Supported Audio Codec:** `AAC` ONLY.
-*   **Behavior:** The engine demuxes the AAC track and streams out raw ADTS packets. It does not re-encode.
-*   **What if it's not AAC?** (e.g., WebM with `Opus` or `Vorbis`, or an MP4 with `MP3`):
+*   **Supported Audio Codecs:** `AAC`, `MP3`, `Opus`, `Vorbis`.
+*   **Behavior:** The engine demuxes the audio track and streams out raw codec packets (ADTS for AAC, self-framing for MP3, raw for Opus/Vorbis). No re-encoding is performed.
+*   **What if the codec is unsupported?**
     *   Audio extraction will gracefully fail.
     *   A `warning` progress event is emitted: `⚠️ Audio unavailable: unsupported format. Extracting slides only...`
     *   The video slide extraction **continues uninterrupted.**
@@ -76,7 +76,7 @@ Mobile devices have aggressive memory management and background-task throttling.
 *   **Quotas:** OPFS counts towards the browser's origin storage quota. If the disk is nearly full, ingestion will fail with a `QuotaExceededError`.
 *   **File Lifespans:** Temporary files are aggressively cleaned up:
     *   On startup, stale files from previously crashed tabs are wiped.
-    *   On success, the ingested video is deleted (unless configured with `cleanupAfterExtraction: false`).
+    *   On reset/new extraction, all temporary OPFS files are deleted. Call `FastExtractor.cleanupStorage()` to manually trigger cleanup.
 
 ---
 
