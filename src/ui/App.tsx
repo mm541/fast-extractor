@@ -557,6 +557,8 @@ const App: React.FC = () => {
                 // Recoverable error (e.g. Android SAF permission expired)
                 setStatus('⚠️ File access expired. Please re-select the same file.');
                 setIsExtracting(false);
+                setFile(null);
+                fileRef.current = null;
                 retryPending.current = true;
                 if (fileInputRef.current) {
                     fileInputRef.current.value = '';
