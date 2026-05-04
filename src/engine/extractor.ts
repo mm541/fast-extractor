@@ -603,11 +603,6 @@ export class SlideExtractor {
     try {
       this.wasm.shift_current_to_prev();
       this.captureFrameToRgba(frame);
-    } finally {
-      if (this.lastProcessedFrame) this.lastProcessedFrame.close();
-      this.lastProcessedFrame = frame.clone();
-      frame.close();
-    }
 
     // === Frame closed. Only WASM buffers from here. ===
 
@@ -804,6 +799,12 @@ export class SlideExtractor {
     ) {
       this.cumulativeDrift = 0;
       this.settledSinceTime = -1;
+    }
+
+    } finally {
+      if (this.lastProcessedFrame) this.lastProcessedFrame.close();
+      this.lastProcessedFrame = frame.clone();
+      frame.close();
     }
   }
 
