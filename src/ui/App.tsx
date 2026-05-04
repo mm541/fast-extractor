@@ -603,7 +603,8 @@ const App: React.FC = () => {
 
                 <div className="glass-panel">
                     <div className="upload-zone">
-                        <label className={`file-label ${file ? 'has-file' : ''}`}>
+                        {/* Keep input in DOM for SAF retry (fileInputRef.current.click()), but hide visually after extraction */}
+                        <label className={`file-label ${file ? 'has-file' : ''}`} style={(slides.length > 0 || audioUrl) ? { display: 'none' } : undefined}>
                             {file ? '📄 ' + file.name : 'Select Video File'}
                             <input ref={fileInputRef} type="file" accept="video/*" onChange={handleFileChange} disabled={isExtracting || isIngesting} />
                         </label>
