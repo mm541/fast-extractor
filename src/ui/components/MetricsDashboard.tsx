@@ -20,9 +20,9 @@ const MetricsDashboard: React.FC<MetricsDashboardProps> = ({ metrics, extraction
                 <span className="value">{elapsed.toFixed(1)}s</span>
             </div>
             <div className="metric-card">
-                <span className="label">Decode Speed</span>
+                <span className="label">Analysis Speed</span>
                 <span className="value">
-                    {decodeSpeed} {extractionMode === 'turbo' ? ' Keyframes/s' : ' FPS'}
+                    {decodeSpeed} {extractionMode === 'turbo' ? ' Keyframes/s' : ' Samples/s'}
                 </span>
             </div>
             <div className="metric-card">
