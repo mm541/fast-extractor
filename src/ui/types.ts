@@ -30,9 +30,9 @@ export interface ExtractionConfig {
     dhashDuplicateThreshold: number;
     useDeferredEmit: boolean;
     cumulativeDriftMultiplier: number;
-    cumulativeSettledFrames: number;
+    cumulativeSettledSeconds: number;
     partialThresholdRatio: number;
-    noiseResetFrames: number;
+    noiseResetSeconds: number;
     noiseMainRatio: number;
     imageQuality: number;
     imageFormat: 'webp' | 'jpeg';

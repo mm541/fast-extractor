@@ -265,12 +265,12 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                         />
                     </div>
                     <div className="setting-item">
-                        <label>Settled Frames: <strong>{config.cumulativeSettledFrames}</strong></label>
+                        <label>Settled Time: <strong>{config.cumulativeSettledSeconds}s</strong></label>
                         <input 
                             type="range" min="1" max="10" step="1" 
-                            value={config.cumulativeSettledFrames} onChange={e => setConfig({...config, cumulativeSettledFrames: Number(e.target.value)})} 
+                            value={config.cumulativeSettledSeconds} onChange={e => setConfig({...config, cumulativeSettledSeconds: Number(e.target.value)})} 
                             disabled={isExtracting}
-                            aria-label="Frames of stability before drift emit"
+                            aria-label="Seconds of stability before drift emit"
                         />
                     </div>
                     <div className="setting-item">
@@ -283,12 +283,12 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                         />
                     </div>
                     <div className="setting-item">
-                        <label>Noise Reset: <strong>{config.noiseResetFrames}</strong></label>
+                        <label>Noise Reset: <strong>{config.noiseResetSeconds}s</strong></label>
                         <input 
-                            type="range" min="10" max="100" step="5" 
-                            value={config.noiseResetFrames} onChange={e => setConfig({...config, noiseResetFrames: Number(e.target.value)})} 
+                            type="range" min="10" max="120" step="5" 
+                            value={config.noiseResetSeconds} onChange={e => setConfig({...config, noiseResetSeconds: Number(e.target.value)})} 
                             disabled={isExtracting}
-                            aria-label="Noise reset frame count"
+                            aria-label="Noise reset time in seconds"
                         />
                     </div>
                     <div className="setting-item">

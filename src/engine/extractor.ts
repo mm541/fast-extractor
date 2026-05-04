@@ -43,7 +43,7 @@
  *
  *   NOISE SUPPRESSION:
  *     - Duplicate slides are suppressed via 64-bit dHash comparison
- *     - Cumulative drift resets after noiseResetFrames without a trigger
+ *     - Cumulative drift resets after noiseResetSeconds without a trigger
  *
  * TWO EXTRACTION MODES:
  *   TURBO:    Decode only keyframes (IDR). ~10-20s for a 1-hour video.
@@ -82,17 +82,6 @@
  *   doesn't improve slide detection accuracy but massively increases cost.
  *   maxFrameWidth only affects the ORIGINAL file decoding, not comparison.
  *
- * 💡 CONSIDERATION: ACCURATE MODE BACKPRESSURE (Promise.race + 5s timeout)
- *   The accurate mode backpressure loop (decodeQueueSize >= 3) uses a
- *   Promise.race with a 5s timeout as a deadlock safety net. Hardware
- *   decoders on mobile can silently drop frames, causing the output
- *   callback to never fire and pendingResolve to hang forever. The 5s
- *   timeout breaks the deadlock. In normal operation, the callback fires
- *   within milliseconds so the timeout never triggers. This is NOT the
- *   same bottleneck as the turbo per-frame flush — it's only backpressure,
- *   not a synchronous barrier. If you want to optimize accurate mode
- *   further, consider switching to `decodeQueueSize`-only polling (like
- *   turbo mode) — but test thoroughly on mobile hardware first.
  *
  * 💡 CONSIDERATION: DUAL-EMIT MODEL (emitBitmap + emitBitmapAsync)
  *   Hot-loop emissions use fire-and-forget emitBitmap() — it calls
@@ -119,16 +108,6 @@
  *   unexplained gaps in the timeline. If you need global dedup for a
  *   specific use case, check against savedHashes[0..N] — but be aware
  *   it becomes O(N) per frame and changes the user-facing behavior.
- *
- * 💡 CONSIDERATION: TIMESTAMP BOUNDARY (stretch-left)
- *   When a slide transition is detected at keyframe T, the previous keyframe
- *   T_prev was the last confirmed sighting of the old slide. We use T_prev
- *   as the boundary: old slide endMs = T_prev, new slide startMs = T_prev.
- *   This "stretches left" — the new slide claims the gap between T_prev
- *   and T. This is safe for downstream AI (Synthizer) because the AI can
- *   visually verify the new slide's content against the transcript.
- *   The alternative (stretching right) is dangerous: it makes the old slide
- *   "claim" transcript that belongs to the new slide's content.
  *
  * CONFIGURATION REFERENCE:
  *   edgeThreshold (10-100, default 30)
@@ -158,17 +137,18 @@
  *     Factor applied to blockThreshold for cumulative drift trigger.
  *     2 = cumulative drift must reach 2× blockThreshold to trigger.
  *
- *   cumulativeSettledFrames (1-10, default 2)
- *     Frames of stability required after cumulative drift before emitting.
+ *   cumulativeSettledSeconds (1-10, default 2)
+ *     Seconds of stability required after cumulative drift before emitting.
+ *     Time-based to ensure identical behavior regardless of frame rate.
  *
  *   partialThresholdRatio (0.1-1, default 0.5)
  *     Fraction of blockThreshold for the partial main change component
  *     of Condition 3. 0.5 = main change must be at least half the threshold.
  *
- *   noiseResetFrames (10-100, default 30)
- *     Reset cumulative drift after this many drift frames without trigger.
+ *   noiseResetSeconds (10-120, default 30)
+ *     Reset cumulative drift after this many seconds of drift without trigger.
  *     Prevents webcam noise or subtle video compression artifacts from
- *     accumulating into false positives.
+ *     accumulating into false positives. Time-based for frame-rate agnostic behavior.
  *
  *   noiseMainRatio (0.05-0.5, default 0.25)
  *     Reset drift only if mainChanges < blockThreshold × this ratio.
@@ -191,9 +171,9 @@ export interface SlideExtractorOptions {
   dhashDuplicateThreshold: number;
   // Three-pointer drift detection
   cumulativeDriftMultiplier: number;    // cumulative drift must reach blockThreshold * this
-  cumulativeSettledFrames: number;      // frames of stability before emitting on drift or partial match
+  cumulativeSettledSeconds: number;     // seconds of stability before emitting on drift or partial match
   partialThresholdRatio: number;        // fraction of blockThreshold for partial match (0-1)
-  noiseResetFrames: number;             // reset drift after this many drift frames if no trigger
+  noiseResetSeconds: number;            // reset drift after this many seconds if no trigger
   noiseMainRatio: number;               // reset only if mainChanges < blockThreshold * this (0-1)
   // Color-aware detection
   colorChangeThreshold: number;         // max(|ΔR|,|ΔG|,|ΔB|) to trigger color-only slide (0=disabled)
@@ -236,9 +216,9 @@ export const DEFAULT_OPTIONS: SlideExtractorOptions = {
   minSlideDuration: 3, dhashDuplicateThreshold: 4,
   // Three-pointer defaults
   cumulativeDriftMultiplier: 2,
-  cumulativeSettledFrames: 2,
+  cumulativeSettledSeconds: 2,
   partialThresholdRatio: 0.5,
-  noiseResetFrames: 30,
+  noiseResetSeconds: 30,
   noiseMainRatio: 0.25,
   // Color detection: 25 = detect shifts where any channel moves >25/255
   colorChangeThreshold: 25,
@@ -301,8 +281,7 @@ export class SlideExtractor {
 
   // Three-pointer cumulative drift tracking
   private cumulativeDrift = 0;   // accumulated block changes (Prev vs B)
-  private driftFrames = 0;       // how many frames contributed drift
-  private staticCount = 0;       // consecutive frames with zero drift
+  private settledSinceTime = -1; // timestamp when content stopped moving (-1 = not settled)
   private driftStartTime = 0;    // timestamp when the current drift sequence started
 
   // Adaptive noise floor — calibrates blockThreshold from video noise level
@@ -380,8 +359,7 @@ export class SlideExtractor {
     this.prevColorSig = null;
 
     this.cumulativeDrift = 0;
-    this.driftFrames = 0;
-    this.staticCount = 0;
+    this.settledSinceTime = -1;
 
     this.videoWidth = config.codedWidth || 1920;
     this.videoHeight = config.codedHeight || 1080;
@@ -675,8 +653,7 @@ export class SlideExtractor {
         
         // Reset drift metrics because a transition just finished
         this.cumulativeDrift = 0;
-        this.driftFrames = 0;
-        this.staticCount = 0;
+        this.settledSinceTime = -1;
         candidateConfirmedThisFrame = true;
       }
     }
@@ -702,10 +679,10 @@ export class SlideExtractor {
         this.driftStartTime = timestamp;
       }
       this.cumulativeDrift += driftBlocks;
-      this.driftFrames++;
-      this.staticCount = 0;
+      this.settledSinceTime = -1; // content is still moving
     } else {
-      this.staticCount++;
+      // Content is stable — mark when it first settled
+      if (this.settledSinceTime < 0) this.settledSinceTime = timestamp;
     }
 
     // --- Color Delta ---
@@ -755,7 +732,7 @@ export class SlideExtractor {
       if (
         !shouldEmit &&
         this.cumulativeDrift >= blockThreshold * this.options.cumulativeDriftMultiplier &&
-        this.staticCount >= this.options.cumulativeSettledFrames
+        this.settledSinceTime >= 0 && (timestamp - this.settledSinceTime) >= this.options.cumulativeSettledSeconds
       ) {
         shouldEmit = true;
         emitInstantly = true;
@@ -767,7 +744,7 @@ export class SlideExtractor {
         !shouldEmit &&
         mainChanges >= Math.floor(blockThreshold * this.options.partialThresholdRatio) &&
         this.cumulativeDrift >= blockThreshold &&
-        this.staticCount >= this.options.cumulativeSettledFrames
+        this.settledSinceTime >= 0 && (timestamp - this.settledSinceTime) >= this.options.cumulativeSettledSeconds
       ) {
         shouldEmit = true;
         emitInstantly = true;
@@ -807,18 +784,18 @@ export class SlideExtractor {
           this.lastSlideTime = emitTimestamp;
         }
         this.cumulativeDrift = 0;
-        this.driftFrames = 0;
-        this.staticCount = 0;
+        this.settledSinceTime = -1;
       }
     }
     // Reset drift if too long without trigger (prevents webcam noise buildup)
     else if (
       !candidateConfirmedThisFrame &&
-      this.driftFrames > this.options.noiseResetFrames &&
+      this.cumulativeDrift > 0 &&
+      (timestamp - this.driftStartTime) > this.options.noiseResetSeconds &&
       mainChanges < Math.floor(blockThreshold * this.options.noiseMainRatio)
     ) {
       this.cumulativeDrift = 0;
-      this.driftFrames = 0;
+      this.settledSinceTime = -1;
     }
   }
 

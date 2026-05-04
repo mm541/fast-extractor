@@ -175,12 +175,12 @@ export interface FastExtractorOptions {
   // ─── Advanced Drift & Shake Detection ───
   /** Cumulative drift must reach blockThreshold * this multiplier to emit a slow-transition slide. Default: 2 */
   cumulativeDriftMultiplier?: number;
-  /** Frames of stability required before emitting on drift or partial match. Default: 2 */
-  cumulativeSettledFrames?: number;
+  /** Seconds of stability required before emitting on drift or partial match. Default: 2 */
+  cumulativeSettledSeconds?: number;
   /** Fraction of blockThreshold for partial match (0.0 - 1.0). Default: 0.5 */
   partialThresholdRatio?: number;
-  /** Reset drift accumulator after this many drift frames if no trigger. Default: 30 */
-  noiseResetFrames?: number;
+  /** Reset drift accumulator after this many seconds if no trigger. Default: 30 */
+  noiseResetSeconds?: number;
   /** Reset drift only if mainChanges < blockThreshold * this ratio. Default: 0.25 */
   noiseMainRatio?: number;
   /** max(|ΔR|,|ΔG|,|ΔB|) to trigger color-only slide (0 = disabled). Default: 25 */
