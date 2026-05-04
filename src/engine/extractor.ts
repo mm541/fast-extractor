@@ -640,9 +640,8 @@ export class SlideExtractor {
       
       if (driftBlocks <= allowedDrift) {
         // SETTLED! The slide has stopped moving.
-        // We emit the CURRENT frame (which is clean and settled) but use the
-        // timestamp from when the transition was first detected (pendingCandidate.timestamp)
-        // so the timeline boundary aligns with the start of the slide.
+        // Emit the CURRENT frame (clean/settled) with the timestamp from
+        // when the transition was first detected.
         this.emitBitmap(this.captureCanvasBitmap(), this.pendingCandidate.timestamp);
         this.copyBufferBToA(); // Current frame is the new Baseline
         this.lastSlideTime = this.pendingCandidate.timestamp;
