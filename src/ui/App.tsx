@@ -542,7 +542,6 @@ const App: React.FC = () => {
 
             // Stream closed — normal completion
             // (status is already 'Extraction Complete' from the final progress event)
-            setJobMetrics(prev => ({ ...prev, end: performance.now() }));
             setIsExtracting(false);
         } catch (err: any) {
             // Close OPFS handles safely before retrying to prevent locks
@@ -571,6 +570,8 @@ const App: React.FC = () => {
             }
         } finally {
             abortRef.current = null;
+            // Stamp end time on ALL exit paths (success, error, abort)
+            setJobMetrics(prev => prev.end ? prev : { ...prev, end: performance.now() });
         }
         }; // End of doExtract
 
