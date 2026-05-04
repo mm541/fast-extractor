@@ -74,7 +74,7 @@ const App: React.FC = () => {
     const [fileName, setFileName] = useState<string>('');
     const [isZipping, setIsZipping] = useState(false);
     const [progress, setProgress] = useState<number>(0);
-    const [jobMetrics, setJobMetrics] = useState<{ start: number; end: number | null }>({ start: 0, end: null });
+
     const [extractionMode, setExtractionMode] = useState<'turbo' | 'sequential'>('turbo');
     
     const [config, setConfig] = useState({
@@ -177,7 +177,7 @@ const App: React.FC = () => {
         setIngestedFile(null);
         setStatus('Ready to extract');
         setProgress(0);
-        setJobMetrics({ start: 0, end: null });
+
         setMetrics(null);
         setAudioManifest(null);
         if (fileInputRef.current) {
@@ -366,7 +366,7 @@ const App: React.FC = () => {
         setAudioManifest(null);
         setProgress(0);
         setMetrics(null);
-        setJobMetrics({ start: performance.now(), end: null });
+
 
         const controller = new AbortController();
         abortRef.current = controller;
@@ -571,7 +571,7 @@ const App: React.FC = () => {
         } finally {
             abortRef.current = null;
             // Stamp end time on ALL exit paths (success, error, abort)
-            setJobMetrics(prev => prev.end ? prev : { ...prev, end: performance.now() });
+
         }
         }; // End of doExtract
 
@@ -679,7 +679,7 @@ const App: React.FC = () => {
                 </div>
 
                 {metrics && metrics.startTime && (
-                    <MetricsDashboard metrics={metrics} jobMetrics={jobMetrics} extractionMode={extractionMode} />
+                    <MetricsDashboard metrics={metrics} extractionMode={extractionMode} />
                 )}
 
                 {audioUrl && (

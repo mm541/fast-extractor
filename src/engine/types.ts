@@ -83,6 +83,8 @@ export interface ProgressEvent {
   message: string;
   /** Optional performance metrics */
   metrics?: {
+    startTime: number;
+    endTime?: number;
     totalFrames: number;
     totalSlides: number;
     peakRamMb: number;
