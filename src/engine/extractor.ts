@@ -43,7 +43,7 @@
  *
  *   NOISE SUPPRESSION:
  *     - Duplicate slides are suppressed via 64-bit dHash comparison
- *     - Cumulative drift resets after noiseResetFrames without a trigger
+ *     - Cumulative drift resets after noiseResetSeconds without a trigger
  *
  * TWO EXTRACTION MODES:
  *   TURBO:    Decode only keyframes (IDR). ~10-20s for a 1-hour video.
@@ -82,17 +82,6 @@
  *   doesn't improve slide detection accuracy but massively increases cost.
  *   maxFrameWidth only affects the ORIGINAL file decoding, not comparison.
  *
- * 💡 CONSIDERATION: ACCURATE MODE BACKPRESSURE (Promise.race + 5s timeout)
- *   The accurate mode backpressure loop (decodeQueueSize >= 3) uses a
- *   Promise.race with a 5s timeout as a deadlock safety net. Hardware
- *   decoders on mobile can silently drop frames, causing the output
- *   callback to never fire and pendingResolve to hang forever. The 5s
- *   timeout breaks the deadlock. In normal operation, the callback fires
- *   within milliseconds so the timeout never triggers. This is NOT the
- *   same bottleneck as the turbo per-frame flush — it's only backpressure,
- *   not a synchronous barrier. If you want to optimize accurate mode
- *   further, consider switching to `decodeQueueSize`-only polling (like
- *   turbo mode) — but test thoroughly on mobile hardware first.
  *
  * 💡 CONSIDERATION: DUAL-EMIT MODEL (emitBitmap + emitBitmapAsync)
  *   Hot-loop emissions use fire-and-forget emitBitmap() — it calls
@@ -119,16 +108,6 @@
  *   unexplained gaps in the timeline. If you need global dedup for a
  *   specific use case, check against savedHashes[0..N] — but be aware
  *   it becomes O(N) per frame and changes the user-facing behavior.
- *
- * 💡 CONSIDERATION: TIMESTAMP BOUNDARY (stretch-left)
- *   When a slide transition is detected at keyframe T, the previous keyframe
- *   T_prev was the last confirmed sighting of the old slide. We use T_prev
- *   as the boundary: old slide endMs = T_prev, new slide startMs = T_prev.
- *   This "stretches left" — the new slide claims the gap between T_prev
- *   and T. This is safe for downstream AI (Synthizer) because the AI can
- *   visually verify the new slide's content against the transcript.
- *   The alternative (stretching right) is dangerous: it makes the old slide
- *   "claim" transcript that belongs to the new slide's content.
  *
  * CONFIGURATION REFERENCE:
  *   edgeThreshold (10-100, default 30)
@@ -158,17 +137,18 @@
  *     Factor applied to blockThreshold for cumulative drift trigger.
  *     2 = cumulative drift must reach 2× blockThreshold to trigger.
  *
- *   cumulativeSettledFrames (1-10, default 2)
- *     Frames of stability required after cumulative drift before emitting.
+ *   cumulativeSettledSeconds (1-10, default 2)
+ *     Seconds of stability required after cumulative drift before emitting.
+ *     Time-based to ensure identical behavior regardless of frame rate.
  *
  *   partialThresholdRatio (0.1-1, default 0.5)
  *     Fraction of blockThreshold for the partial main change component
  *     of Condition 3. 0.5 = main change must be at least half the threshold.
  *
- *   noiseResetFrames (10-100, default 30)
- *     Reset cumulative drift after this many drift frames without trigger.
+ *   noiseResetSeconds (10-120, default 30)
+ *     Reset cumulative drift after this many seconds of drift without trigger.
  *     Prevents webcam noise or subtle video compression artifacts from
- *     accumulating into false positives.
+ *     accumulating into false positives. Time-based for frame-rate agnostic behavior.
  *
  *   noiseMainRatio (0.05-0.5, default 0.25)
  *     Reset drift only if mainChanges < blockThreshold × this ratio.
@@ -191,9 +171,9 @@ export interface SlideExtractorOptions {
   dhashDuplicateThreshold: number;
   // Three-pointer drift detection
   cumulativeDriftMultiplier: number;    // cumulative drift must reach blockThreshold * this
-  cumulativeSettledFrames: number;      // frames of stability before emitting on drift or partial match
+  cumulativeSettledSeconds: number;     // seconds of stability before emitting on drift or partial match
   partialThresholdRatio: number;        // fraction of blockThreshold for partial match (0-1)
-  noiseResetFrames: number;             // reset drift after this many drift frames if no trigger
+  noiseResetSeconds: number;            // reset drift after this many seconds if no trigger
   noiseMainRatio: number;               // reset only if mainChanges < blockThreshold * this (0-1)
   // Color-aware detection
   colorChangeThreshold: number;         // max(|ΔR|,|ΔG|,|ΔB|) to trigger color-only slide (0=disabled)
@@ -220,6 +200,7 @@ export interface SlideExtractorOptions {
 export interface ExtractionMetrics {
   startTime: number;
   endTime?: number;
+  jobElapsedMs?: number;
   totalFrames: number;
   totalSlides: number;
   peakRamMb: number;
@@ -236,9 +217,9 @@ export const DEFAULT_OPTIONS: SlideExtractorOptions = {
   minSlideDuration: 3, dhashDuplicateThreshold: 4,
   // Three-pointer defaults
   cumulativeDriftMultiplier: 2,
-  cumulativeSettledFrames: 2,
+  cumulativeSettledSeconds: 2,
   partialThresholdRatio: 0.5,
-  noiseResetFrames: 30,
+  noiseResetSeconds: 30,
   noiseMainRatio: 0.25,
   // Color detection: 25 = detect shifts where any channel moves >25/255
   colorChangeThreshold: 25,
@@ -287,10 +268,12 @@ export class SlideExtractor {
   private lastSlideTime = -10;
 
   private pendingCandidate: {
-    bitmap: ImageBitmap;
+    frame: VideoFrame;
     timestamp: number;
     colorSig: [number, number, number];
   } | null = null;
+  
+  private lastProcessedFrame: VideoFrame | null = null;
 
   private compareCanvas: OffscreenCanvas | null = null;
   private compareCtx: OffscreenCanvasRenderingContext2D | null = null;
@@ -301,8 +284,7 @@ export class SlideExtractor {
 
   // Three-pointer cumulative drift tracking
   private cumulativeDrift = 0;   // accumulated block changes (Prev vs B)
-  private driftFrames = 0;       // how many frames contributed drift
-  private staticCount = 0;       // consecutive frames with zero drift
+  private settledSinceTime = -1; // timestamp when content stopped moving (-1 = not settled)
   private driftStartTime = 0;    // timestamp when the current drift sequence started
 
   // Adaptive noise floor — calibrates blockThreshold from video noise level
@@ -380,8 +362,7 @@ export class SlideExtractor {
     this.prevColorSig = null;
 
     this.cumulativeDrift = 0;
-    this.driftFrames = 0;
-    this.staticCount = 0;
+    this.settledSinceTime = -1;
 
     this.videoWidth = config.codedWidth || 1920;
     this.videoHeight = config.codedHeight || 1080;
@@ -432,8 +413,7 @@ export class SlideExtractor {
 
     // Backpressure: prevent memory blowout
     // Mobile hardware decoders crash or OOM if fed too many frames at once.
-    // Sequential mode keeps this low (5) because it decodes every single frame.
-    const maxQueue = this.options.mode === 'turbo' ? 12 : 5;
+    const maxQueue = 12;
 
     // Use WebCodecs 'ondequeue' event for instant backpressure resolution (0ms).
     // This restores PC throughput. For dropped frames on mobile, ondequeue STILL
@@ -506,9 +486,10 @@ export class SlideExtractor {
     // being buffered. No dHash check here — WASM buffer B contains the last
     // processed frame, not the candidate's frame data.
     if (this.pendingCandidate) {
-      this.emitBitmap(this.pendingCandidate.bitmap, this.pendingCandidate.timestamp);
+      this.emitSlideFromFrame(this.pendingCandidate.frame, this.pendingCandidate.timestamp);
+      this.pendingCandidate.frame.close();
       this.pendingCandidate = null;
-    } else if (this.exportCanvas && this.metrics.lastFrameTimestamp !== undefined) {
+    } else if (this.metrics.lastFrameTimestamp !== undefined && this.lastProcessedFrame) {
       // If the video ended in the middle of a slow drawing transition, it never reached the 
       // staticCount required to trigger Condition 2 or 3.
       // We check if the final frame (Buffer B) is meaningfully different from the last emitted slide (Buffer A).
@@ -523,8 +504,13 @@ export class SlideExtractor {
       if (mainChanges >= partialThreshold) {
         // Emit the final state of the video
         const emitTs = this.cumulativeDrift > 0 ? this.driftStartTime : this.metrics.lastFrameTimestamp;
-        this.emitBitmap(this.captureCanvasBitmap(), emitTs);
+        this.emitSlideFromFrame(this.lastProcessedFrame, emitTs);
       }
+    }
+
+    if (this.lastProcessedFrame) {
+      this.lastProcessedFrame.close();
+      this.lastProcessedFrame = null;
     }
 
     // Await all queued background encodes to prevent dropping slides
@@ -533,6 +519,7 @@ export class SlideExtractor {
 
     this.metrics.videoDurationSec = this.videoDuration;
     this.metrics.endTime = performance.now();
+    this.metrics.jobElapsedMs = this.metrics.endTime - this.metrics.startTime;
     this.options.onProgress(100, "Done", this.metrics);
     return this.metrics;
   }
@@ -618,9 +605,6 @@ export class SlideExtractor {
     try {
       this.wasm.shift_current_to_prev();
       this.captureFrameToRgba(frame);
-    } finally {
-      frame.close();
-    }
 
     // === Frame closed. Only WASM buffers from here. ===
 
@@ -638,7 +622,7 @@ export class SlideExtractor {
     if (!this.hasBaseline) {
       this.copyBufferBToA();
       this.savedHashes.push(this.wasm.compute_dhash(true));
-      this.emitSlideFromCanvas(timestamp);
+      this.emitSlideFromFrame(frame, timestamp);
       this.hasBaseline = true;
       this.lastSlideTime = timestamp;
       this.prevColorSig = colorSig;
@@ -663,20 +647,18 @@ export class SlideExtractor {
       
       if (driftBlocks <= allowedDrift) {
         // SETTLED! The slide has stopped moving.
-        // We emit the CURRENT frame (which is clean and settled) but use the
-        // timestamp from when the transition was first detected (pendingCandidate.timestamp)
-        // so the timeline boundary aligns with the start of the slide.
-        this.emitBitmap(this.captureCanvasBitmap(), this.pendingCandidate.timestamp);
+        // Emit the CURRENT frame (clean/settled) with the timestamp from
+        // when the transition was first detected.
+        this.emitSlideFromFrame(frame, this.pendingCandidate.timestamp);
         this.copyBufferBToA(); // Current frame is the new Baseline
         this.lastSlideTime = this.pendingCandidate.timestamp;
         
-        this.pendingCandidate.bitmap.close();
+        this.pendingCandidate.frame.close();
         this.pendingCandidate = null;
         
         // Reset drift metrics because a transition just finished
         this.cumulativeDrift = 0;
-        this.driftFrames = 0;
-        this.staticCount = 0;
+        this.settledSinceTime = -1;
         candidateConfirmedThisFrame = true;
       }
     }
@@ -702,10 +684,10 @@ export class SlideExtractor {
         this.driftStartTime = timestamp;
       }
       this.cumulativeDrift += driftBlocks;
-      this.driftFrames++;
-      this.staticCount = 0;
+      this.settledSinceTime = -1; // content is still moving
     } else {
-      this.staticCount++;
+      // Content is stable — mark when it first settled
+      if (this.settledSinceTime < 0) this.settledSinceTime = timestamp;
     }
 
     // --- Color Delta ---
@@ -755,7 +737,7 @@ export class SlideExtractor {
       if (
         !shouldEmit &&
         this.cumulativeDrift >= blockThreshold * this.options.cumulativeDriftMultiplier &&
-        this.staticCount >= this.options.cumulativeSettledFrames
+        this.settledSinceTime >= 0 && (timestamp - this.settledSinceTime) >= this.options.cumulativeSettledSeconds
       ) {
         shouldEmit = true;
         emitInstantly = true;
@@ -767,7 +749,7 @@ export class SlideExtractor {
         !shouldEmit &&
         mainChanges >= Math.floor(blockThreshold * this.options.partialThresholdRatio) &&
         this.cumulativeDrift >= blockThreshold &&
-        this.staticCount >= this.options.cumulativeSettledFrames
+        this.settledSinceTime >= 0 && (timestamp - this.settledSinceTime) >= this.options.cumulativeSettledSeconds
       ) {
         shouldEmit = true;
         emitInstantly = true;
@@ -790,10 +772,10 @@ export class SlideExtractor {
       if (this.options.useDeferredEmit && !emitInstantly) {
         // Buffer the frame as a candidate instead of emitting instantly
         if (this.pendingCandidate) {
-          this.pendingCandidate.bitmap.close(); // Clean up old candidate
+          this.pendingCandidate.frame.close(); // Clean up old candidate
         }
         this.pendingCandidate = {
-          bitmap: this.captureCanvasBitmap(),
+          frame: frame.clone(),
           timestamp: emitTimestamp,
           colorSig: colorSig
         };
@@ -802,23 +784,29 @@ export class SlideExtractor {
         const dhash = this.wasm.compute_dhash(true);
         if (!this.isDuplicate(dhash)) {
           this.savedHashes.push(dhash);
-          this.emitSlideFromCanvas(emitTimestamp);
+          this.emitSlideFromFrame(frame, emitTimestamp);
           this.copyBufferBToA();
           this.lastSlideTime = emitTimestamp;
         }
         this.cumulativeDrift = 0;
-        this.driftFrames = 0;
-        this.staticCount = 0;
+        this.settledSinceTime = -1;
       }
     }
     // Reset drift if too long without trigger (prevents webcam noise buildup)
     else if (
       !candidateConfirmedThisFrame &&
-      this.driftFrames > this.options.noiseResetFrames &&
+      this.cumulativeDrift > 0 &&
+      (timestamp - this.driftStartTime) > this.options.noiseResetSeconds &&
       mainChanges < Math.floor(blockThreshold * this.options.noiseMainRatio)
     ) {
       this.cumulativeDrift = 0;
-      this.driftFrames = 0;
+      this.settledSinceTime = -1;
+    }
+
+    } finally {
+      if (this.lastProcessedFrame) this.lastProcessedFrame.close();
+      this.lastProcessedFrame = frame.clone();
+      frame.close();
     }
   }
 
@@ -844,26 +832,6 @@ export class SlideExtractor {
     const { data } = this.compareCtx!.getImageData(0, 0, W, H);
     const ptr = this.wasm.get_rgba_buffer_ptr();
     new Uint8Array(this.wasm.memory.buffer, ptr, W * H * 4).set(data);
-
-    // Buffer the frame in higher resolution for export!
-    // ⚠️ CRITICAL: Hardware GPUs (used in accurate mode) can return frames where
-    // displayWidth AND codedWidth are BOTH 0/undefined. Triple fallback chain:
-    //   1. displayWidth (standard, works on software decoders)
-    //   2. codedWidth (fallback for hardware decoders that omit display dimensions)
-    //   3. this.videoWidth (from demuxer container metadata — always reliable)
-    const sourceW = frame.displayWidth || frame.codedWidth || this.videoWidth;
-    const sourceH = frame.displayHeight || frame.codedHeight || this.videoHeight;
-    const targetW = this.options.exportResolution || sourceW;
-    const targetH = Math.round(targetW * (sourceH / sourceW)) || sourceH;
-    
-    if (!this.exportCanvas) {
-      this.exportCanvas = new OffscreenCanvas(targetW, targetH);
-      this.exportCtx = this.exportCanvas.getContext('2d')!;
-    } else if (this.exportCanvas.width !== targetW || this.exportCanvas.height !== targetH) {
-      this.exportCanvas.width = targetW;
-      this.exportCanvas.height = targetH;
-    }
-    this.exportCtx!.drawImage(frame, 0, 0, targetW, targetH);
   }
 
   /** Convert RGBA buffer to grayscale into buffer B. Call after captureFrameToRgba. */
@@ -891,12 +859,26 @@ export class SlideExtractor {
     );
   }
 
-  private captureCanvasBitmap(): ImageBitmap {
+  private captureExportBitmap(frame: VideoFrame): ImageBitmap {
+    const sourceW = frame.displayWidth || frame.codedWidth || this.videoWidth;
+    const sourceH = frame.displayHeight || frame.codedHeight || this.videoHeight;
+    const targetW = this.options.exportResolution || sourceW;
+    const targetH = Math.round(targetW * (sourceH / sourceW)) || sourceH;
+    
+    if (!this.exportCanvas) {
+      this.exportCanvas = new OffscreenCanvas(targetW, targetH);
+      this.exportCtx = this.exportCanvas.getContext('2d')!;
+    } else if (this.exportCanvas.width !== targetW || this.exportCanvas.height !== targetH) {
+      this.exportCanvas.width = targetW;
+      this.exportCanvas.height = targetH;
+    }
+    
+    this.exportCtx!.drawImage(frame, 0, 0, targetW, targetH);
     return this.exportCanvas!.transferToImageBitmap();
   }
 
-  private emitSlideFromCanvas(timestamp: number) {
-    this.emitBitmap(this.captureCanvasBitmap(), timestamp);
+  private emitSlideFromFrame(frame: VideoFrame, timestamp: number) {
+    this.emitBitmap(this.captureExportBitmap(frame), timestamp);
   }
 
   private lastEmitPromise: Promise<void> = Promise.resolve();
@@ -965,6 +947,7 @@ export class SlideExtractor {
     const totalEstimatedMb = wasmRamMb + decoderOverheadMb + jsHeapMb;
 
     this.metrics.peakRamMb = Math.max(this.metrics.peakRamMb, Math.round(totalEstimatedMb));
+    this.metrics.jobElapsedMs = performance.now() - this.metrics.startTime;
   }
 }
 

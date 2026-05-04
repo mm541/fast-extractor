@@ -34,3 +34,6 @@ wasm-extractor/pkg/
 !.dev.vars.example
 .env*
 !.env.example
+# FFmpeg WASM Demuxer Build Artifacts
+ffmpeg-wasm-demuxer/target/
+ffmpeg-wasm-demuxer/ffmpeg_build/

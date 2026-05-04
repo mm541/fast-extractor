@@ -1,0 +1,2 @@
+-I
+/home/azam/personal/fun/audio-extractor/fast-extractor/ffmpeg-wasm-demuxer/ffmpeg_build/ffmpeg-8.1

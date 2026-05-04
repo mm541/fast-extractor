@@ -1,25 +1,28 @@
 import React from 'react';
+import type { ProgressEvent } from '../../engine/types';
 
 interface MetricsDashboardProps {
-    metrics: any;
-    jobMetrics: { start: number; end: number | null };
+    metrics: NonNullable<ProgressEvent['metrics']>;
     extractionMode: 'turbo' | 'sequential';
 }
 
-const MetricsDashboard: React.FC<MetricsDashboardProps> = ({ metrics, jobMetrics, extractionMode }) => {
+const MetricsDashboard: React.FC<MetricsDashboardProps> = ({ metrics, extractionMode }) => {
+    // metrics.jobElapsedMs is correctly computed inside the Web Worker (avoiding clock desync between threads)
+    const elapsed = (metrics.jobElapsedMs ?? 0) / 1000;
+    const decodeSpeed = metrics.totalFrames > 0 && elapsed > 0
+        ? (metrics.totalFrames / elapsed).toFixed(1)
+        : '0';
+
     return (
         <div className="metrics-dashboard slide-up">
             <div className="metric-card">
                 <span className="label">Total Job Time</span>
-                <span className="value">
-                    {jobMetrics.end ? ((jobMetrics.end - jobMetrics.start) / 1000).toFixed(1) : ((performance.now() - jobMetrics.start) / 1000).toFixed(1)}s
-                </span>
+                <span className="value">{elapsed.toFixed(1)}s</span>
             </div>
             <div className="metric-card">
                 <span className="label">Decode Speed</span>
                 <span className="value">
-                    {metrics.totalFrames ? (metrics.totalFrames / (((metrics.endTime || performance.now()) - metrics.startTime) / 1000)).toFixed(1) : '0'} 
-                    {extractionMode === 'turbo' ? ' Keyframes/s' : ' FPS'}
+                    {decodeSpeed} {extractionMode === 'turbo' ? ' Keyframes/s' : ' FPS'}
                 </span>
             </div>
             <div className="metric-card">

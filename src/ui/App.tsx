@@ -74,7 +74,7 @@ const App: React.FC = () => {
     const [fileName, setFileName] = useState<string>('');
     const [isZipping, setIsZipping] = useState(false);
     const [progress, setProgress] = useState<number>(0);
-    const [jobMetrics, setJobMetrics] = useState<{ start: number; end: number | null }>({ start: 0, end: null });
+
     const [extractionMode, setExtractionMode] = useState<'turbo' | 'sequential'>('turbo');
     
     const [config, setConfig] = useState({
@@ -88,9 +88,9 @@ const App: React.FC = () => {
 
         // Drift detection
         cumulativeDriftMultiplier: 2,
-        cumulativeSettledFrames: 2,
+        cumulativeSettledSeconds: 2,
         partialThresholdRatio: 0.5,
-        noiseResetFrames: 30,
+        noiseResetSeconds: 30,
         noiseMainRatio: 0.25,
         imageQuality: 0.8,
         imageFormat: 'jpeg' as 'webp' | 'jpeg',
@@ -177,7 +177,7 @@ const App: React.FC = () => {
         setIngestedFile(null);
         setStatus('Ready to extract');
         setProgress(0);
-        setJobMetrics({ start: 0, end: null });
+
         setMetrics(null);
         setAudioManifest(null);
         if (fileInputRef.current) {
@@ -366,7 +366,7 @@ const App: React.FC = () => {
         setAudioManifest(null);
         setProgress(0);
         setMetrics(null);
-        setJobMetrics({ start: performance.now(), end: null });
+
 
         const controller = new AbortController();
         abortRef.current = controller;
@@ -542,7 +542,6 @@ const App: React.FC = () => {
 
             // Stream closed — normal completion
             // (status is already 'Extraction Complete' from the final progress event)
-            setJobMetrics(prev => ({ ...prev, end: performance.now() }));
             setIsExtracting(false);
         } catch (err: any) {
             // Close OPFS handles safely before retrying to prevent locks
@@ -571,6 +570,8 @@ const App: React.FC = () => {
             }
         } finally {
             abortRef.current = null;
+            // Stamp end time on ALL exit paths (success, error, abort)
+
         }
         }; // End of doExtract
 
@@ -603,7 +604,8 @@ const App: React.FC = () => {
 
                 <div className="glass-panel">
                     <div className="upload-zone">
-                        <label className={`file-label ${file ? 'has-file' : ''}`}>
+                        {/* Keep input in DOM for SAF retry (fileInputRef.current.click()), but hide visually after extraction */}
+                        <label className={`file-label ${file ? 'has-file' : ''}`} style={(slides.length > 0 || audioUrl) ? { display: 'none' } : undefined}>
                             {file ? '📄 ' + file.name : 'Select Video File'}
                             <input ref={fileInputRef} type="file" accept="video/*" onChange={handleFileChange} disabled={isExtracting || isIngesting} />
                         </label>
@@ -677,7 +679,7 @@ const App: React.FC = () => {
                 </div>
 
                 {metrics && metrics.startTime && (
-                    <MetricsDashboard metrics={metrics} jobMetrics={jobMetrics} extractionMode={extractionMode} />
+                    <MetricsDashboard metrics={metrics} extractionMode={extractionMode} />
                 )}
 
                 {audioUrl && (
