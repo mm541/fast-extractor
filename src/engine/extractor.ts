@@ -200,6 +200,7 @@ export interface SlideExtractorOptions {
 export interface ExtractionMetrics {
   startTime: number;
   endTime?: number;
+  jobElapsedMs?: number;
   totalFrames: number;
   totalSlides: number;
   peakRamMb: number;
@@ -518,6 +519,7 @@ export class SlideExtractor {
 
     this.metrics.videoDurationSec = this.videoDuration;
     this.metrics.endTime = performance.now();
+    this.metrics.jobElapsedMs = this.metrics.endTime - this.metrics.startTime;
     this.options.onProgress(100, "Done", this.metrics);
     return this.metrics;
   }
@@ -945,6 +947,7 @@ export class SlideExtractor {
     const totalEstimatedMb = wasmRamMb + decoderOverheadMb + jsHeapMb;
 
     this.metrics.peakRamMb = Math.max(this.metrics.peakRamMb, Math.round(totalEstimatedMb));
+    this.metrics.jobElapsedMs = performance.now() - this.metrics.startTime;
   }
 }
 

@@ -85,6 +85,7 @@ export interface ProgressEvent {
   metrics?: {
     startTime: number;
     endTime?: number;
+    jobElapsedMs: number;
     totalFrames: number;
     totalSlides: number;
     peakRamMb: number;

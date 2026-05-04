@@ -7,8 +7,9 @@ interface MetricsDashboardProps {
 }
 
 const MetricsDashboard: React.FC<MetricsDashboardProps> = ({ metrics, extractionMode }) => {
-    const elapsed = ((metrics.endTime || performance.now()) - metrics.startTime) / 1000;
-    const decodeSpeed = metrics.totalFrames > 0
+    // metrics.jobElapsedMs is correctly computed inside the Web Worker (avoiding clock desync between threads)
+    const elapsed = (metrics.jobElapsedMs ?? 0) / 1000;
+    const decodeSpeed = metrics.totalFrames > 0 && elapsed > 0
         ? (metrics.totalFrames / elapsed).toFixed(1)
         : '0';
 
