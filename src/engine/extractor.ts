@@ -267,10 +267,12 @@ export class SlideExtractor {
   private lastSlideTime = -10;
 
   private pendingCandidate: {
-    bitmap: ImageBitmap;
+    frame: VideoFrame;
     timestamp: number;
     colorSig: [number, number, number];
   } | null = null;
+  
+  private lastProcessedFrame: VideoFrame | null = null;
 
   private compareCanvas: OffscreenCanvas | null = null;
   private compareCtx: OffscreenCanvasRenderingContext2D | null = null;
@@ -483,9 +485,10 @@ export class SlideExtractor {
     // being buffered. No dHash check here — WASM buffer B contains the last
     // processed frame, not the candidate's frame data.
     if (this.pendingCandidate) {
-      this.emitBitmap(this.pendingCandidate.bitmap, this.pendingCandidate.timestamp);
+      this.emitSlideFromFrame(this.pendingCandidate.frame, this.pendingCandidate.timestamp);
+      this.pendingCandidate.frame.close();
       this.pendingCandidate = null;
-    } else if (this.exportCanvas && this.metrics.lastFrameTimestamp !== undefined) {
+    } else if (this.metrics.lastFrameTimestamp !== undefined && this.lastProcessedFrame) {
       // If the video ended in the middle of a slow drawing transition, it never reached the 
       // staticCount required to trigger Condition 2 or 3.
       // We check if the final frame (Buffer B) is meaningfully different from the last emitted slide (Buffer A).
@@ -500,8 +503,13 @@ export class SlideExtractor {
       if (mainChanges >= partialThreshold) {
         // Emit the final state of the video
         const emitTs = this.cumulativeDrift > 0 ? this.driftStartTime : this.metrics.lastFrameTimestamp;
-        this.emitBitmap(this.captureCanvasBitmap(), emitTs);
+        this.emitSlideFromFrame(this.lastProcessedFrame, emitTs);
       }
+    }
+
+    if (this.lastProcessedFrame) {
+      this.lastProcessedFrame.close();
+      this.lastProcessedFrame = null;
     }
 
     // Await all queued background encodes to prevent dropping slides
@@ -596,6 +604,8 @@ export class SlideExtractor {
       this.wasm.shift_current_to_prev();
       this.captureFrameToRgba(frame);
     } finally {
+      if (this.lastProcessedFrame) this.lastProcessedFrame.close();
+      this.lastProcessedFrame = frame.clone();
       frame.close();
     }
 
@@ -615,7 +625,7 @@ export class SlideExtractor {
     if (!this.hasBaseline) {
       this.copyBufferBToA();
       this.savedHashes.push(this.wasm.compute_dhash(true));
-      this.emitSlideFromCanvas(timestamp);
+      this.emitSlideFromFrame(frame, timestamp);
       this.hasBaseline = true;
       this.lastSlideTime = timestamp;
       this.prevColorSig = colorSig;
@@ -642,11 +652,11 @@ export class SlideExtractor {
         // SETTLED! The slide has stopped moving.
         // Emit the CURRENT frame (clean/settled) with the timestamp from
         // when the transition was first detected.
-        this.emitBitmap(this.captureCanvasBitmap(), this.pendingCandidate.timestamp);
+        this.emitSlideFromFrame(frame, this.pendingCandidate.timestamp);
         this.copyBufferBToA(); // Current frame is the new Baseline
         this.lastSlideTime = this.pendingCandidate.timestamp;
         
-        this.pendingCandidate.bitmap.close();
+        this.pendingCandidate.frame.close();
         this.pendingCandidate = null;
         
         // Reset drift metrics because a transition just finished
@@ -765,10 +775,10 @@ export class SlideExtractor {
       if (this.options.useDeferredEmit && !emitInstantly) {
         // Buffer the frame as a candidate instead of emitting instantly
         if (this.pendingCandidate) {
-          this.pendingCandidate.bitmap.close(); // Clean up old candidate
+          this.pendingCandidate.frame.close(); // Clean up old candidate
         }
         this.pendingCandidate = {
-          bitmap: this.captureCanvasBitmap(),
+          frame: frame.clone(),
           timestamp: emitTimestamp,
           colorSig: colorSig
         };
@@ -777,7 +787,7 @@ export class SlideExtractor {
         const dhash = this.wasm.compute_dhash(true);
         if (!this.isDuplicate(dhash)) {
           this.savedHashes.push(dhash);
-          this.emitSlideFromCanvas(emitTimestamp);
+          this.emitSlideFromFrame(frame, emitTimestamp);
           this.copyBufferBToA();
           this.lastSlideTime = emitTimestamp;
         }
@@ -819,26 +829,6 @@ export class SlideExtractor {
     const { data } = this.compareCtx!.getImageData(0, 0, W, H);
     const ptr = this.wasm.get_rgba_buffer_ptr();
     new Uint8Array(this.wasm.memory.buffer, ptr, W * H * 4).set(data);
-
-    // Buffer the frame in higher resolution for export!
-    // ⚠️ CRITICAL: Hardware GPUs (used in accurate mode) can return frames where
-    // displayWidth AND codedWidth are BOTH 0/undefined. Triple fallback chain:
-    //   1. displayWidth (standard, works on software decoders)
-    //   2. codedWidth (fallback for hardware decoders that omit display dimensions)
-    //   3. this.videoWidth (from demuxer container metadata — always reliable)
-    const sourceW = frame.displayWidth || frame.codedWidth || this.videoWidth;
-    const sourceH = frame.displayHeight || frame.codedHeight || this.videoHeight;
-    const targetW = this.options.exportResolution || sourceW;
-    const targetH = Math.round(targetW * (sourceH / sourceW)) || sourceH;
-    
-    if (!this.exportCanvas) {
-      this.exportCanvas = new OffscreenCanvas(targetW, targetH);
-      this.exportCtx = this.exportCanvas.getContext('2d')!;
-    } else if (this.exportCanvas.width !== targetW || this.exportCanvas.height !== targetH) {
-      this.exportCanvas.width = targetW;
-      this.exportCanvas.height = targetH;
-    }
-    this.exportCtx!.drawImage(frame, 0, 0, targetW, targetH);
   }
 
   /** Convert RGBA buffer to grayscale into buffer B. Call after captureFrameToRgba. */
@@ -866,12 +856,26 @@ export class SlideExtractor {
     );
   }
 
-  private captureCanvasBitmap(): ImageBitmap {
+  private captureExportBitmap(frame: VideoFrame): ImageBitmap {
+    const sourceW = frame.displayWidth || frame.codedWidth || this.videoWidth;
+    const sourceH = frame.displayHeight || frame.codedHeight || this.videoHeight;
+    const targetW = this.options.exportResolution || sourceW;
+    const targetH = Math.round(targetW * (sourceH / sourceW)) || sourceH;
+    
+    if (!this.exportCanvas) {
+      this.exportCanvas = new OffscreenCanvas(targetW, targetH);
+      this.exportCtx = this.exportCanvas.getContext('2d')!;
+    } else if (this.exportCanvas.width !== targetW || this.exportCanvas.height !== targetH) {
+      this.exportCanvas.width = targetW;
+      this.exportCanvas.height = targetH;
+    }
+    
+    this.exportCtx!.drawImage(frame, 0, 0, targetW, targetH);
     return this.exportCanvas!.transferToImageBitmap();
   }
 
-  private emitSlideFromCanvas(timestamp: number) {
-    this.emitBitmap(this.captureCanvasBitmap(), timestamp);
+  private emitSlideFromFrame(frame: VideoFrame, timestamp: number) {
+    this.emitBitmap(this.captureExportBitmap(frame), timestamp);
   }
 
   private lastEmitPromise: Promise<void> = Promise.resolve();
