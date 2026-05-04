@@ -410,8 +410,7 @@ export class SlideExtractor {
 
     // Backpressure: prevent memory blowout
     // Mobile hardware decoders crash or OOM if fed too many frames at once.
-    // Sequential mode keeps this low (5) because it decodes every single frame.
-    const maxQueue = this.options.mode === 'turbo' ? 12 : 5;
+    const maxQueue = 12;
 
     // Use WebCodecs 'ondequeue' event for instant backpressure resolution (0ms).
     // This restores PC throughput. For dropped frames on mobile, ondequeue STILL
