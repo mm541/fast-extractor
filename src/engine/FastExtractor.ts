@@ -3,14 +3,13 @@
  * FastExtractor.ts — Public Library API
  * ============================================================================
  * 
- * ⚠️ CRITICAL ARCHITECTURE HAZARD: THE 100% CPU BURN SPINLOOP
- * When yielding to the browser to bypass background tab throttling, DO NOT use
- * 0ms `MessageChannel` loops inside `while` loops (e.g. backpressure polling).
- * A 0ms `while` loop busy-waits 10,000+ times per second, pinning the main thread
- * to 100% CPU, melting the user's device, and starving the worker thread.
- * Backpressure MUST be resolved via explicit cross-thread Promises (e.g., `waitForAck`)
- * tied directly to the worker's `CHUNK_PROCESSED` event to suspend the main thread
- * at 0% CPU. See `docs/WEBCODECS_HAZARDS.md` for details.
+ * ⚠️ ARCHITECTURE NOTE: WORKER-SIDE BACKPRESSURE
+ * As of the ffmpeg-wasm-demuxer migration, ALL demuxing and backpressure
+ * logic lives inside the Worker thread. The main thread no longer reads
+ * video packets or manages cross-thread flow control (unackedChunks).
+ * Backpressure is handled by `await slideExtractor.feedChunk()` inside
+ * the Worker's EXTRACT_VIDEO handler, which naturally pauses the demuxer
+ * when the hardware decoder queue is full.
  *
  * ============================================================================
  *
@@ -256,7 +255,6 @@ export class FastExtractor {
           const {
             mode = 'turbo',
             wasmUrl: _wasmUrl,           // consumed above, don't forward
-            demuxerWasmUrl,              // forwarded to worker
             worker: _workerOpt,          // consumed above, don't forward
             extractAudio = true,         // default: extract audio
             extractSlides = true,        // default: extract slides
@@ -266,7 +264,7 @@ export class FastExtractor {
 
           worker.postMessage({
             type: 'CONFIG',
-            data: { demuxerWasmUrl, extractAudio, extractSlides },
+            data: { extractAudio, extractSlides },
             config: { ...detectionConfig, mode },
           });
 
@@ -316,14 +314,6 @@ export class FastExtractor {
                     message: e.data.status,
                     metrics: e.data.metrics,
                   });
-                  break;
-
-                case 'CHUNK_PROCESSED':
-                  unackedChunks--;
-                  if (unblockMainThread && unackedChunks < 15) {
-                    unblockMainThread();
-                    unblockMainThread = null;
-                  }
                   break;
 
                 case 'ALL_DONE':
@@ -413,8 +403,6 @@ export class FastExtractor {
             }, signal);
           }
           
-          let unackedChunks = 0;
-          let unblockMainThread: (() => void) | null = null;
           
           const runPipeline = async () => {
             try {
@@ -444,15 +432,12 @@ export class FastExtractor {
                 });
               }
 
-              // Run video extraction pipeline
+              // Run video extraction pipeline (now fully handled by the worker)
               if (this.options.extractSlides !== false) {
                   await extractVideoChunks(
                     worker!, 
                     this.options, 
                     tempFileName, 
-                    () => unackedChunks, 
-                    () => { unackedChunks++; },
-                    () => new Promise<void>(r => { unblockMainThread = r; })
                   );
               } else {
                   worker!.postMessage({ type: 'VIDEO_DONE', skipped: true });

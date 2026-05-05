@@ -4,6 +4,7 @@
 #include <libavformat/avio.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/mem.h>
+#include <libavutil/display.h>
 
 // ============================================================================
 // FFmpeg WASM Core Demuxer (FFmpeg 8.1 Compatible)
@@ -49,6 +50,7 @@ typedef struct {
     int size;
     int64_t pts;
     int64_t dts;
+    int64_t duration;
     int is_keyframe;
     int stream_index;
     AVPacket *raw_pkt;
@@ -67,6 +69,7 @@ typedef struct {
     int height;
     int bit_rate;
     int codec_type;  // AVMEDIA_TYPE_VIDEO=0, AVMEDIA_TYPE_AUDIO=1, AVMEDIA_TYPE_SUBTITLE=3
+    double rotation; // Degrees (0, 90, 180, 270)
 } StreamInfo;
 
 // ── C callback wrappers for FFmpeg ──
@@ -75,8 +78,10 @@ typedef struct {
 
 static int c_read_packet(void *opaque, uint8_t *buf, int buf_size) {
     CustomDemuxer *d = (CustomDemuxer *)opaque;
-    if (!d || !d->read_callback) return 0;
-    return d->read_callback(buf, buf_size);
+    if (!d || !d->read_callback) return AVERROR_EOF;
+    int ret = d->read_callback(buf, buf_size);
+    if (ret <= 0) return AVERROR_EOF;
+    return ret;
 }
 
 static int64_t c_seek(void *opaque, int64_t offset, int whence) {
@@ -114,12 +119,23 @@ static StreamInfo* build_stream_info(AVStream *st) {
     info->bit_rate       = (int)(st->codecpar->bit_rate / 1000); // kbps
     info->codec_type     = st->codecpar->codec_type;
 
+    // Extract Display Rotation (mobile portrait video fix)
+    info->rotation = 0.0;
+    if (st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+        const AVPacketSideData *sd = av_packet_side_data_get(st->codecpar->coded_side_data, 
+                                                             st->codecpar->nb_coded_side_data, 
+                                                             AV_PKT_DATA_DISPLAYMATRIX);
+        if (sd) {
+            info->rotation = av_display_rotation_get((int32_t *)sd->data);
+        }
+    }
+
     return info;
 }
 
 // ── Demuxer Lifecycle ──
 
-CustomDemuxer* init_custom_demuxer(int read_cb_idx, int seek_cb_idx, int32_t *seek_result) {
+CustomDemuxer* init_custom_demuxer(int read_cb_idx, int seek_cb_idx, int32_t *seek_result, int buffer_size) {
     av_log_set_level(AV_LOG_QUIET);
     CustomDemuxer *demuxer = (CustomDemuxer *)av_mallocz(sizeof(CustomDemuxer));
     if (!demuxer) return NULL;
@@ -128,7 +144,7 @@ CustomDemuxer* init_custom_demuxer(int read_cb_idx, int seek_cb_idx, int32_t *se
     demuxer->seek_callback = (js_seek_fn)(uintptr_t)seek_cb_idx;
     demuxer->seek_result_buf = seek_result;
 
-    int avio_ctx_buffer_size = 32768;
+    int avio_ctx_buffer_size = buffer_size > 0 ? buffer_size : 1048576; // Default to 1MB
     uint8_t *avio_ctx_buffer = (uint8_t *)av_malloc(avio_ctx_buffer_size);
     if (!avio_ctx_buffer) {
         av_freep(&demuxer);
@@ -245,6 +261,7 @@ DemuxerPacket* read_next_packet(CustomDemuxer *demuxer) {
     dp->size = pkt->size;
     dp->pts = pkt->pts;
     dp->dts = pkt->dts;
+    dp->duration = pkt->duration;
     dp->is_keyframe = (pkt->flags & AV_PKT_FLAG_KEY) ? 1 : 0;
     dp->stream_index = pkt->stream_index;
     dp->raw_pkt = pkt; // Store to free later

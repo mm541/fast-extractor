@@ -37,12 +37,14 @@ self.onerror = (event: string | Event, source?: string, lineno?: number, colno?:
     self.postMessage({ type: 'ERROR', code: 'ERR_WORKER_GENERIC', error: 'Worker Global Error: ' + msg });
 };
 
-// Polyfill: some libraries (web-demuxer) check for `window` global
-(self as unknown as { window: unknown }).window = self;
 
 import init, { AudioExtractor, compare_frames, compare_prev_current, compute_dhash, compute_color_signature, get_avg_brightness, init_arena, get_buffer_a_ptr, get_buffer_b_ptr, get_buffer_prev_ptr, get_rgba_buffer_ptr, shift_current_to_prev, copy_rgba_to_gray } from './wasm/wasm_extractor';
 import { SlideExtractor } from './extractor';
 import type { SlideExtractorOptions } from './extractor';
+
+// FFmpeg WASM Demuxer — replaces web-demuxer for zero-copy, worker-side demuxing
+import { FFmpegDemuxer, createSyncHandleSource } from '../../ffmpeg-wasm-demuxer/src/index';
+import type { ModuleFactory } from '../../ffmpeg-wasm-demuxer/src/index';
 
 // ─── WORKER STATE ───
 // These are module-scoped because the worker lives for the entire extraction session.
@@ -107,7 +109,6 @@ function createSyncAccessHandleWithTimeout(
             });
     });
 }
-let chunkProcessingChain = Promise.resolve();
 
 self.onmessage = async (e: MessageEvent) => {
     const { type, data, config, wasmBuffer: wb } = e.data;
@@ -196,10 +197,10 @@ self.onmessage = async (e: MessageEvent) => {
             }
             return;
         }
+        // ─── Unified Video Extraction ───────────────────────────────────────
+        if (type === 'EXTRACT_VIDEO') {
+            const { fileHandle, mode } = e.data;
 
-        if (type === 'CONFIG_DECODER') {
-            const { config: decoderConfig, duration } = e.data;
-            
             // Wait for WASM if needed
             let retries = 0;
             while (!wasmInitialized && !wasmBuffer && retries < 300) {
@@ -208,86 +209,115 @@ self.onmessage = async (e: MessageEvent) => {
             }
             await ensureWasm(wasmBuffer);
 
-            // Set up slide extractor
-            const finalOptions = {
-                ...detectionConfig,
-                onProgress: (percent: number, message: string, metrics?: any) => {
-                    self.postMessage({ type: 'STATUS', status: message, progress: Math.round(percent), metrics });
-                },
-                onSlide: async (blob: Blob, timestamp: number) => {
-                    pendingSlideEncodes++;
-                    try {
-                        const ab = await blob.arrayBuffer();
-                        const boundaryMs = Math.round(timestamp * 1000);
+            let videoSyncHandle: FileSystemSyncAccessHandle | undefined;
+            let demuxer: FFmpegDemuxer | null = null;
 
-                        self.postMessage({
-                            type: 'SLIDE',
-                            buffer: ab,
-                            timestamp: formatTime(timestamp),
-                            startMs: boundaryMs,
-                        }, [ab]);
-                    } catch (e: any) {
-                        console.warn('[Worker] onSlide buffer read failed:', e.message);
-                    } finally {
-                        pendingSlideEncodes--;
-                        if (pendingSlideEncodes === 0 && drainResolve) {
-                            drainResolve();
-                            drainResolve = null;
+            try {
+                self.postMessage({ type: 'STATUS', status: 'Initializing Video Demuxer...' });
+
+                // 1. Open OPFS SyncAccessHandle for the video file
+                videoSyncHandle = await createSyncAccessHandleWithTimeout(fileHandle, 5000);
+                const fileSize = videoSyncHandle.getSize();
+
+                // 2. Load the FFmpeg WASM demuxer module
+                // The createDemuxerModule is loaded from the Emscripten-generated JS
+                // which has the WASM Base64-inlined via SINGLE_FILE=1.
+                // @ts-ignore — Emscripten-generated JS has no .d.ts, inlined WASM via SINGLE_FILE=1
+                const { default: createDemuxerModule } = await import(/* @vite-ignore */ '../../ffmpeg-wasm-demuxer/pkg/ffmpeg_demuxer.js');
+                demuxer = await FFmpegDemuxer.create(createDemuxerModule as ModuleFactory);
+
+                // 3. Open the file with the demuxer
+                const ioSource = createSyncHandleSource(videoSyncHandle, fileSize);
+                demuxer.open(ioSource);
+
+                // 4. Get decoder config from the demuxer
+                const configResult = demuxer.getVideoDecoderConfig();
+                if (!configResult) {
+                    throw new Error('No video stream found in file');
+                }
+
+                const duration = demuxer.duration;
+
+                // 5. Set up SlideExtractor
+                const finalOptions = {
+                    ...detectionConfig,
+                    onProgress: (percent: number, message: string, metrics?: any) => {
+                        self.postMessage({ type: 'STATUS', status: message, progress: Math.round(percent), metrics });
+                    },
+                    onSlide: async (blob: Blob, timestamp: number) => {
+                        pendingSlideEncodes++;
+                        try {
+                            const ab = await blob.arrayBuffer();
+                            const boundaryMs = Math.round(timestamp * 1000);
+
+                            self.postMessage({
+                                type: 'SLIDE',
+                                buffer: ab,
+                                timestamp: formatTime(timestamp),
+                                startMs: boundaryMs,
+                            }, [ab]);
+                        } catch (e: any) {
+                            console.warn('[Worker] onSlide buffer read failed:', e.message);
+                        } finally {
+                            pendingSlideEncodes--;
+                            if (pendingSlideEncodes === 0 && drainResolve) {
+                                drainResolve();
+                                drainResolve = null;
+                            }
                         }
                     }
+                };
+
+                slideExtractor = new SlideExtractor(
+                    { 
+                        init_arena, 
+                        get_buffer_a_ptr, 
+                        get_buffer_b_ptr, 
+                        get_buffer_prev_ptr,
+                        get_rgba_buffer_ptr,
+                        shift_current_to_prev,
+                        copy_rgba_to_gray,
+                        compare_frames, 
+                        compare_prev_current,
+                        compute_dhash, 
+                        compute_color_signature,
+                        get_avg_brightness,
+                        memory: wasmModule.memory
+                    } as any,
+                    finalOptions
+                );
+
+                await slideExtractor.configure(configResult.config, duration);
+
+                self.postMessage({ type: 'STATUS', status: 'Extracting Slides...' });
+
+                // 6. The Core Loop — single-threaded backpressure via await
+                let pkt;
+                while ((pkt = demuxer.readPacket()) !== null) {
+                    if (pkt.streamIndex === demuxer.videoStreamIndex) {
+                        // In turbo mode, skip non-keyframes
+                        if (mode === 'turbo' && !pkt.isKeyframe) {
+                            pkt.free();
+                            continue;
+                        }
+
+                        // feedChunk is async — it awaits when the decoder queue
+                        // is full. THIS is the backpressure. The demuxer loop
+                        // pauses until the hardware decoder drains.
+                        await slideExtractor.feedChunk(
+                            pkt.data.slice().buffer as ArrayBuffer,  // Copy out of WASM view before free
+                            pkt.ptsUs,
+                            pkt.isKeyframe ? 'key' : 'delta'
+                        );
+                    }
+                    // Audio packets: future hook point
+                    // else if (pkt.streamIndex === demuxer.audioStreamIndex) { ... }
+
+                    pkt.free(); // Release the C AVPacket memory
                 }
-            };
 
-            slideExtractor = new SlideExtractor(
-                { 
-                    init_arena, 
-                    get_buffer_a_ptr, 
-                    get_buffer_b_ptr, 
-                    get_buffer_prev_ptr,
-                    get_rgba_buffer_ptr,
-                    shift_current_to_prev,
-                    copy_rgba_to_gray,
-                    compare_frames, 
-                    compare_prev_current,
-                    compute_dhash, 
-                    compute_color_signature,
-                    get_avg_brightness,
-                    memory: wasmModule.memory
-                } as any,
-                finalOptions
-            );
-
-            await slideExtractor.configure(decoderConfig, duration);
-            return;
-        }
-
-        if (type === 'VIDEO_CHUNK') {
-            const { chunk, timestamp, chunkType } = e.data;
-            const currentExtractor = slideExtractor;
-            if (currentExtractor) {
-                // ⚠️ CRITICAL: Serialize chunk processing!
-                // If we don't chain these, the async onmessage handler will pick up 
-                // up to 15 chunks concurrently whenever feedChunk hits backpressure.
-                // Concurrent feedChunks overwrite the backpressure resolve promise,
-                // causing massive 500ms deadlocks for every batch of frames.
-                chunkProcessingChain = chunkProcessingChain.then(async () => {
-                    await currentExtractor.feedChunk(chunk, timestamp, chunkType);
-                    self.postMessage({ type: 'CHUNK_PROCESSED' });
-                });
-            }
-            return;
-        }
-
-        if (type === 'VIDEO_DONE') {
-            const { skipped } = e.data;
-            const currentExtractor = slideExtractor;
-            
-            chunkProcessingChain = chunkProcessingChain.then(async () => {
-                let metrics: any = {};
-                
-                if (!skipped && currentExtractor) {
-                    metrics = await currentExtractor.flush();
-                }
+                // 7. Flush the decoder and emit final slides
+                const metrics = await slideExtractor.flush();
 
                 // Drain any pending async onSlide callbacks
                 if (pendingSlideEncodes > 0) {
@@ -297,10 +327,26 @@ self.onmessage = async (e: MessageEvent) => {
                     ]);
                 }
 
-
-
                 postMessage({ type: 'ALL_DONE', metrics });
-            });
+
+            } catch (err: any) {
+                const message = err instanceof Error ? err.message : String(err);
+                self.postMessage({ type: 'ERROR', code: 'ERR_WORKER_GENERIC', error: message });
+            } finally {
+                if (demuxer) demuxer.destroy();
+                if (videoSyncHandle) {
+                    try { videoSyncHandle.close(); } catch {}
+                }
+            }
+            return;
+        }
+
+        if (type === 'VIDEO_DONE') {
+            // Handle the "skipped slides" case from FastExtractor
+            const { skipped } = e.data;
+            if (skipped) {
+                postMessage({ type: 'ALL_DONE', metrics: {} });
+            }
             return;
         }
 
