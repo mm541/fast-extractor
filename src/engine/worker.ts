@@ -294,26 +294,27 @@ self.onmessage = async (e: MessageEvent) => {
                 // 6. The Core Loop — single-threaded backpressure via await
                 let pkt;
                 while ((pkt = demuxer.readPacket()) !== null) {
-                    if (pkt.streamIndex === demuxer.videoStreamIndex) {
-                        // In turbo mode, skip non-keyframes
-                        if (mode === 'turbo' && !pkt.isKeyframe) {
-                            pkt.free();
-                            continue;
+                    try {
+                        if (pkt.streamIndex === demuxer.videoStreamIndex) {
+                            // In turbo mode, skip non-keyframes
+                            if (mode === 'turbo' && !pkt.isKeyframe) {
+                                continue;
+                            }
+
+                            // feedChunk is async — it awaits when the decoder queue
+                            // is full. THIS is the backpressure. The demuxer loop
+                            // pauses until the hardware decoder drains.
+                            await slideExtractor.feedChunk(
+                                pkt.data.slice().buffer as ArrayBuffer,  // Copy out of WASM view before free
+                                pkt.ptsUs,
+                                pkt.isKeyframe ? 'key' : 'delta'
+                            );
                         }
-
-                        // feedChunk is async — it awaits when the decoder queue
-                        // is full. THIS is the backpressure. The demuxer loop
-                        // pauses until the hardware decoder drains.
-                        await slideExtractor.feedChunk(
-                            pkt.data.slice().buffer as ArrayBuffer,  // Copy out of WASM view before free
-                            pkt.ptsUs,
-                            pkt.isKeyframe ? 'key' : 'delta'
-                        );
+                        // Audio packets: future hook point
+                        // else if (pkt.streamIndex === demuxer.audioStreamIndex) { ... }
+                    } finally {
+                        pkt.free(); // ALWAYS release the C AVPacket memory
                     }
-                    // Audio packets: future hook point
-                    // else if (pkt.streamIndex === demuxer.audioStreamIndex) { ... }
-
-                    pkt.free(); // Release the C AVPacket memory
                 }
 
                 // 7. Flush the decoder and emit final slides
