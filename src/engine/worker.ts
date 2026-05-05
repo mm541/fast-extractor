@@ -223,7 +223,7 @@ self.onmessage = async (e: MessageEvent) => {
                 // The createDemuxerModule is loaded from the Emscripten-generated JS
                 // which has the WASM Base64-inlined via SINGLE_FILE=1.
                 // @ts-ignore — Emscripten-generated JS has no .d.ts, inlined WASM via SINGLE_FILE=1
-                const { default: createDemuxerModule } = await import(/* @vite-ignore */ '../../ffmpeg-wasm-demuxer/pkg/ffmpeg_demuxer.js');
+                const { default: createDemuxerModule } = await import('../../ffmpeg-wasm-demuxer/pkg/ffmpeg_demuxer.js');
                 demuxer = await FFmpegDemuxer.create(createDemuxerModule as ModuleFactory);
 
                 // 3. Open the file with the demuxer
