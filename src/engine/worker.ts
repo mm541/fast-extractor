@@ -42,9 +42,8 @@ import init, { AudioExtractor, compare_frames, compare_prev_current, compute_dha
 import { SlideExtractor } from './extractor';
 import type { SlideExtractorOptions } from './extractor';
 
-// FFmpeg WASM Demuxer — replaces web-demuxer for zero-copy, worker-side demuxing
-import { FFmpegDemuxer, createSyncHandleSource } from '../../ffmpeg-wasm-demuxer/src/index';
-import type { ModuleFactory } from '../../ffmpeg-wasm-demuxer/src/index';
+// FFmpeg WASM Demuxer — lazy-loaded to avoid blocking worker startup on mobile
+import type { FFmpegDemuxer as FFmpegDemuxerType, ModuleFactory } from '../../ffmpeg-wasm-demuxer/src/index';
 
 // ─── WORKER STATE ───
 // These are module-scoped because the worker lives for the entire extraction session.
@@ -210,7 +209,10 @@ self.onmessage = async (e: MessageEvent) => {
             await ensureWasm(wasmBuffer);
 
             let videoSyncHandle: FileSystemSyncAccessHandle | undefined;
-            let demuxer: FFmpegDemuxer | null = null;
+            let demuxer: FFmpegDemuxerType | null = null;
+
+            // Lazy-load the FFmpeg demuxer wrapper (avoids blocking worker startup on mobile)
+            const { FFmpegDemuxer, createSyncHandleSource } = await import('../../ffmpeg-wasm-demuxer/src/index');
 
             try {
                 self.postMessage({ type: 'STATUS', status: 'Initializing Video Demuxer...' });
