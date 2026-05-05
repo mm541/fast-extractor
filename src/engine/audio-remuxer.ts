@@ -543,6 +543,14 @@ export class AudioRemuxer {
     // Return a copy (safe to transfer via postMessage without neutering our buffer)
     const result = this.buffer.slice(0, this.offset);
     this.offset = 0;
+
+    // Fix trailing zeros in manifest index if audio track is shorter than container duration
+    if (this.byteIndex !== null) {
+      for (let i = this.lastIndexedSec + 1; i < this.byteIndex.length; i++) {
+        this.byteIndex[i] = this.bytesWritten;
+      }
+    }
+
     return result;
   }
 
