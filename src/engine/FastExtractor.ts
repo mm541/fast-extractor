@@ -327,6 +327,7 @@ export class FastExtractor {
                     });
                   }
                   this._extracting = false;
+                  if (!this.options.worker) worker?.terminate();
                   worker = null;
                   controller.close();
                   // Clean up OPFS temp file AFTER worker is fully done
@@ -341,7 +342,7 @@ export class FastExtractor {
                   const customError = new ExtractorError(errorCode, errorMsg);
                   
                   this._extracting = false;
-                  // Don't terminate — worker self-closes after OPFS cleanup
+                  if (!this.options.worker) worker?.terminate();
                   worker = null;
                   controller.error(customError);
                   break;
