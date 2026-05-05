@@ -158,29 +158,51 @@ pub fn copy_rgba_to_gray(is_target_b: bool) {
 const GRID_ROWS: usize = 8;
 const GRID_COLS: usize = 8;
 
-/// Edge detection via L1-norm First-Order Forward Difference gradient.
+/// Edge detection via the 3x3 Sobel Operator (L1-norm approximation).
 /// Uses branchless `(bool) as u8` cast to avoid branch-prediction stalls.
 fn compute_edge_map_into(pixels: &[u8], width: usize, height: usize, edge_threshold: i16, out: &mut Vec<u8>) {
     let len = width * height;
-    // Safety net: Ensures the buffer is large enough.
-    // In our FrameArena (424x240), out.len() exactly equals len (101,760),
-    // so this resize() never executes, preserving our zero-allocation invariant.
     if out.len() < len { out.resize(len, 0); }
+
+    // Clear border pixels since the 3x3 Sobel kernel is undefined at the edges
+    out.fill(0);
 
     // Slice assertions to elide bounds checks inside the loop
     let pixels = &pixels[..len];
     let out = &mut out[..len];
 
-    // Interior pixels: stop 1 early on each axis to prevent reading out of bounds
-    for y in 0..height - 1 {
-        let row_offset = y * width;
-        for x in 0..width - 1 {
-            let idx = row_offset + x;
-            let current = pixels[idx] as i16;
-            let right = pixels[idx + 1] as i16;
-            let bottom = pixels[idx + width] as i16;
-            let diff = (current - right).abs() + (current - bottom).abs();
-            out[idx] = (diff > edge_threshold) as u8;
+    // Compute Sobel for interior pixels (x: 1 to width-2, y: 1 to height-2)
+    // To ensure zero bounds checks, we iterate over the exact interior range
+    for y in 1..height - 1 {
+        let row_prev = (y - 1) * width;
+        let row_curr = y * width;
+        let row_next = (y + 1) * width;
+
+        for x in 1..width - 1 {
+            let p00 = pixels[row_prev + x - 1] as i16;
+            let p01 = pixels[row_prev + x] as i16;
+            let p02 = pixels[row_prev + x + 1] as i16;
+
+            let p10 = pixels[row_curr + x - 1] as i16;
+            // p11 is the center pixel, skipped by Sobel weights
+            let p12 = pixels[row_curr + x + 1] as i16;
+
+            let p20 = pixels[row_next + x - 1] as i16;
+            let p21 = pixels[row_next + x] as i16;
+            let p22 = pixels[row_next + x + 1] as i16;
+
+            // Gx = [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]]
+            let gx = (p02 + (p12 << 1) + p22) - (p00 + (p10 << 1) + p20);
+
+            // Gy = [[-1, -2, -1], [0, 0, 0], [1, 2, 1]]
+            let gy = (p20 + (p21 << 1) + p22) - (p00 + (p01 << 1) + p02);
+
+            // L1 norm approximation: |Gx| + |Gy|
+            // Divide by 4 (>> 2) to normalize back to the [0, 510] range,
+            // which keeps the existing TS wrapper's edgeThreshold scale perfectly valid!
+            let diff = (gx.abs() + gy.abs()) >> 2;
+
+            out[row_curr + x] = (diff > edge_threshold) as u8;
         }
     }
 }

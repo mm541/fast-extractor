@@ -1,0 +1,11 @@
+{
+  "name": "ffmpeg-wasm-core",
+  "version": "0.1.0",
+  "files": [
+    "ffmpeg_wasm_core_bg.wasm",
+    "ffmpeg_wasm_core.js",
+    "ffmpeg_wasm_core.d.ts"
+  ],
+  "main": "ffmpeg_wasm_core.js",
+  "types": "ffmpeg_wasm_core.d.ts"
+}
