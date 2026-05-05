@@ -513,7 +513,6 @@ export class SlideExtractor {
       this.lastProcessedFrame = null;
     }
 
-    // Await all queued background encodes to prevent dropping slides
     // when the worker terminates
     await this.lastEmitPromise;
 
@@ -522,6 +521,29 @@ export class SlideExtractor {
     this.metrics.jobElapsedMs = this.metrics.endTime - this.metrics.startTime;
     this.options.onProgress(100, "Done", this.metrics);
     return this.metrics;
+  }
+
+  /**
+   * Forcibly release all hardware resources (VideoDecoder, VideoFrames)
+   * if an error aborts extraction before flush() completes.
+   */
+  public destroy() {
+    if (this.decoder && this.decoder.state !== 'closed') {
+      try { this.decoder.close(); } catch {}
+    }
+    this.decoder = null;
+    if (this.lastProcessedFrame) {
+      try { this.lastProcessedFrame.close(); } catch {}
+      this.lastProcessedFrame = null;
+    }
+    if (this.pendingCandidate) {
+      try { this.pendingCandidate.frame.close(); } catch {}
+      this.pendingCandidate = null;
+    }
+    if (this.pendingBackpressureResolve) {
+      try { this.pendingBackpressureResolve(); } catch {}
+      this.pendingBackpressureResolve = null;
+    }
   }
 
   // ─── Internal decoder management ───

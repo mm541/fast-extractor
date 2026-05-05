@@ -85,10 +85,11 @@ export async function ingestFile(
  * Backpressure is handled entirely within the Worker thread via
  * `await slideExtractor.feedChunk()` — zero cross-thread messaging required.
  */
-export async function extractVideoChunks(
+export async function extractMedia(
   worker: Worker, 
   options: FastExtractorOptions, 
-  tempFileName: string, 
+  tempFileName: string,
+  originalFileName: string,
 ): Promise<void> {
   try {
     worker.postMessage({ type: 'STATUS', status: 'Initializing Demuxer...' });
@@ -106,8 +107,12 @@ export async function extractVideoChunks(
     //   4. Run the packet loop with same-thread backpressure
     //   5. Flush and emit ALL_DONE when complete
     worker.postMessage({
-      type: 'EXTRACT_VIDEO',
+      type: 'EXTRACT_MEDIA',
       fileHandle,
+      extractAudio: options.extractAudio !== false,
+      extractSlides: options.extractSlides !== false,
+      buildManifest: options.buildManifest ?? false,
+      fileName: originalFileName,
       mode: options.mode ?? 'turbo',
     });
 

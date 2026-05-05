@@ -54,7 +54,6 @@
 // ?worker → creates a bundled Worker constructor
 // ?url    → returns a hashed asset URL (e.g. /assets/wasm-abc123.wasm)
 import MediaWorker from './worker?worker';
-import defaultWasmUrl from './wasm/wasm_extractor_bg.wasm?url';
 
 // ─── Internal Imports ───
 import { ExtractorError } from './errors';
@@ -66,7 +65,7 @@ import type {
   BrowserSupport,
   IngestedFile,
 } from './types';
-import { ingestFile, extractVideoChunks, cleanupTempFile } from './pipeline';
+import { ingestFile, extractMedia, cleanupTempFile } from './pipeline';
 
 // ─── Main Class ───
 
@@ -366,26 +365,9 @@ export class FastExtractor {
           // ⚠️ CRITICAL ANDROID SAF WARNING ⚠️
           // Android SAF requires immediate reading of the File object.
           // We delegate to WorkspaceManager which calls File.stream() immediately.
-          // WASM fetching happens concurrently in the background.
           // =========================================================================================
-
-          // 6. Fetch WASM asynchronously in the background and send INIT when ready
-          const resolvedWasmUrl = this.options.wasmUrl
-            ?? new URL(defaultWasmUrl, self.location?.origin ?? 'https://localhost').href;
-          
-          fetch(resolvedWasmUrl)
-            .then(res => {
-              if (!res.ok) throw new Error(`HTTP ${res.status}`);
-              return res.arrayBuffer();
-            })
-            .then(wasmBuffer => {
-              worker?.postMessage({ type: 'INIT', wasmBuffer }, [wasmBuffer]);
-            })
-            .catch(err => {
-              try { controller.error(new Error(`Rust WASM Fetch Error: ${err.message}`)); } catch {}
-              worker?.terminate();
-              worker = null;
-            });
+          // NOTE: WASM is now self-initialized by the worker at boot (25KB inline).
+          // No external fetch or INIT message needed.
 
           // 7. Ingest file to OPFS (or reuse pre-ingested handle)
           if (isPreIngested) {
@@ -407,42 +389,15 @@ export class FastExtractor {
           
           const runPipeline = async () => {
             try {
-              // Trigger audio extraction on the worker
-              if (this.options.extractAudio !== false) {
-                const root = await navigator.storage.getDirectory();
-                const feDir = await root.getDirectoryHandle('.fast_extractor');
-                const fileHandle = await feDir.getFileHandle(tempFileName);
-
-                await new Promise<void>((resolve, reject) => {
-                  const handleAudioMessage = (e: MessageEvent) => {
-                    if (e.data.type === 'AUDIO_DONE') {
-                      worker!.removeEventListener('message', handleAudioMessage);
-                      resolve();
-                    } else if (e.data.type === 'ERROR') {
-                      worker!.removeEventListener('message', handleAudioMessage);
-                      reject(new Error(e.data.error));
-                    }
-                  };
-                  worker!.addEventListener('message', handleAudioMessage);
-                  worker!.postMessage({
-                    type: 'EXTRACT_AUDIO',
-                    fileName: isPreIngested ? (input as IngestedFile).originalName : (input as File).name,
-                    fileHandle,
-                    buildManifest: this.options.buildManifest ?? false,
-                  });
-                });
-              }
-
-              // Run video extraction pipeline (now fully handled by the worker)
-              if (this.options.extractSlides !== false) {
-                  await extractVideoChunks(
-                    worker!, 
-                    this.options, 
-                    tempFileName, 
-                  );
-              } else {
-                  worker!.postMessage({ type: 'VIDEO_DONE', skipped: true });
-              }
+              // Run unified media extraction pipeline (audio and/or video)
+              // The worker handles all logic including skipping streams if disabled.
+              const originalFileName = isPreIngested ? (input as IngestedFile).originalName : (input as File).name;
+              await extractMedia(
+                worker!, 
+                this.options, 
+                tempFileName, 
+                originalFileName
+              );
 
               // NOTE: Do NOT await ALL_DONE here.
               // The stream's onmessage handler (line ~475) already catches ALL_DONE

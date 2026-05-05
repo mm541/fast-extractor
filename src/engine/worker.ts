@@ -38,30 +38,24 @@ self.onerror = (event: string | Event, source?: string, lineno?: number, colno?:
 };
 
 
-import init, { AudioExtractor, compare_frames, compare_prev_current, compute_dhash, compute_color_signature, get_avg_brightness, init_arena, get_buffer_a_ptr, get_buffer_b_ptr, get_buffer_prev_ptr, get_rgba_buffer_ptr, shift_current_to_prev, copy_rgba_to_gray } from './wasm/wasm_extractor';
+import init, { compare_frames, compare_prev_current, compute_dhash, compute_color_signature, get_avg_brightness, init_arena, get_buffer_a_ptr, get_buffer_b_ptr, get_buffer_prev_ptr, get_rgba_buffer_ptr, shift_current_to_prev, copy_rgba_to_gray } from './wasm/wasm_extractor';
+import wasmUrl from './wasm/wasm_extractor_bg.wasm?url';
 import { SlideExtractor } from './extractor';
 import type { SlideExtractorOptions } from './extractor';
+import { AudioRemuxer } from './audio-remuxer';
 
 // FFmpeg WASM Demuxer — lazy-loaded to avoid blocking worker startup on mobile
 import type { FFmpegDemuxer as FFmpegDemuxerType, ModuleFactory } from '../../ffmpeg-wasm-demuxer/src/index';
 
 // ─── WORKER STATE ───
-// These are module-scoped because the worker lives for the entire extraction session.
-//
-let wasmBuffer: ArrayBuffer | undefined;    // Transferred from main thread, freed after init
-
-let syncHandle: FileSystemSyncAccessHandle | undefined;  // Exclusive lock on temp video file
 let shouldExtractAudio = true;               // Controlled via CONFIG
 let shouldExtractSlides = true;              // Controlled via CONFIG
 
 
 // Slide extraction state
-let slideExtractor: SlideExtractor | null = null;
 let pendingSlideEncodes = 0;
-let drainResolve: (() => void) | null = null;
 /**
  * Detection config — updated via CONFIG message before extraction starts.
- * Merged with per-extraction options in processMedia().
  * See extractor.ts SlideExtractorOptions for full documentation of each field.
  */
 let detectionConfig: Partial<SlideExtractorOptions> = {
@@ -72,18 +66,12 @@ let detectionConfig: Partial<SlideExtractorOptions> = {
 };
 
 /**
- * Lazy WASM initializer. Only loads once — subsequent calls are no-ops.
- * The wasmBuffer ArrayBuffer is consumed here; set it to undefined after calling.
+ * Self-initializing WASM loader. At 25KB the binary is tiny enough to
+ * fetch inline at worker boot — no external coordination needed.
+ * The promise is created immediately and awaited before first use.
  */
-let wasmInitialized = false;
 let wasmModule: any = null;
-async function ensureWasm(wasmBuffer?: ArrayBuffer) {
-    if (!wasmInitialized) {
-        if (!wasmBuffer) throw new Error("WASM buffer must be provided for initialization.");
-        wasmModule = await init({ module_or_path: wasmBuffer });
-        wasmInitialized = true;
-    }
-}
+const wasmReady = init({ module_or_path: wasmUrl }).then(m => { wasmModule = m; });
 
 
 
@@ -110,7 +98,7 @@ function createSyncAccessHandleWithTimeout(
 }
 
 self.onmessage = async (e: MessageEvent) => {
-    const { type, data, config, wasmBuffer: wb } = e.data;
+    const { type, data, config } = e.data;
     
     try {
         if (type === 'CONFIG') {
@@ -122,223 +110,212 @@ self.onmessage = async (e: MessageEvent) => {
         }
 
 
-        if (type === 'INIT') {
-            wasmBuffer = wb;
-            self.postMessage({ type: 'STATUS', status: 'Worker Initialized. Ready.' });
-            self.postMessage({ type: 'INIT_COMPLETE' });
-            return;
-        }
+        if (type === 'EXTRACT_MEDIA') {
+            const { fileHandle, extractAudio, extractSlides, buildManifest, fileName, mode } = e.data;
 
-        if (type === 'EXTRACT_AUDIO') {
-            const { fileName, fileHandle, buildManifest = false, duration = 0 } = e.data;
-            
-            // Wait up to 30s for background WASM fetch to arrive
-            let retries = 0;
-            while (!wasmInitialized && !wasmBuffer && retries < 300) {
-                await new Promise(r => setTimeout(r, 100));
-                retries++;
-            }
-            await ensureWasm(wasmBuffer);
-            
-            try {
-                syncHandle = await createSyncAccessHandleWithTimeout(fileHandle, 5000);
-            } catch (err: any) {
-                self.postMessage({ type: 'ERROR', code: 'ERR_OPFS_STALE_LOCK', error: 'File handle failed: ' + err.message });
-                return;
-            }
+            // Wait for the self-initialized WASM to be ready
+            await wasmReady;
 
-            let audioExtractor: any = null;
-            try {
-                audioExtractor = new AudioExtractor(syncHandle, buildManifest, duration);
-
-                let lastReport = 0;
-                while (true) {
-                    const chunk = audioExtractor.pull_chunk(1024 * 1024);
-                    if (chunk.length === 0) break;
-                    
-                    const ab = chunk.slice().buffer as ArrayBuffer;
-                    postMessage({ type: 'AUDIO_CHUNK', buffer: ab }, [ab]);
-                    
-                    const progress = Math.floor(audioExtractor.get_progress());
-                    if (progress >= lastReport + 5 || progress === 100) {
-                        postMessage({ type: 'STATUS', status: `Extracting Audio...`, progress });
-                        lastReport = progress;
-                    }
-                }
-
-                // Finalize the Ogg stream (writes EOS page for Opus/Vorbis, no-op for AAC/MP3)
-                const eosChunk = audioExtractor.finalize();
-                if (eosChunk.length > 0) {
-                    const ab = eosChunk.slice().buffer as ArrayBuffer;
-                    postMessage({ type: 'AUDIO_CHUNK', buffer: ab }, [ab]);
-                }
-
-                // Read extension and manifest from WASM (codec-agnostic)
-                const ext = audioExtractor.get_extension();
-                const manifest = buildManifest ? JSON.parse(audioExtractor.build_manifest()) : null;
-
-                postMessage({
-                    type: 'AUDIO_DONE',
-                    fileName: fileName.replace(/\.[^/.]+$/, "") + "." + ext,
-                    manifest,
-                });
-            } catch (e: any) {
-                const reason = e?.message ?? 'unsupported format';
-                console.warn('[Worker] Audio extraction failed:', reason);
-                postMessage({ type: 'STATUS', status: `⚠️ Audio unavailable: ${reason}. Extracting slides only...` });
-                postMessage({ type: 'AUDIO_DONE', fileName: null, manifest: null });
-            } finally {
-                if (audioExtractor) try { audioExtractor.free(); } catch(_) {}
-                if (syncHandle) {
-                    try { syncHandle.close(); } catch (e) {}
-                    syncHandle = undefined;
-                }
-            }
-            return;
-        }
-        // ─── Unified Video Extraction ───────────────────────────────────────
-        if (type === 'EXTRACT_VIDEO') {
-            const { fileHandle, mode } = e.data;
-
-            // Wait for WASM if needed
-            let retries = 0;
-            while (!wasmInitialized && !wasmBuffer && retries < 300) {
-                await new Promise(r => setTimeout(r, 100));
-                retries++;
-            }
-            await ensureWasm(wasmBuffer);
-
-            let videoSyncHandle: FileSystemSyncAccessHandle | undefined;
+            let syncHandle: FileSystemSyncAccessHandle | undefined;
             let demuxer: FFmpegDemuxerType | null = null;
+            let slideExtractor: SlideExtractor | null = null;
+            let drainResolve: (() => void) | null = null;
 
-            // Lazy-load the FFmpeg demuxer wrapper (avoids blocking worker startup on mobile)
+            // Lazy-load the FFmpeg demuxer wrapper
             const { FFmpegDemuxer, createSyncHandleSource } = await import('../../ffmpeg-wasm-demuxer/src/index');
 
             try {
-                self.postMessage({ type: 'STATUS', status: 'Initializing Video Demuxer...' });
+                self.postMessage({ type: 'STATUS', status: 'Initializing Demuxer...' });
 
-                // 1. Open OPFS SyncAccessHandle for the video file
-                videoSyncHandle = await createSyncAccessHandleWithTimeout(fileHandle, 5000);
-                const fileSize = videoSyncHandle.getSize();
+                syncHandle = await createSyncAccessHandleWithTimeout(fileHandle, 5000);
+                const fileSize = syncHandle.getSize();
 
-                // 2. Load the FFmpeg WASM demuxer module
-                // The createDemuxerModule is loaded from the Emscripten-generated JS
-                // which has the WASM Base64-inlined via SINGLE_FILE=1.
-                // @ts-ignore — Emscripten-generated JS has no .d.ts, inlined WASM via SINGLE_FILE=1
+                // Load the FFmpeg WASM demuxer module
+                // @ts-ignore
                 const { default: createDemuxerModule } = await import('../../ffmpeg-wasm-demuxer/pkg/ffmpeg_demuxer.js');
                 demuxer = await FFmpegDemuxer.create(createDemuxerModule as ModuleFactory);
 
-                // 3. Open the file with the demuxer
-                const ioSource = createSyncHandleSource(videoSyncHandle, fileSize);
+                const ioSource = createSyncHandleSource(syncHandle, fileSize);
                 demuxer.open(ioSource);
 
-                // 4. Get decoder config from the demuxer
-                const configResult = demuxer.getVideoDecoderConfig();
-                if (!configResult) {
-                    throw new Error('No video stream found in file');
-                }
-
                 const duration = demuxer.duration;
+                const audioInfo = extractAudio ? demuxer.getAudioStreamInfo() : null;
+                const videoInfo = extractSlides ? demuxer.getVideoDecoderConfig() : null;
 
-                // 5. Set up SlideExtractor
-                const finalOptions = {
-                    ...detectionConfig,
-                    onProgress: (percent: number, message: string, metrics?: any) => {
-                        self.postMessage({ type: 'STATUS', status: message, progress: Math.round(percent), metrics });
-                    },
-                    onSlide: async (blob: Blob, timestamp: number) => {
-                        pendingSlideEncodes++;
+                // ── PASS 1: AUDIO ──
+                if (extractAudio && audioInfo) {
+                    self.postMessage({ type: 'STATUS', status: 'Extracting Audio...' });
+                    const remuxer = new AudioRemuxer(
+                        audioInfo.codecId,
+                        audioInfo.sampleRate,
+                        audioInfo.channels,
+                        audioInfo.extradata,
+                        { buildManifest, duration }
+                    );
+
+                    let lastReport = 0;
+                    let pkt;
+                    while ((pkt = demuxer.readPacket()) !== null) {
                         try {
-                            const ab = await blob.arrayBuffer();
-                            const boundaryMs = Math.round(timestamp * 1000);
-
-                            self.postMessage({
-                                type: 'SLIDE',
-                                buffer: ab,
-                                timestamp: formatTime(timestamp),
-                                startMs: boundaryMs,
-                            }, [ab]);
-                        } catch (e: any) {
-                            console.warn('[Worker] onSlide buffer read failed:', e.message);
+                            if (pkt.streamIndex === demuxer.audioStreamIndex) {
+                                remuxer.feedPacket(pkt.data, pkt.ptsUs);
+                                if (remuxer.bufferedBytes >= 1024 * 1024) {
+                                    const chunk = remuxer.drain();
+                                    const ab = chunk.buffer as ArrayBuffer;
+                                    postMessage({ type: 'AUDIO_CHUNK', buffer: ab }, [ab]);
+                                }
+                                
+                                const progressMs = pkt.ptsUs / 1000;
+                                const totalMs = duration * 1000;
+                                const progress = totalMs > 0 ? Math.floor((progressMs / totalMs) * 100) : 0;
+                                
+                                if (progress >= lastReport + 5 || progress === 100) {
+                                    postMessage({ type: 'STATUS', status: `Extracting Audio...`, progress });
+                                    lastReport = progress;
+                                }
+                            }
                         } finally {
-                            pendingSlideEncodes--;
-                            if (pendingSlideEncodes === 0 && drainResolve) {
-                                drainResolve();
-                                drainResolve = null;
-                            }
+                            pkt.free();
                         }
                     }
-                };
 
-                slideExtractor = new SlideExtractor(
-                    { 
-                        init_arena, 
-                        get_buffer_a_ptr, 
-                        get_buffer_b_ptr, 
-                        get_buffer_prev_ptr,
-                        get_rgba_buffer_ptr,
-                        shift_current_to_prev,
-                        copy_rgba_to_gray,
-                        compare_frames, 
-                        compare_prev_current,
-                        compute_dhash, 
-                        compute_color_signature,
-                        get_avg_brightness,
-                        memory: wasmModule.memory
-                    } as any,
-                    finalOptions
-                );
-
-                await slideExtractor.configure(configResult.config, duration);
-
-                self.postMessage({ type: 'STATUS', status: 'Extracting Slides...' });
-
-                // 6. The Core Loop — single-threaded backpressure via await
-                let pkt;
-                while ((pkt = demuxer.readPacket()) !== null) {
-                    try {
-                        if (pkt.streamIndex === demuxer.videoStreamIndex) {
-                            // In turbo mode, skip non-keyframes
-                            if (mode === 'turbo' && !pkt.isKeyframe) {
-                                continue;
-                            }
-
-                            // feedChunk is async — it awaits when the decoder queue
-                            // is full. THIS is the backpressure. The demuxer loop
-                            // pauses until the hardware decoder drains.
-                            await slideExtractor.feedChunk(
-                                pkt.data.slice().buffer as ArrayBuffer,  // Copy out of WASM view before free
-                                pkt.ptsUs,
-                                pkt.isKeyframe ? 'key' : 'delta'
-                            );
-                        }
-                        // Audio packets: future hook point
-                        // else if (pkt.streamIndex === demuxer.audioStreamIndex) { ... }
-                    } finally {
-                        pkt.free(); // ALWAYS release the C AVPacket memory
+                    // Flush remaining audio chunks
+                    const remaining = remuxer.drain();
+                    if (remaining.length > 0) {
+                        const ab = remaining.buffer as ArrayBuffer;
+                        postMessage({ type: 'AUDIO_CHUNK', buffer: ab }, [ab]);
                     }
+
+                    // Finalize (OGG EOS)
+                    const eosChunk = remuxer.finalize();
+                    if (eosChunk.length > 0) {
+                        const ab = eosChunk.buffer as ArrayBuffer;
+                        postMessage({ type: 'AUDIO_CHUNK', buffer: ab }, [ab]);
+                    }
+
+                    const ext = remuxer.extension;
+                    const manifest = buildManifest ? remuxer.buildManifest() : null;
+
+                    postMessage({
+                        type: 'AUDIO_DONE',
+                        fileName: fileName.replace(/\.[^/.]+$/, "") + "." + ext,
+                        manifest,
+                    });
+                } else if (extractAudio) {
+                    console.warn('[Worker] No audio stream found or audio extraction disabled.');
+                    postMessage({ type: 'STATUS', status: `⚠️ Audio stream not found. Extracting slides only...` });
+                    postMessage({ type: 'AUDIO_DONE', fileName: null, manifest: null });
                 }
 
-                // 7. Flush the decoder and emit final slides
-                const metrics = await slideExtractor.flush();
-
-                // Drain any pending async onSlide callbacks
-                if (pendingSlideEncodes > 0) {
-                    await Promise.race([
-                        new Promise<void>(r => { drainResolve = r; }),
-                        new Promise<void>(r => setTimeout(r, 3000))
-                    ]);
+                // ── REWIND FOR PASS 2 ──
+                if (extractAudio && extractSlides && videoInfo) {
+                    demuxer.seekToTime(0);
                 }
 
-                postMessage({ type: 'ALL_DONE', metrics });
+                // ── PASS 2: SLIDES ──
+                if (extractSlides && videoInfo) {
+                    const finalOptions = {
+                        ...detectionConfig,
+                        onProgress: (percent: number, message: string, metrics?: any) => {
+                            self.postMessage({ type: 'STATUS', status: message, progress: Math.round(percent), metrics });
+                        },
+                        onSlide: async (blob: Blob, timestamp: number) => {
+                            pendingSlideEncodes++;
+                            try {
+                                const ab = await blob.arrayBuffer();
+                                const boundaryMs = Math.round(timestamp * 1000);
+
+                                self.postMessage({
+                                    type: 'SLIDE',
+                                    buffer: ab,
+                                    timestamp: formatTime(timestamp),
+                                    startMs: boundaryMs,
+                                }, [ab]);
+                            } catch (e: any) {
+                                console.warn('[Worker] onSlide buffer read failed:', e.message);
+                            } finally {
+                                pendingSlideEncodes--;
+                                if (pendingSlideEncodes === 0 && drainResolve) {
+                                    drainResolve();
+                                    drainResolve = null;
+                                }
+                            }
+                        }
+                    };
+
+                    slideExtractor = new SlideExtractor(
+                        { 
+                            init_arena, 
+                            get_buffer_a_ptr, 
+                            get_buffer_b_ptr, 
+                            get_buffer_prev_ptr,
+                            get_rgba_buffer_ptr,
+                            shift_current_to_prev,
+                            copy_rgba_to_gray,
+                            compare_frames, 
+                            compare_prev_current,
+                            compute_dhash, 
+                            compute_color_signature,
+                            get_avg_brightness,
+                            memory: wasmModule.memory
+                        } as any,
+                        finalOptions
+                    );
+
+                    await slideExtractor.configure(videoInfo.config, duration);
+                    self.postMessage({ type: 'STATUS', status: 'Extracting Slides...' });
+
+                    let pkt;
+                    while ((pkt = demuxer.readPacket()) !== null) {
+                        try {
+                            if (pkt.streamIndex === demuxer.videoStreamIndex) {
+                                if (mode === 'turbo' && !pkt.isKeyframe) {
+                                    continue;
+                                }
+
+                                await slideExtractor.feedChunk(
+                                    pkt.data.slice().buffer as ArrayBuffer,
+                                    pkt.ptsUs,
+                                    pkt.isKeyframe ? 'key' : 'delta'
+                                );
+                            }
+                        } finally {
+                            pkt.free();
+                        }
+                    }
+
+                    const metrics = await slideExtractor.flush();
+
+                    if (pendingSlideEncodes > 0) {
+                        await Promise.race([
+                            new Promise<void>(r => { drainResolve = r; }),
+                            new Promise<void>(r => setTimeout(r, 3000))
+                        ]);
+                    }
+
+                    postMessage({ type: 'ALL_DONE', metrics });
+                } else if (extractSlides) {
+                    throw new Error('No video stream found in file');
+                } else {
+                    // Audio only mode
+                    postMessage({ type: 'ALL_DONE', metrics: {} });
+                }
 
             } catch (err: any) {
                 const message = err instanceof Error ? err.message : String(err);
                 self.postMessage({ type: 'ERROR', code: 'ERR_WORKER_GENERIC', error: message });
             } finally {
-                if (demuxer) demuxer.destroy();
-                if (videoSyncHandle) {
-                    try { videoSyncHandle.close(); } catch {}
+                if (slideExtractor) {
+                    try { slideExtractor.destroy(); } catch {}
+                }
+                if (demuxer) {
+                    try { demuxer.destroy(); } catch {}
+                }
+                if (syncHandle) {
+                    try { syncHandle.close(); } catch {}
+                }
+                if (drainResolve) {
+                    try { (drainResolve as any)(); } catch {}
                 }
             }
             return;
