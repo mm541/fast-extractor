@@ -35,9 +35,9 @@
 // They have not changed across FFmpeg versions and are safe to hardcode.
 
 export const AV_CODEC_ID_H264 = 27;
-export const AV_CODEC_ID_HEVC = 35;
-export const AV_CODEC_ID_VP8  = 174;
-export const AV_CODEC_ID_VP9  = 173;
+export const AV_CODEC_ID_HEVC = 173;
+export const AV_CODEC_ID_VP8  = 139;
+export const AV_CODEC_ID_VP9  = 167;
 export const AV_CODEC_ID_AV1  = 225;
 
 // ─── Public Interface ────────────────────────────────────────────────────────
@@ -301,14 +301,14 @@ function buildAV1(info: FFmpegStreamInfo): CodecBuildResult {
 export function buildVideoDecoderConfig(info: FFmpegStreamInfo): CodecBuildResult {
   switch (info.codecId) {
     case 27:  return buildH264(info);
-    case 35:  return buildHEVC(info);
-    case 174: return buildVP8(info);
-    case 173: return buildVP9(info);
+    case 173: return buildHEVC(info);
+    case 139: return buildVP8(info);
+    case 167: return buildVP9(info);
     case 225: return buildAV1(info);
     default:
       throw new Error(
         `Unsupported FFmpeg codec_id: ${info.codecId}. ` +
-        `Supported: H.264 (27), HEVC (35), VP8 (174), VP9 (173), AV1 (225).`
+        `Supported: H.264 (27), HEVC (173), VP8 (139), VP9 (167), AV1 (225).`
       );
   }
 }
