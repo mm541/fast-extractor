@@ -47,6 +47,7 @@ pub struct StreamInfoC {
     pub height: i32,
     pub bit_rate: i32,
     pub codec_type: i32,
+    pub rotation: f64,
 }
 
 #[repr(C)]
@@ -55,13 +56,14 @@ pub struct DemuxerPacketC {
     pub size: i32,
     pub pts: i64,
     pub dts: i64,
+    pub duration: i64,
     pub is_keyframe: i32,
     pub stream_index: i32,
     _raw_pkt: *mut c_void, // Opaque AVPacket*
 }
 
 unsafe extern "C" {
-    fn init_custom_demuxer(read_cb_idx: i32, seek_cb_idx: i32, seek_result: *mut i32) -> DemuxerPtr;
+    fn init_custom_demuxer(read_cb_idx: i32, seek_cb_idx: i32, seek_result: *mut i32, buffer_size: i32) -> DemuxerPtr;
     fn open_demuxer(demuxer: DemuxerPtr) -> i32;
     fn get_duration(demuxer: DemuxerPtr) -> f64;
     fn get_stream_count(demuxer: DemuxerPtr) -> i32;
@@ -89,9 +91,9 @@ pub extern "C" fn wasm_get_seek_result_ptr() -> *mut i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wasm_demuxer_new(read_cb_idx: i32, seek_cb_idx: i32) -> DemuxerPtr {
+pub extern "C" fn wasm_demuxer_new(read_cb_idx: i32, seek_cb_idx: i32, buffer_size: i32) -> DemuxerPtr {
     let seek_result_ptr = std::ptr::addr_of_mut!(SEEK_RESULT) as *mut i32;
-    unsafe { init_custom_demuxer(read_cb_idx, seek_cb_idx, seek_result_ptr) }
+    unsafe { init_custom_demuxer(read_cb_idx, seek_cb_idx, seek_result_ptr, buffer_size) }
 }
 
 #[unsafe(no_mangle)]

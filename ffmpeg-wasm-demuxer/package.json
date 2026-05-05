@@ -1,0 +1,27 @@
+{
+  "name": "ffmpeg-wasm-demuxer",
+  "version": "1.0.0",
+  "description": "Zero-copy, high-performance FFmpeg 8.1 WASM demuxer for WebCodecs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "scripts": {
+    "build:wasm": "./build_wasm.sh",
+    "build:ts": "tsc"
+  },
+  "keywords": [
+    "ffmpeg",
+    "wasm",
+    "webassembly",
+    "webcodecs",
+    "demuxer",
+    "mp4",
+    "video",
+    "audio"
+  ],
+  "author": "Mohd Moazzam",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

@@ -3,14 +3,13 @@
  * FastExtractor.ts — Public Library API
  * ============================================================================
  * 
- * ⚠️ CRITICAL ARCHITECTURE HAZARD: THE 100% CPU BURN SPINLOOP
- * When yielding to the browser to bypass background tab throttling, DO NOT use
- * 0ms `MessageChannel` loops inside `while` loops (e.g. backpressure polling).
- * A 0ms `while` loop busy-waits 10,000+ times per second, pinning the main thread
- * to 100% CPU, melting the user's device, and starving the worker thread.
- * Backpressure MUST be resolved via explicit cross-thread Promises (e.g., `waitForAck`)
- * tied directly to the worker's `CHUNK_PROCESSED` event to suspend the main thread
- * at 0% CPU. See `docs/WEBCODECS_HAZARDS.md` for details.
+ * ⚠️ ARCHITECTURE NOTE: WORKER-SIDE BACKPRESSURE
+ * As of the ffmpeg-wasm-demuxer migration, ALL demuxing and backpressure
+ * logic lives inside the Worker thread. The main thread no longer reads
+ * video packets or manages cross-thread flow control (unackedChunks).
+ * Backpressure is handled by `await slideExtractor.feedChunk()` inside
+ * the Worker's EXTRACT_VIDEO handler, which naturally pauses the demuxer
+ * when the hardware decoder queue is full.
  *
  * ============================================================================
  *
@@ -55,7 +54,6 @@
 // ?worker → creates a bundled Worker constructor
 // ?url    → returns a hashed asset URL (e.g. /assets/wasm-abc123.wasm)
 import MediaWorker from './worker?worker';
-import defaultWasmUrl from './wasm/wasm_extractor_bg.wasm?url';
 
 // ─── Internal Imports ───
 import { ExtractorError } from './errors';
@@ -67,7 +65,7 @@ import type {
   BrowserSupport,
   IngestedFile,
 } from './types';
-import { ingestFile, extractVideoChunks, cleanupTempFile } from './pipeline';
+import { ingestFile, extractMedia, cleanupTempFile } from './pipeline';
 
 // ─── Main Class ───
 
@@ -256,7 +254,6 @@ export class FastExtractor {
           const {
             mode = 'turbo',
             wasmUrl: _wasmUrl,           // consumed above, don't forward
-            demuxerWasmUrl,              // forwarded to worker
             worker: _workerOpt,          // consumed above, don't forward
             extractAudio = true,         // default: extract audio
             extractSlides = true,        // default: extract slides
@@ -266,7 +263,7 @@ export class FastExtractor {
 
           worker.postMessage({
             type: 'CONFIG',
-            data: { demuxerWasmUrl, extractAudio, extractSlides },
+            data: { extractAudio, extractSlides },
             config: { ...detectionConfig, mode },
           });
 
@@ -318,14 +315,6 @@ export class FastExtractor {
                   });
                   break;
 
-                case 'CHUNK_PROCESSED':
-                  unackedChunks--;
-                  if (unblockMainThread && unackedChunks < 15) {
-                    unblockMainThread();
-                    unblockMainThread = null;
-                  }
-                  break;
-
                 case 'ALL_DONE':
                   // Emit final progress with metrics if available
                   if (e.data.metrics) {
@@ -337,6 +326,7 @@ export class FastExtractor {
                     });
                   }
                   this._extracting = false;
+                  if (!this.options.worker) worker?.terminate();
                   worker = null;
                   controller.close();
                   // Clean up OPFS temp file AFTER worker is fully done
@@ -351,7 +341,7 @@ export class FastExtractor {
                   const customError = new ExtractorError(errorCode, errorMsg);
                   
                   this._extracting = false;
-                  // Don't terminate — worker self-closes after OPFS cleanup
+                  if (!this.options.worker) worker?.terminate();
                   worker = null;
                   controller.error(customError);
                   break;
@@ -375,26 +365,9 @@ export class FastExtractor {
           // ⚠️ CRITICAL ANDROID SAF WARNING ⚠️
           // Android SAF requires immediate reading of the File object.
           // We delegate to WorkspaceManager which calls File.stream() immediately.
-          // WASM fetching happens concurrently in the background.
           // =========================================================================================
-
-          // 6. Fetch WASM asynchronously in the background and send INIT when ready
-          const resolvedWasmUrl = this.options.wasmUrl
-            ?? new URL(defaultWasmUrl, self.location?.origin ?? 'https://localhost').href;
-          
-          fetch(resolvedWasmUrl)
-            .then(res => {
-              if (!res.ok) throw new Error(`HTTP ${res.status}`);
-              return res.arrayBuffer();
-            })
-            .then(wasmBuffer => {
-              worker?.postMessage({ type: 'INIT', wasmBuffer }, [wasmBuffer]);
-            })
-            .catch(err => {
-              try { controller.error(new Error(`Rust WASM Fetch Error: ${err.message}`)); } catch {}
-              worker?.terminate();
-              worker = null;
-            });
+          // NOTE: WASM is now self-initialized by the worker at boot (25KB inline).
+          // No external fetch or INIT message needed.
 
           // 7. Ingest file to OPFS (or reuse pre-ingested handle)
           if (isPreIngested) {
@@ -413,50 +386,18 @@ export class FastExtractor {
             }, signal);
           }
           
-          let unackedChunks = 0;
-          let unblockMainThread: (() => void) | null = null;
           
           const runPipeline = async () => {
             try {
-              // Trigger audio extraction on the worker
-              if (this.options.extractAudio !== false) {
-                const root = await navigator.storage.getDirectory();
-                const feDir = await root.getDirectoryHandle('.fast_extractor');
-                const fileHandle = await feDir.getFileHandle(tempFileName);
-
-                await new Promise<void>((resolve, reject) => {
-                  const handleAudioMessage = (e: MessageEvent) => {
-                    if (e.data.type === 'AUDIO_DONE') {
-                      worker!.removeEventListener('message', handleAudioMessage);
-                      resolve();
-                    } else if (e.data.type === 'ERROR') {
-                      worker!.removeEventListener('message', handleAudioMessage);
-                      reject(new Error(e.data.error));
-                    }
-                  };
-                  worker!.addEventListener('message', handleAudioMessage);
-                  worker!.postMessage({
-                    type: 'EXTRACT_AUDIO',
-                    fileName: isPreIngested ? (input as IngestedFile).originalName : (input as File).name,
-                    fileHandle,
-                    buildManifest: this.options.buildManifest ?? false,
-                  });
-                });
-              }
-
-              // Run video extraction pipeline
-              if (this.options.extractSlides !== false) {
-                  await extractVideoChunks(
-                    worker!, 
-                    this.options, 
-                    tempFileName, 
-                    () => unackedChunks, 
-                    () => { unackedChunks++; },
-                    () => new Promise<void>(r => { unblockMainThread = r; })
-                  );
-              } else {
-                  worker!.postMessage({ type: 'VIDEO_DONE', skipped: true });
-              }
+              // Run unified media extraction pipeline (audio and/or video)
+              // The worker handles all logic including skipping streams if disabled.
+              const originalFileName = isPreIngested ? (input as IngestedFile).originalName : (input as File).name;
+              await extractMedia(
+                worker!, 
+                this.options, 
+                tempFileName, 
+                originalFileName
+              );
 
               // NOTE: Do NOT await ALL_DONE here.
               // The stream's onmessage handler (line ~475) already catches ALL_DONE

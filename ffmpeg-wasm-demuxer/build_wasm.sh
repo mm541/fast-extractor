@@ -31,6 +31,8 @@ emcc target/wasm32-unknown-unknown/release/libffmpeg_wasm_demuxer.a \
   ]" \
   -s ALLOW_TABLE_GROWTH=1 \
   -s ALLOW_MEMORY_GROWTH=1 \
+  -s FILESYSTEM=0 \
+  -s SINGLE_FILE=1 \
   -O3
 
 echo "Done! WASM bundle available in pkg/"

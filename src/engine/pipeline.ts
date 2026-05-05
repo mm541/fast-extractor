@@ -5,14 +5,13 @@
  *
  * Internal helper functions that handle the heavy lifting:
  *   1. ingestFile()         — Streams the user's video into OPFS
- *   2. extractVideoChunks() — Demuxes video packets and streams them to the Worker
+ *   2. extractVideoChunks() — Triggers video extraction on the Worker via ffmpeg-wasm-demuxer
  *   3. cleanupTempFile()    — Deletes the temp video after extraction
  *
  * These functions are NOT part of the public API. They are only used by
  * FastExtractor.ts internally.
  */
 
-import { WebDemuxer } from 'web-demuxer';
 import type { FastExtractorOptions } from './types';
 
 // ─── File Ingestion ───
@@ -77,106 +76,51 @@ export async function ingestFile(
 // ─── Video Chunk Extraction ───
 
 /**
- * Demux the ingested video file and stream encoded video packets to the Worker.
- * Implements cross-thread backpressure to prevent main-thread flooding.
+ * Trigger video slide extraction on the Worker via the new FFmpeg WASM demuxer.
  *
- * In turbo mode, only keyframes are forwarded (~10x fewer packets).
+ * Unlike the old pipeline, this does NOT read the file or stream packets.
+ * The Worker now owns the entire demuxing pipeline internally using
+ * ffmpeg-wasm-demuxer with OPFS SyncAccessHandle for maximum throughput.
+ *
+ * Backpressure is handled entirely within the Worker thread via
+ * `await slideExtractor.feedChunk()` — zero cross-thread messaging required.
  */
-export async function extractVideoChunks(
+export async function extractMedia(
   worker: Worker, 
   options: FastExtractorOptions, 
-  tempFileName: string, 
-  getUnacked: () => number, 
-  incUnacked: () => void,
-  waitForAck: () => Promise<void>
+  tempFileName: string,
+  originalFileName: string,
 ): Promise<void> {
-  let demuxer: WebDemuxer | null = null;
   try {
     worker.postMessage({ type: 'STATUS', status: 'Initializing Demuxer...' });
 
-    // Resolve the WASM URL relative to the current page.
-    // We use a relative path ('wasm-files/...') and self.location.href to ensure
-    // it resolves correctly whether hosted at the root (/) or a subpath (/audio-extractor/).
-    const defaultUrl = 'wasm-files/web-demuxer.wasm';
-    const rawUrl = options.demuxerWasmUrl ?? defaultUrl;
-    const wasmUrl = rawUrl.startsWith('http') ? rawUrl : new URL(rawUrl, self.location.href).href;
-    
-    try {
-      demuxer = new WebDemuxer({ wasmFilePath: wasmUrl });
+    // Get the OPFS file handle to pass to the worker
+    const root = await navigator.storage.getDirectory();
+    const feDir = await root.getDirectoryHandle('.fast_extractor');
+    const fileHandle = await feDir.getFileHandle(tempFileName);
 
-      // Read the file back from OPFS so demuxer has a stable reference
-      const root = await navigator.storage.getDirectory();
-      const feDir = await root.getDirectoryHandle('.fast_extractor');
-      const fileHandle = await feDir.getFileHandle(tempFileName);
-      const opfsFile = await fileHandle.getFile();
-
-      await demuxer.load(opfsFile);
-    } catch (err: any) {
-      throw new Error(`Demuxer WASM Error: ${err.message}`);
-    }
-    
-    const mediaInfo = await demuxer.getMediaInfo();
-    const duration = mediaInfo.duration || 0;
-    const decoderConfig = await demuxer.getDecoderConfig('video');
-
-    // 1. Send config to worker
-    worker.postMessage({ 
-      type: 'CONFIG_DECODER', 
-      config: decoderConfig, 
-      duration 
+    // Send the EXTRACT_VIDEO command — the worker handles everything from here.
+    // The worker will:
+    //   1. Open the file via OPFS SyncAccessHandle
+    //   2. Init FFmpegDemuxer and probe the container
+    //   3. Configure WebCodecs VideoDecoder
+    //   4. Run the packet loop with same-thread backpressure
+    //   5. Flush and emit ALL_DONE when complete
+    worker.postMessage({
+      type: 'EXTRACT_MEDIA',
+      fileHandle,
+      extractAudio: options.extractAudio !== false,
+      extractSlides: options.extractSlides !== false,
+      buildManifest: options.buildManifest ?? false,
+      fileName: originalFileName,
+      mode: options.mode ?? 'turbo',
     });
 
-    // 2. Read packets and stream to worker
-    const endTime = duration > 0 ? duration * 2 : 999999;
-    const reader = demuxer.read('video', 0, endTime).getReader();
-    let packetCount = 0;
-
-    // Chrome throttles setTimeout to 1000ms in background tabs, which kills
-    // the pipeline. MessageChannel.postMessage fires as a macrotask that is
-    // NOT subject to timer throttling, so extraction runs at full speed
-    // even when the user switches tabs.
-    const yieldToEventLoop = (): Promise<void> => new Promise(resolve => {
-      const ch = new MessageChannel();
-      ch.port1.onmessage = () => resolve();
-      ch.port2.postMessage(null);
-    });
-
-    while (true) {
-      // Cross-thread backpressure: Wait if the worker has too many chunks queued up.
-      // We explicitly await a Promise resolved by the worker's onmessage handler
-      // to completely suspend the main thread (0% CPU) instead of busy-waiting.
-      while (getUnacked() >= 15) {
-        await waitForAck();
-      }
-
-      const { done, value } = await reader.read();
-      if (done || !value) break;
-
-      if (options.mode === 'turbo' && value.type !== 'key') continue;
-
-      // Extract raw bytes into an ArrayBuffer for zero-copy transfer
-      const chunkData = new ArrayBuffer(value.byteLength);
-      value.copyTo(chunkData);
-
-      incUnacked();
-      worker.postMessage({
-        type: 'VIDEO_CHUNK',
-        chunk: chunkData,
-        timestamp: Number(value.timestamp),
-        chunkType: value.type
-      }, [chunkData]); // Zero-copy transfer!
-
-      // Yield to browser every 50 packets so React can paint UI updates
-      if (++packetCount % 50 === 0) {
-        await yieldToEventLoop();
-      }
-    }
-
-    // 3. Signal completion
-    worker.postMessage({ type: 'VIDEO_DONE' });
-
-  } finally {
-    if (demuxer) demuxer.destroy();
+    // NOTE: We do NOT await ALL_DONE here.
+    // The FastExtractor.ts onmessage handler catches ALL_DONE
+    // and calls controller.close(). Awaiting here would deadlock.
+  } catch (err: any) {
+    throw new Error(`Video extraction failed: ${err.message}`);
   }
 }
 

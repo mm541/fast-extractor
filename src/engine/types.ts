@@ -143,11 +143,6 @@ export interface FastExtractorOptions {
    */
   wasmUrl?: string;
   /**
-   * URL to the web-demuxer WASM binary (web-demuxer.wasm).
-   * Default: '/wasm-files/web-demuxer.wasm'. Override to match your CDN/asset path.
-   */
-  demuxerWasmUrl?: string;
-  /**
    * A pre-constructed Worker instance. If provided, the library uses this
    * instead of creating its own. Useful for bundlers that don't support
    * Vite's `?worker` import syntax.

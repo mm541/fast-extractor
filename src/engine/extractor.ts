@@ -513,7 +513,6 @@ export class SlideExtractor {
       this.lastProcessedFrame = null;
     }
 
-    // Await all queued background encodes to prevent dropping slides
     // when the worker terminates
     await this.lastEmitPromise;
 
@@ -522,6 +521,29 @@ export class SlideExtractor {
     this.metrics.jobElapsedMs = this.metrics.endTime - this.metrics.startTime;
     this.options.onProgress(100, "Done", this.metrics);
     return this.metrics;
+  }
+
+  /**
+   * Forcibly release all hardware resources (VideoDecoder, VideoFrames)
+   * if an error aborts extraction before flush() completes.
+   */
+  public destroy() {
+    if (this.decoder && this.decoder.state !== 'closed') {
+      try { this.decoder.close(); } catch {}
+    }
+    this.decoder = null;
+    if (this.lastProcessedFrame) {
+      try { this.lastProcessedFrame.close(); } catch {}
+      this.lastProcessedFrame = null;
+    }
+    if (this.pendingCandidate) {
+      try { this.pendingCandidate.frame.close(); } catch {}
+      this.pendingCandidate = null;
+    }
+    if (this.pendingBackpressureResolve) {
+      try { this.pendingBackpressureResolve(); } catch {}
+      this.pendingBackpressureResolve = null;
+    }
   }
 
   // ─── Internal decoder management ───
@@ -930,23 +952,32 @@ export class SlideExtractor {
 
   private updateMetrics(decoderQueueSize: number = 0) {
     // 1. WASM Linear Memory (exact byte length of our ArrayBuffer)
-    const wasmRamMb = this.wasm.memory.buffer.byteLength / 1e6;
+    const wasmRamMb = this.wasm.memory.buffer.byteLength / 1048576; // Exact Mebibytes
 
     // 2. Decoder buffers & WebCodecs queue
-    // Each frame in WebCodecs queue holds raw GPU pixels. Worst case: RGBA.
-    // Use exact dimensions from the video demuxer to prevent false readings.
-    const frameSizeMb = (this.videoWidth * this.videoHeight * 4) / 1e6;
-    // FFmpeg/Demuxer baseline overhead is roughly ~30MB.
+    const frameSizeMb = (this.videoWidth * this.videoHeight * 4) / 1048576;
     const decoderOverheadMb = 30 + (decoderQueueSize * frameSizeMb);
 
-    // 3. Fallback to performance.memory if available for V8 JS Heap
-    const jsHeapMb = (performance as any).memory?.usedJSHeapSize 
-      ? (performance as any).memory.usedJSHeapSize / 1e6 
-      : 15; // default 15MB assumption if OS security policy blocks API
+    // 3. Engine Retained Frames (zero-copy clones holding hardware memory)
+    let clonedFramesCount = 0;
+    if (this.pendingCandidate) clonedFramesCount++;
+    if (this.lastProcessedFrame) clonedFramesCount++;
+    const retainedFramesMb = clonedFramesCount * frameSizeMb;
 
-    const totalEstimatedMb = wasmRamMb + decoderOverheadMb + jsHeapMb;
+    // 4. Offscreen Canvas Backing Stores
+    const compareCanvasMb = (SlideExtractor.CMP_W * SlideExtractor.CMP_H * 4) / 1048576;
+    const exportCanvasMb = this.exportCanvas 
+      ? (this.exportCanvas.width * this.exportCanvas.height * 4) / 1048576 
+      : 0;
 
-    this.metrics.peakRamMb = Math.max(this.metrics.peakRamMb, Math.round(totalEstimatedMb));
+    // 5. Baseline JS Engine Overhead
+    const jsHeapMb = 15;
+
+    // Total Deterministic RAM
+    const currentEstimatedMb = wasmRamMb + decoderOverheadMb + retainedFramesMb + compareCanvasMb + exportCanvasMb + jsHeapMb;
+
+    // The UI always receives the Peak (highest watermark) reached during the job
+    this.metrics.peakRamMb = Math.max(this.metrics.peakRamMb, Math.round(currentEstimatedMb));
     this.metrics.jobElapsedMs = performance.now() - this.metrics.startTime;
   }
 }
