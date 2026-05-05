@@ -192,7 +192,7 @@ export interface IOSource {
 export function createSyncHandleSource(handle: FileSystemSyncAccessHandle, fileSize: number): IOSource {
   return {
     size: fileSize,
-    read(target: Uint8Array, offset: number, length: number): number {
+    read(target: Uint8Array, offset: number, _length: number): number {
       // SyncAccessHandle.read() accepts a BufferSource and an options object.
       // We pass the WASM memory view directly — OPFS writes into it. Zero copies.
       const bytesRead = handle.read(target, { at: offset });
