@@ -10,14 +10,15 @@ Extract presentation slides and audio from video files entirely in the browser �
 
 ## Features
 
-- **🖼️ Slide extraction** — unique slides captured as WebP/JPEG with millisecond-accurate timestamps
-- **🎧 Audio extraction** — raw AAC/MP3/Opus stream passthrough, zero re-encoding
-- **🚀 Turbo mode** — keyframe-only scanning, processes a 1-hour HD video in under 15 seconds
-- **🎯 Sequential mode** — full-frame decode for pixel-perfect transition detection
+- **🖼️ Slide extraction** — unique slides captured as WebP/JPEG using a **3x3 Sobel Operator** (L1-Norm) for massive noise resistance.
+- **🎧 Audio extraction** — raw AAC/MP3/Opus stream passthrough, zero re-encoding via our custom C FFmpeg-WASM demuxer.
+- **🚀 Turbo mode** — keyframe-only scanning, processes a 1-hour HD video in under 15 seconds.
+- **🎯 Sequential mode** — full-frame decode for pixel-perfect transition detection.
+- **⚡ SIMD Auto-Vectorization** — hot-loops are compiled with 128-bit WASM SIMD for extreme performance.
+- **🪶 Ultra-Lite Payload** — the entire Rust WASM slide detection core is only **~10KB** gzipped.
 - **🎭 Region masking** — 64-bit bitmask to exclude webcam overlays, watermarks, etc.
-- **📊 Live metrics** — real-time decode speed, frame count, peak RAM, and analysis time
-- **🔒 100% client-side** — your video never leaves the browser
-- **📱 Mobile-safe** — adaptive memory management, Android SAF recovery, backpressure controls
+- **🔒 100% client-side** — your video never leaves the browser.
+- **📱 Mobile-safe** — zero-race worker initialization, adaptive memory management, Android SAF recovery, strict hardware decoder leak prevention.
 
 ---
 
@@ -37,18 +38,61 @@ Extract presentation slides and audio from video files entirely in the browser �
 
 ## Architecture
 
-![Architecture](docs/architecture.png)
+```mermaid
+graph TD
+    UI[Main Thread<br>React / API Wrapper] -->|CONFIG & EXTRACT_MEDIA| Worker[Background Web Worker]
+    
+    subgraph Browser Storage
+        OPFS[(Origin Private<br>File System)]
+    end
+    
+    subgraph Worker Thread
+        Worker -->|Reads 1MB Chunks| OPFS
+        OPFS --> Demuxer
+        
+        Demuxer((ffmpeg-wasm-demuxer<br>C / 1.6MB))
+        Demuxer -->|Raw Video Packets| WebCodecs
+        Demuxer -->|Raw Audio Packets| AudioRemuxer
+        
+        WebCodecs[WebCodecs VideoDecoder<br>Hardware Accelerated] -->|Decoded Frames| Extractor
+        
+        AudioRemuxer[AudioRemuxer.ts<br>Zero Re-encoding] -->|OGG/ADTS Chunks| Worker
+        
+        Extractor[SlideExtractor.ts] -->|Pixels| WASM
+        WASM((wasm-extractor<br>Rust / 25KB))
+        WASM -->|Edge Map| Extractor
+    end
+    
+    Worker -->|Slide Images & Audio Chunks| UI
+```
 
 **Key design decisions:**
-
-- **Zero GC pressure** — 894KB preallocated static WASM memory arena, no per-frame allocations
-- **Hardware decode** — WebCodecs delegates to GPU, not software decoders
-- **Zero-copy transfers** — `ArrayBuffer` transferred (not cloned) between Worker and main thread
-- **LLVM-optimized** — bounds-check-free loops, branchless edge detection, SIMD auto-vectorization
+- **Zero GC pressure** — 894KB preallocated static WASM memory arena, no per-frame allocations.
+- **Hardware decode** — WebCodecs delegates to the GPU, entirely bypassing software decoding bottlenecks.
+- **Zero-copy transfers** — `ArrayBuffer` instances are transferred (not cloned) between the Worker and main thread.
+- **Self-Initializing WASM** — Worker handles dynamic fetching of the Vite `?url` WASM binary inline, completely eliminating race conditions.
 
 ### Per-Frame Detection Pipeline
 
-![Detection Pipeline](docs/detection-pipeline.png)
+```mermaid
+flowchart LR
+    Frame[VideoFrame<br>GPU Memory] -->|createImageBitmap| Bitmap[ImageBitmap]
+    Bitmap -->|drawImage| Canvas[OffscreenCanvas]
+    Canvas -->|getImageData| Pixels[RGBA Pixels]
+    Pixels -->|Zero-Copy View| WASMArena[(WASM Memory<br>Arena)]
+    
+    subgraph Rust WASM Core
+        WASMArena --> Grayscale[SIMD BT.601<br>Grayscale]
+        Grayscale --> Sobel[3x3 Sobel<br>Edge Detection]
+        Sobel --> Diff[Grid Density<br>Difference]
+        Grayscale --> Hash[64-bit dHash<br>Perceptual Hash]
+    end
+    
+    Diff -->|Is Significant?| State[State Machine<br>Transition Logic]
+    Hash -->|Is Duplicate?| State
+    
+    State -->|Trigger| Output[Export WebP/JPEG]
+```
 
 ---
 
@@ -284,23 +328,21 @@ fast-extractor/
 │   │   ├── extractor.ts         #   Slide detection (three-pointer drift engine)
 │   │   ├── pipeline.ts          #   Decode orchestration + backpressure
 │   │   ├── worker.ts            #   Web Worker — OPFS + audio + video pipeline
+│   │   ├── audio-remuxer.ts     #   Zero-alloc TS audio chunk framer (AAC/MP3/Opus)
 │   │   ├── errors.ts            #   Typed ExtractorError codes
 │   │   ├── types.ts             #   All public type definitions
-│   │   ├── index.ts             #   Barrel export
 │   │   └── wasm/                #   Pre-built WASM binaries
 │   └── ui/                      # Reference demo app (React)
-│       ├── App.tsx              #   Orchestration + OPFS streaming
-│       ├── GridMaskPicker.tsx   #   Interactive region masking
-│       ├── useFastExtractor.ts  #   React hook wrapper
-│       └── components/          #   Extracted UI components
-└── wasm-extractor/
+├── ffmpeg-wasm-demuxer/         # Custom C Demuxer
+│   ├── src/demuxer.c            #   Lightweight libavformat wrapper
+│   └── src/index.ts             #   Zero-copy TS bridging
+└── wasm-extractor/              # Slide Detection Arena
     └── src/lib.rs               # Rust/WASM module
         • 894KB static memory arena (zero GC)
-        • RGBA→grayscale (BT.601, SIMD)
-        • Branchless Sobel edge detection
+        • RGBA→grayscale (BT.601, SIMD Auto-Vectorized)
+        • Branchless 3x3 Sobel edge detection (L1-Norm)
         • 64-bit dHash perceptual hashing
         • 8×8 grid density comparison
-        • Audio extraction (Symphonia AAC/MP3/Opus/Vorbis)
 ```
 
 ---
@@ -311,9 +353,9 @@ fast-extractor/
 |---|---|
 | Zero per-frame allocations | `FrameArena` (894KB preallocated `UnsafeCell`) |
 | No data races | `UnsafeCell` interior mutability (prevents LLVM `noalias` UB) |
-| VideoFrame leak prevention | Every `VideoFrame` closed immediately after pixel copy |
+| Hardware leak prevention | Explicit `decoder.destroy()` in worker `finally` block |
 | OPFS lock timeout | `createSyncAccessHandleWithTimeout(5000ms)` |
-| Mobile file expiry bypass | File copied to OPFS while `<input>` permission is alive |
+| Worker init deadlock prevention | `?url` Vite WASM inlining completely avoids main-thread fetching |
 | Zero-copy slide transfer | `ArrayBuffer` transferred via `postMessage` transferList |
 
 ---

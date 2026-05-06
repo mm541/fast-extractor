@@ -47,10 +47,10 @@ Fast-Extractor relies on **WebCodecs (`VideoDecoder`)** to decode frames and **w
 *   **Resolution & Framerate:** Any (up to 4K / 60fps). WebCodecs will leverage GPU acceleration.
 
 ### Audio Formats
-Audio extraction is handled via the `Symphonia` Rust crate compiled to WASM.
+Audio extraction is handled via a custom **C FFmpeg-WASM demuxer** combined with a **TypeScript chunk-framer (`AudioRemuxer.ts`)**.
 
 *   **Supported Audio Codecs:** `AAC`, `MP3`, `Opus`, `Vorbis`.
-*   **Behavior:** The engine demuxes the audio track and streams out raw codec packets (ADTS for AAC, self-framing for MP3, raw for Opus/Vorbis). No re-encoding is performed.
+*   **Behavior:** The engine natively demuxes the audio track and streams out raw codec packets (ADTS headers for AAC, self-framing for MP3, and OGG pages for Opus/Vorbis). **Zero re-encoding is performed.**
 *   **What if the codec is unsupported?**
     *   Audio extraction will gracefully fail.
     *   A `warning` progress event is emitted: `⚠️ Audio unavailable: unsupported format. Extracting slides only...`
@@ -85,8 +85,8 @@ Mobile devices have aggressive memory management and background-task throttling.
 
 | Component | Architecture Limitation | Why it's designed this way |
 | :--- | :--- | :--- |
-| **WASM Memory** | 894KB Static Arena (`UnsafeCell`) | No garbage collection (GC) pauses. Buffers are pre-allocated once at init. Zero per-frame allocations. |
+| **WASM Memory** | 25KB Binary + 894KB Static Arena (`UnsafeCell`) | No garbage collection (GC) pauses. Buffers are pre-allocated once at init. Zero per-frame allocations. The tiny 25KB WASM binary loads instantly. |
 | **Frame Resizing**| Fixed 424×240 compute grid | Fast perceptual hashing and edge detection. Pixel-perfect 4K comparison is too slow and produces false-positives from noise/compression artifacts. |
 | **Turbo Mode** | Reads Demuxer Keyframes | Hardware decoders hate reverse-seeking. Turbo mode only feeds keyframes to WebCodecs, skipping P/B-frames entirely, resulting in $\approx$ 10x speedup. |
-| **Audio Extraction** | Symphonia (Rust/WASM) over OPFS `SyncAccessHandle` | Reads the ingested file via synchronous random-access in the Worker. Pulls raw codec packets (AAC/MP3/Opus/Vorbis) in 1MB chunks — zero re-encoding, zero main-thread blocking. |
+| **Audio Extraction** | FFmpeg Demuxer + TS `AudioRemuxer` | Reads the ingested file via synchronous random-access OPFS in the Worker. Pulls raw codec packets (AAC/MP3/Opus/Vorbis) in 1MB chunks — zero re-encoding, zero main-thread blocking. |
 | **Audio Manifest** | Per-second byte-offset index | Enables S3-style HTTP Range queries for arbitrary seek-to-second. Built during extraction with zero extra passes over the file. |
