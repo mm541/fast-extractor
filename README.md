@@ -38,33 +38,7 @@ Extract presentation slides and audio from video files entirely in the browser â
 
 ## Architecture
 
-```mermaid
-graph TD
-    UI[Main Thread<br>React / API Wrapper] -->|CONFIG & EXTRACT_MEDIA| Worker[Background Web Worker]
-    
-    subgraph Browser Storage
-        OPFS[(Origin Private<br>File System)]
-    end
-    
-    subgraph Worker Thread
-        Worker -->|Reads 1MB Chunks| OPFS
-        OPFS --> Demuxer
-        
-        Demuxer((ffmpeg-wasm-demuxer<br>C / 1.6MB))
-        Demuxer -->|Raw Video Packets| WebCodecs
-        Demuxer -->|Raw Audio Packets| AudioRemuxer
-        
-        WebCodecs[WebCodecs VideoDecoder<br>Hardware Accelerated] -->|Decoded Frames| Extractor
-        
-        AudioRemuxer[AudioRemuxer.ts<br>Zero Re-encoding] -->|OGG/ADTS Chunks| Worker
-        
-        Extractor[SlideExtractor.ts] -->|Pixels| WASM
-        WASM((wasm-extractor<br>Rust / 25KB))
-        WASM -->|Edge Map| Extractor
-    end
-    
-    Worker -->|Slide Images & Audio Chunks| UI
-```
+![Architecture](docs/architecture.png)
 
 **Key design decisions:**
 - **Zero GC pressure** â€” 894KB preallocated static WASM memory arena, no per-frame allocations.
@@ -74,25 +48,7 @@ graph TD
 
 ### Per-Frame Detection Pipeline
 
-```mermaid
-flowchart LR
-    Frame[VideoFrame<br>GPU Memory] -->|createImageBitmap| Bitmap[ImageBitmap]
-    Bitmap -->|drawImage| Canvas[OffscreenCanvas]
-    Canvas -->|getImageData| Pixels[RGBA Pixels]
-    Pixels -->|Zero-Copy View| WASMArena[(WASM Memory<br>Arena)]
-    
-    subgraph Rust WASM Core
-        WASMArena --> Grayscale[SIMD BT.601<br>Grayscale]
-        Grayscale --> Sobel[3x3 Sobel<br>Edge Detection]
-        Sobel --> Diff[Grid Density<br>Difference]
-        Grayscale --> Hash[64-bit dHash<br>Perceptual Hash]
-    end
-    
-    Diff -->|Is Significant?| State[State Machine<br>Transition Logic]
-    Hash -->|Is Duplicate?| State
-    
-    State -->|Trigger| Output[Export WebP/JPEG]
-```
+![Detection Pipeline](docs/detection-pipeline.png)
 
 ---
 
