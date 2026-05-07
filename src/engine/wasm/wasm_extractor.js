@@ -10,13 +10,13 @@
  */
 export function compare_frames(edge_threshold, density_num, mask) {
     const ret = wasm.compare_frames(edge_threshold, density_num, mask);
-    return ret >>> 0;
+    return ret;
 }
 
 /**
  * Consecutive frame drift: edge-density comparison of Prev vs B.
  * Same algorithm as compare_frames but uses raw_prev instead of raw_a.
- * Returns number of grid blocks that changed (0-64).
+ * Returns a weighted float score of changed blocks (0.0 - 64.0).
  * Reuses B's cached edge map from compare_frames if available.
  * @param {number} edge_threshold
  * @param {number} density_num
@@ -25,7 +25,7 @@ export function compare_frames(edge_threshold, density_num, mask) {
  */
 export function compare_prev_current(edge_threshold, density_num, mask) {
     const ret = wasm.compare_prev_current(edge_threshold, density_num, mask);
-    return ret >>> 0;
+    return ret;
 }
 
 /**

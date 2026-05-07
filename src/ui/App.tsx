@@ -80,8 +80,8 @@ const App: React.FC = () => {
     const [config, setConfig] = useState({
         sampleFps: 1,
         edgeThreshold: 30,
-        blockThreshold: 8,
-        densityThresholdPct: 4,
+        blockThreshold: 12,
+        densityThresholdPct: 5,
         minSlideDuration: 3,
         dhashDuplicateThreshold: 4,
         useDeferredEmit: true,
@@ -89,7 +89,6 @@ const App: React.FC = () => {
         // Drift detection
         cumulativeDriftMultiplier: 2,
         cumulativeSettledSeconds: 2,
-        partialThresholdRatio: 0.5,
         noiseResetSeconds: 30,
         noiseMainRatio: 0.25,
         imageQuality: 0.8,

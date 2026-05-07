@@ -3,7 +3,7 @@
  * FFmpeg WASM Demuxer — Zero-Copy TypeScript API
  * ============================================================================
  *
- * Production-grade wrapper around the custom C/Rust FFmpeg 8.1 WASM demuxer.
+ * TypeScript API for the FFmpeg 8.1 WASM demuxer.
  * Designed for high-performance media pipelines: video editors, slide
  * extractors, audio processors, or anything that needs raw demuxed packets.
  *
@@ -86,8 +86,9 @@ export type ModuleFactory = (opts?: Record<string, any>) => Promise<EmscriptenMo
 // DemuxerPacketC:
 //   [0]  data (ptr, 4B)  [4]  size (i32, 4B)
 //   [8]  pts (i64, 8B)   [16] dts (i64, 8B)
-//   [24] is_keyframe     [28] stream_index
-//   [32] _raw_pkt (ptr)
+//   [24] duration (i64, 8B)
+//   [32] is_keyframe     [36] stream_index
+//   [40] _raw_pkt (ptr)
 
 const STREAM_INFO = {
   stream_index:   0,
@@ -103,6 +104,7 @@ const STREAM_INFO = {
   bit_rate:       40,
   codec_type:     44,
   rotation_f64_idx: 6, // 48 / 8 = 6
+  display_matrix_idx: 14, // 56 / 4 = 14
 } as const;
 
 const PACKET = {
@@ -134,6 +136,8 @@ export interface StreamInfo {
   readonly bitRateKbps: number;
   /** Video display rotation in degrees (0, 90, 180, 270) */
   readonly rotation: number;
+  /** Raw 3x3 transformation matrix extracted from the stream side data */
+  readonly displayMatrix: Int32Array | null;
   /** Raw extradata bytes (COPIED from WASM — safe to hold indefinitely) */
   readonly extradata: Uint8Array | null;
 }
@@ -229,10 +233,10 @@ export class FFmpegDemuxer {
   private demuxerPtr: number = 0;
   private readFnPtr: number = 0;
   private seekFnPtr: number = 0;
-  private seekResultPtr: number = 0;
   private ioOffset: number = 0;
   private ioSource: IOSource | null = null;
   private _destroyed = false;
+  private _debugRef: { enabled: boolean } = { enabled: false };
 
   // Cached stream metadata (populated after open())
   private _videoStreamIndex = -1;
@@ -253,12 +257,16 @@ export class FFmpegDemuxer {
    * @param factory - The `createDemuxerModule` function from ffmpeg_demuxer.js
    */
   static async create(factory: ModuleFactory): Promise<FFmpegDemuxer> {
+    const debugRef = { enabled: false };
     const Module = await factory({
-      // Suppress FFmpeg's internal logging
       print: () => {},
-      printErr: () => {},
+      printErr: (...args: any[]) => {
+        if (debugRef.enabled) console.warn('[FFmpeg]', ...args);
+      },
     });
-    return new FFmpegDemuxer(Module);
+    const demuxer = new FFmpegDemuxer(Module);
+    demuxer._debugRef = debugRef;
+    return demuxer;
   }
 
   // ── Lifecycle ────────────────────────────────────────────────────────────
@@ -270,7 +278,7 @@ export class FFmpegDemuxer {
    * @param options - Configuration options (e.g. custom AVIO buffer size)
    * @throws Error if FFmpeg cannot parse the container
    */
-  open(source: IOSource, options?: { bufferSize?: number }): void {
+  open(source: IOSource, options?: { bufferSize?: number; debug?: boolean }): void {
     if (this._destroyed) throw new Error('Demuxer has been destroyed');
     if (this.demuxerPtr) throw new Error('Demuxer is already open. Call destroy() first.');
 
@@ -278,9 +286,6 @@ export class FFmpegDemuxer {
     this.ioOffset = 0;
 
     const M = this.Module;
-
-    // Get the shared seek result buffer pointer
-    this.seekResultPtr = M.ccall('wasm_get_seek_result_ptr', 'number', [], []);
 
     // Register JS read callback → Emscripten function table
     const readCb = (bufPtr: number, bufSize: number): number => {
@@ -292,40 +297,38 @@ export class FFmpegDemuxer {
     };
 
     // Register JS seek callback → Emscripten function table
-    const seekCb = (offsetHi: number, offsetLo: number, whence: number): number => {
-      if (!this.ioSource) return -1;
-      const seekOffset = (offsetHi * 0x100000000) + (offsetLo >>> 0);
+    const seekCb = (offset: bigint, whence: number): bigint => {
+      if (!this.ioSource) return -1n;
       let newPos: number;
 
       if (whence === AVSEEK_SIZE) {
         newPos = this.ioSource.size;
       } else {
+        const offsetNum = Number(offset);
         switch (whence) {
-          case 0: newPos = seekOffset; break;                        // SEEK_SET
-          case 1: newPos = this.ioOffset + seekOffset; break;        // SEEK_CUR
-          case 2: newPos = this.ioSource.size + seekOffset; break;   // SEEK_END
-          default: return -1;
+          case 0: newPos = offsetNum; break;                        // SEEK_SET
+          case 1: newPos = this.ioOffset + offsetNum; break;        // SEEK_CUR
+          case 2: newPos = this.ioSource.size + offsetNum; break;   // SEEK_END
+          default: return -1n;
         }
         this.ioOffset = newPos;
       }
 
-      // Write 64-bit result as [lo, hi] into shared buffer
-      const h = new Int32Array(M.wasmMemory.buffer);
-      h[this.seekResultPtr / 4]     = newPos & 0xFFFFFFFF;
-      h[this.seekResultPtr / 4 + 1] = Math.floor(newPos / 0x100000000);
-      return 0;
+      return BigInt(newPos);
     };
 
     this.readFnPtr = M.addFunction(readCb, 'iii');
-    this.seekFnPtr = M.addFunction(seekCb, 'iiii');
+    this.seekFnPtr = M.addFunction(seekCb, 'jji');
 
     const bufferSize = options?.bufferSize ?? (1024 * 1024); // 1MB default
+    const debugMode = options?.debug ? 1 : 0;
+    this._debugRef.enabled = !!options?.debug;
 
     // Instantiate the C demuxer
     this.demuxerPtr = M.ccall(
       'wasm_demuxer_new', 'number',
-      ['number', 'number', 'number'],
-      [this.readFnPtr, this.seekFnPtr, bufferSize]
+      ['number', 'number', 'number', 'number'],
+      [this.readFnPtr, this.seekFnPtr, bufferSize, debugMode]
     );
     if (this.demuxerPtr === 0) {
       this._cleanupCallbacks();
@@ -461,8 +464,14 @@ export class FFmpegDemuxer {
     if (pktPtr === 0) {
       // Check if it's a real error or just EOF
       const err = this._getLastError();
-      if (err) throw new Error(`Demuxer read error: ${err}`);
-      return null; // EOF
+      if (err) {
+        // Non-fatal: treat as EOF with a warning. FFmpeg can hit transient
+        // I/O errors mid-stream (corrupt packets, container quirks) that
+        // don't invalidate the data already extracted. Throwing here would
+        // kill the entire extraction over a non-fatal read hiccup.
+        console.warn(`[Demuxer] Read stopped: ${err}`);
+      }
+      return null; // EOF (or graceful stop on read error)
     }
 
     return this._wrapPacket(pktPtr);
@@ -479,15 +488,14 @@ export class FFmpegDemuxer {
    */
   seek(streamIndex: number, timestampInTimebase: number): void {
     this._assertOpen();
-    const hi = Math.floor(timestampInTimebase / 0x100000000);
-    const lo = timestampInTimebase & 0xFFFFFFFF;
     const ret = this.Module.ccall(
       'wasm_demuxer_seek', 'number',
-      ['number', 'number', 'number', 'number'],
-      [this.demuxerPtr, streamIndex, hi, lo]
+      ['number', 'number', 'number'],
+      [this.demuxerPtr, streamIndex, BigInt(timestampInTimebase)]
     );
     if (ret < 0) {
-      throw new Error(`Seek failed (code ${ret})`);
+      const err = this._getLastError();
+      throw new Error(`Seek failed: ${err || 'unknown error'} (code ${ret})`);
     }
   }
 
@@ -588,6 +596,13 @@ export class FFmpegDemuxer {
       extradata = new Uint8Array(src); // Copy
     }
 
+    // Extract the 3x3 display matrix
+    const matrixStart = base + STREAM_INFO.display_matrix_idx;
+    const displayMatrixRaw = h.slice(matrixStart, matrixStart + 9);
+    // If it's all zeros, the matrix is empty/unset, so return null.
+    const isMatrixEmpty = displayMatrixRaw.every(val => val === 0);
+    const displayMatrix = isMatrixEmpty ? null : displayMatrixRaw;
+
     const CODEC_TYPE_MAP: Record<number, StreamInfo['codecType']> = {
       0: 'video', 1: 'audio', 2: 'data', 3: 'subtitle',
     };
@@ -604,6 +619,7 @@ export class FFmpegDemuxer {
       height,
       bitRateKbps: bitRate,
       rotation,
+      displayMatrix,
       extradata,
     };
   }

@@ -1,20 +1,20 @@
 #!/bin/bash
 set -e
 
-echo "Building Rust staticlib..."
-cargo build --target wasm32-unknown-unknown --release
+FFMPEG_INCLUDE="ffmpeg_build/ffmpeg-8.1"
 
-echo "Linking with Emscripten..."
-emcc target/wasm32-unknown-unknown/release/libffmpeg_wasm_demuxer.a \
+echo "Compiling C demuxer directly with Emscripten (no Rust)..."
+
+emcc src/demuxer.c \
   lib/libavformat.a \
   lib/libavcodec.a \
   lib/libavutil.a \
+  -I "$FFMPEG_INCLUDE" \
   -o pkg/ffmpeg_demuxer.js \
   -s MODULARIZE=1 \
   -s EXPORT_NAME="createDemuxerModule" \
-  -s EXPORTED_RUNTIME_METHODS="['ccall','cwrap','addFunction','HEAPU8','wasmMemory','getValue','UTF8ToString']" \
+  -s EXPORTED_RUNTIME_METHODS="['ccall','cwrap','addFunction','HEAPU8','wasmMemory','getValue','UTF8ToString','removeFunction']" \
   -s EXPORTED_FUNCTIONS="[
-    '_wasm_get_seek_result_ptr',
     '_wasm_demuxer_new', 
     '_wasm_demuxer_init', 
     '_wasm_demuxer_free',
@@ -31,6 +31,7 @@ emcc target/wasm32-unknown-unknown/release/libffmpeg_wasm_demuxer.a \
   ]" \
   -s ALLOW_TABLE_GROWTH=1 \
   -s ALLOW_MEMORY_GROWTH=1 \
+  -s WASM_BIGINT=1 \
   -s FILESYSTEM=0 \
   -s SINGLE_FILE=1 \
   -O3

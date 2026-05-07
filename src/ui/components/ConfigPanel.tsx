@@ -176,7 +176,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                 <div className="setting-item">
                     <label>Block Threshold: <strong>{config.blockThreshold}</strong></label>
                     <input 
-                        type="range" min="1" max="64" step="1" 
+                        type="range" min="1" max="64" step="0.5" 
                         value={config.blockThreshold} onChange={e => setConfig({...config, blockThreshold: Number(e.target.value)})} 
                         disabled={isExtracting}
                         aria-label="Number of changed blocks required"
@@ -271,15 +271,6 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                             value={config.cumulativeSettledSeconds} onChange={e => setConfig({...config, cumulativeSettledSeconds: Number(e.target.value)})} 
                             disabled={isExtracting}
                             aria-label="Seconds of stability before drift emit"
-                        />
-                    </div>
-                    <div className="setting-item">
-                        <label>Partial Ratio: <strong>{config.partialThresholdRatio}</strong></label>
-                        <input 
-                            type="range" min="0.1" max="1" step="0.1" 
-                            value={config.partialThresholdRatio} onChange={e => setConfig({...config, partialThresholdRatio: Number(e.target.value)})} 
-                            disabled={isExtracting}
-                            aria-label="Partial threshold ratio"
                         />
                     </div>
                     <div className="setting-item">

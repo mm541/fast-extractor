@@ -37,13 +37,17 @@
  *     Condition 1: mainChanges ≥ blockThreshold  (big instant change)
  *     Condition 2: cumulativeDrift ≥ blockThreshold × multiplier AND settled
  *                  (many small changes that accumulated, e.g., scrolling text)
- *     Condition 3: partial main + partial drift  (combined weak signals)
- *     Condition 4: color-only change — edges identical but avg RGB shifted ≥ 50
- *                  (dark mode toggle, background color swap)
  *
  *   NOISE SUPPRESSION:
  *     - Duplicate slides are suppressed via 64-bit dHash comparison
  *     - Cumulative drift resets after noiseResetSeconds without a trigger
+ *
+ * STABILITY GATE (Deferred Emit):
+ *   When Condition 1 fires, the frame is NOT emitted immediately. Instead,
+ *   it is buffered as a "candidate." On the NEXT frame, we check if the
+ *   content has settled (driftBlocks ≤ threshold). If settled, we emit the
+ *   current (clean) frame with the candidate's timestamp. This prevents
+ *   capturing blurry mid-transition frames.
  *
  * TWO EXTRACTION MODES:
  *   TURBO:    Decode only keyframes (IDR). ~10-20s for a 1-hour video.
@@ -57,8 +61,8 @@
  *
  * WASM BUFFER LAYOUT:
  *   init_arena() allocates four buffers in WASM linear memory:
- *     [buffer_a: 424×240 gray] [buffer_b: 424×240 gray]
- *     [buffer_prev: 424×240 gray] [rgba_buffer: 424×240×4 RGBA]
+ *     [buffer_a: 854×480 gray] [buffer_b: 854×480 gray]
+ *     [buffer_prev: 854×480 gray] [rgba_buffer: 854×480×4 RGBA]
  *
  *   All WASM functions operate on these fixed buffers — zero JS↔WASM copies.
  *   The RGBA buffer is a staging area: copy RGBA in, call copy_rgba_to_gray()
@@ -77,7 +81,7 @@
  *   and GPU memory fragmentation leading to OOM on mobile.
  *
  * ⚠️ CRITICAL: RESOLUTION
- *   Comparison always happens at 424×240 (CMP_W × CMP_H) regardless of
+ *   Comparison always happens at 854×480 (CMP_W × CMP_H) regardless of
  *   the input video resolution. This is intentional — higher resolution
  *   doesn't improve slide detection accuracy but massively increases cost.
  *   maxFrameWidth only affects the ORIGINAL file decoding, not comparison.
@@ -114,24 +118,23 @@
  *     Per-pixel luminance difference required to count as "changed".
  *     Lower = more sensitive to subtle changes. Higher = more noise-tolerant.
  *
- *   blockThreshold (1-64, default 12)
+ *   blockThreshold (1-64, default 8)
  *     Number of 8×8 blocks that must have changed to trigger a new slide.
  *     The image is divided into an 8×8 grid (64 blocks). Each block's
  *     change density is checked against densityThresholdPct.
  *
- *   densityThresholdPct (1-50, default 5)
+ *   densityThresholdPct (1-50, default 4)
  *     Percentage of pixels within a single block that must differ.
- *     5% = at least 5% of the block's pixels must have changed.
+ *     4% = at least 4% of the block's pixels must have changed.
  *
  *   minSlideDuration (1-30s, default 3)
  *     Minimum seconds between two slide emissions.
  *     Prevents rapid-fire emissions during animations.
  *
- *   dhashDuplicateThreshold (0-20, default 10)
+ *   dhashDuplicateThreshold (0-20, default 4)
  *     Hamming distance for dHash comparison (64-bit perceptual hash).
  *     Two slides with distance ≤ this value are considered duplicates.
- *     0 = exact match only, 10 = tolerant of minor differences.
- *
+ *     0 = exact match only, 4 = tolerant of minor differences.
  *
  *   cumulativeDriftMultiplier (1-5, default 2)
  *     Factor applied to blockThreshold for cumulative drift trigger.
@@ -140,10 +143,6 @@
  *   cumulativeSettledSeconds (1-10, default 2)
  *     Seconds of stability required after cumulative drift before emitting.
  *     Time-based to ensure identical behavior regardless of frame rate.
- *
- *   partialThresholdRatio (0.1-1, default 0.5)
- *     Fraction of blockThreshold for the partial main change component
- *     of Condition 3. 0.5 = main change must be at least half the threshold.
  *
  *   noiseResetSeconds (10-120, default 30)
  *     Reset cumulative drift after this many seconds of drift without trigger.
@@ -171,14 +170,9 @@ export interface SlideExtractorOptions {
   dhashDuplicateThreshold: number;
   // Three-pointer drift detection
   cumulativeDriftMultiplier: number;    // cumulative drift must reach blockThreshold * this
-  cumulativeSettledSeconds: number;     // seconds of stability before emitting on drift or partial match
-  partialThresholdRatio: number;        // fraction of blockThreshold for partial match (0-1)
+  cumulativeSettledSeconds: number;     // seconds of stability before emitting on drift
   noiseResetSeconds: number;            // reset drift after this many seconds if no trigger
   noiseMainRatio: number;               // reset only if mainChanges < blockThreshold * this (0-1)
-  // Color-aware detection
-  colorChangeThreshold: number;         // max(|ΔR|,|ΔG|,|ΔB|) to trigger color-only slide (0=disabled)
-  // Camera shake filter
-  shakeFilterStrictMultiplier: number;  // density multiplier for shake confirmation (0=disabled)
   // Region-of-interest masking
   ignoreMask: bigint;                   // 64-bit bitmask: bit (row*8+col)=1 skips that grid block
   
@@ -213,18 +207,13 @@ export interface ExtractionMetrics {
 
 export const DEFAULT_OPTIONS: SlideExtractorOptions = {
   mode: 'turbo', sampleFps: 1,
-  edgeThreshold: 30, blockThreshold: 8, densityThresholdPct: 4,
+  edgeThreshold: 30, blockThreshold: 12, densityThresholdPct: 5,
   minSlideDuration: 3, dhashDuplicateThreshold: 4,
   // Three-pointer defaults
   cumulativeDriftMultiplier: 2,
   cumulativeSettledSeconds: 2,
-  partialThresholdRatio: 0.5,
   noiseResetSeconds: 30,
   noiseMainRatio: 0.25,
-  // Color detection: 25 = detect shifts where any channel moves >25/255
-  colorChangeThreshold: 25,
-  // Shake filter: 3 = confirm with 3× density. 0 = disabled
-  shakeFilterStrictMultiplier: 3,
   // Grid masking: 0n = compare all 64 blocks (no masking)
   ignoreMask: 0n,
   useDeferredEmit: true,
@@ -242,7 +231,6 @@ export interface WasmModule {
   compare_frames: (edge: number, density: number, mask: bigint) => number;
   compare_prev_current: (edge: number, density: number, mask: bigint) => number;
   compute_dhash: (is_buffer_b: boolean) => bigint;
-  compute_color_signature: () => bigint;
   get_avg_brightness: () => number;
   memory: WebAssembly.Memory;
 }
@@ -270,7 +258,6 @@ export class SlideExtractor {
   private pendingCandidate: {
     frame: VideoFrame;
     timestamp: number;
-    colorSig: [number, number, number];
   } | null = null;
   
   private lastProcessedFrame: VideoFrame | null = null;
@@ -286,14 +273,6 @@ export class SlideExtractor {
   private cumulativeDrift = 0;   // accumulated block changes (Prev vs B)
   private settledSinceTime = -1; // timestamp when content stopped moving (-1 = not settled)
   private driftStartTime = 0;    // timestamp when the current drift sequence started
-
-  // Adaptive noise floor — calibrates blockThreshold from video noise level
-  private noiseFloor = 0;
-  private calibrationSamples: number[] = [];
-  private isCalibrated = false;
-
-  // Color-aware detection — tracks average RGB to detect color-only changes
-  private prevColorSig: [number, number, number] | null = null;
 
   // Chunk-fed decoder state
   private decoder: VideoDecoder | null = null;
@@ -355,12 +334,6 @@ export class SlideExtractor {
     this.lastSlideTime = -10;
     this.needsKeyframe = true;
     this.nextCaptureTime = 0;
-    // Reset robustness state
-    this.noiseFloor = 0;
-    this.calibrationSamples = [];
-    this.isCalibrated = false;
-    this.prevColorSig = null;
-
     this.cumulativeDrift = 0;
     this.settledSinceTime = -1;
 
@@ -499,7 +472,7 @@ export class SlideExtractor {
         this.options.ignoreMask
       );
       
-      const partialThreshold = Math.floor(this.getEffectiveBlockThreshold() * this.options.partialThresholdRatio);
+      const partialThreshold = Math.floor(this.options.blockThreshold * 0.5);
       
       if (mainChanges >= partialThreshold) {
         // Emit the final state of the video
@@ -628,17 +601,9 @@ export class SlideExtractor {
       this.wasm.shift_current_to_prev();
       this.captureFrameToRgba(frame);
 
-    // === Frame closed. Only WASM buffers from here. ===
+    // === Frame captured. Only WASM buffers from here. ===
 
-    // Step 2: Compute color signature in WASM (before grayscale conversion)
-    const colorSigPacked = this.wasm.compute_color_signature();
-    const colorSig: [number, number, number] = [
-      Number((colorSigPacked >> 48n) & 0xFFFFn),
-      Number((colorSigPacked >> 32n) & 0xFFFFn),
-      Number((colorSigPacked >> 16n) & 0xFFFFn),
-    ];
-
-    // Step 3: Convert RGBA → grayscale for block comparison
+    // Convert RGBA → grayscale for block comparison
     this.convertRgbaToGray();
 
     if (!this.hasBaseline) {
@@ -647,13 +612,11 @@ export class SlideExtractor {
       this.emitSlideFromFrame(frame, timestamp);
       this.hasBaseline = true;
       this.lastSlideTime = timestamp;
-      this.prevColorSig = colorSig;
       return;
     }
 
     // === THREE-POINTER COMPARISON (both modes) ===
-    const { edgeThreshold, densityThresholdPct } = this.options;
-    const blockThreshold = this.getEffectiveBlockThreshold();
+    const { edgeThreshold, densityThresholdPct, blockThreshold } = this.options;
 
     // Pointer 1→3: Baseline (A) vs Current (B)
     const mask = this.options.ignoreMask;
@@ -665,15 +628,24 @@ export class SlideExtractor {
     // --- Transition Filter (Deferred Emit) ---
     let candidateConfirmedThisFrame = false;
     if (this.options.useDeferredEmit && this.pendingCandidate) {
-      const allowedDrift = Math.max(this.noiseFloor * 2, Math.floor(blockThreshold * 0.3));
+      const allowedDrift = Math.floor(blockThreshold * 0.3);
+      const candidateAge = timestamp - this.pendingCandidate.timestamp;
       
-      if (driftBlocks <= allowedDrift) {
-        // SETTLED! The slide has stopped moving.
+      if (driftBlocks <= allowedDrift || candidateAge >= 15) {
+        // SETTLED (or timed out after 15s of continuous movement).
         // Emit the CURRENT frame (clean/settled) with the timestamp from
         // when the transition was first detected.
-        this.emitSlideFromFrame(frame, this.pendingCandidate.timestamp);
-        this.copyBufferBToA(); // Current frame is the new Baseline
-        this.lastSlideTime = this.pendingCandidate.timestamp;
+        // Timeout prevents infinite starvation for "always-moving" content
+        // like handwriting videos where driftBlocks never drops to zero.
+        // 15s (not 5s) to avoid short-circuiting turbo mode where keyframes
+        // are 5-10s apart — the stability gate needs 2-3 keyframes to settle.
+        const dhash = this.wasm.compute_dhash(true); // Buffer B = current settled frame
+        if (!this.isDuplicate(dhash)) {
+          this.savedHashes.push(dhash);
+          this.emitSlideFromFrame(frame, this.pendingCandidate.timestamp);
+          this.copyBufferBToA(); // Current frame is the new Baseline
+          this.lastSlideTime = this.pendingCandidate.timestamp;
+        }
         
         this.pendingCandidate.frame.close();
         this.pendingCandidate = null;
@@ -685,22 +657,8 @@ export class SlideExtractor {
       }
     }
 
-    // --- Adaptive Noise Floor Calibration ---
-    // Collect drift samples during the first 10 frames where content is stable
-    // (drift > 0 but no big change = codec noise, not a real transition)
-    if (!this.isCalibrated && driftBlocks > 0 && mainChanges < this.options.blockThreshold) {
-      this.calibrationSamples.push(driftBlocks);
-      if (this.calibrationSamples.length >= 10) {
-        // Use median (robust against outliers from transitions)
-        const sorted = [...this.calibrationSamples].sort((a, b) => a - b);
-        this.noiseFloor = sorted[Math.floor(sorted.length / 2)];
-        this.isCalibrated = true;
-        console.log(`[NoiseFloor] Calibrated: ${this.noiseFloor} blocks (effective threshold: ${this.getEffectiveBlockThreshold()})`);
-      }
-    }
-
     // Track cumulative drift
-    const staticDriftLimit = Math.max(this.noiseFloor * 2, Math.floor(blockThreshold * 0.1));
+    const staticDriftLimit = Math.max(1, Math.floor(blockThreshold * 0.1));
     if (driftBlocks > staticDriftLimit) {
       if (this.cumulativeDrift === 0) {
         this.driftStartTime = timestamp;
@@ -711,17 +669,6 @@ export class SlideExtractor {
       // Content is stable — mark when it first settled
       if (this.settledSinceTime < 0) this.settledSinceTime = timestamp;
     }
-
-    // --- Color Delta ---
-    let colorDelta = 0;
-    if (this.prevColorSig && this.options.colorChangeThreshold > 0) {
-      colorDelta = Math.max(
-        Math.abs(colorSig[0] - this.prevColorSig[0]),
-        Math.abs(colorSig[1] - this.prevColorSig[1]),
-        Math.abs(colorSig[2] - this.prevColorSig[2])
-      );
-    }
-    this.prevColorSig = colorSig;
 
     // === EMIT CONDITIONS ===
     const timeSinceLastSlide = timestamp - this.lastSlideTime;
@@ -739,20 +686,7 @@ export class SlideExtractor {
     if (!candidateConfirmedThisFrame && !this.pendingCandidate) {
       // Condition 1: Direct threshold — A vs B shows big change
       if (mainChanges >= blockThreshold) {
-        // --- Camera Shake Filter ---
-        // If the change is diffuse (all blocks changed a little), it's shake, not a slide.
-        // Confirm with a stricter density check: if few blocks pass 3× density, it's shake.
-        if (this.options.shakeFilterStrictMultiplier > 0) {
-          const strictDensity = Math.min(densityThresholdPct * this.options.shakeFilterStrictMultiplier, 100);
-          const strictChanges = this.wasm.compare_frames(edgeThreshold, strictDensity, mask);
-          if (strictChanges >= blockThreshold * 0.3) {
-            // Concentrated change → real slide transition
-            shouldEmit = true;
-          }
-          // else: diffuse change → camera shake, suppress
-        } else {
-          shouldEmit = true;
-        }
+        shouldEmit = true;
       }
 
       // Condition 2: Cumulative drift — small changes piled up AND content settled
@@ -765,29 +699,6 @@ export class SlideExtractor {
         emitInstantly = true;
         emitTimestamp = this.driftStartTime;
       }
-
-      // Condition 3: Partial main + partial drift — combined signal
-      if (
-        !shouldEmit &&
-        mainChanges >= Math.floor(blockThreshold * this.options.partialThresholdRatio) &&
-        this.cumulativeDrift >= blockThreshold &&
-        this.settledSinceTime >= 0 && (timestamp - this.settledSinceTime) >= this.options.cumulativeSettledSeconds
-      ) {
-        shouldEmit = true;
-        emitInstantly = true;
-        emitTimestamp = this.driftStartTime;
-      }
-
-      // Condition 4: Color-only change — grayscale missed it but color shifted significantly
-      // Note: color signature is computed over the ENTIRE frame (not per-block), so it
-      // does not respect the grid mask. Skip this condition if all blocks are masked.
-      if (
-        !shouldEmit &&
-        mask !== 0xFFFFFFFFFFFFFFFFn &&
-        colorDelta >= this.options.colorChangeThreshold
-      ) {
-        shouldEmit = true;
-      }
     } // End of !candidateConfirmedThisFrame
 
     if (shouldEmit) {
@@ -799,10 +710,9 @@ export class SlideExtractor {
         this.pendingCandidate = {
           frame: frame.clone(),
           timestamp: emitTimestamp,
-          colorSig: colorSig
         };
       } else {
-        // Instant Emit Mode (Fallback or Bypassed Cumulative Drift)
+        // Instant Emit Mode (Cumulative Drift)
         const dhash = this.wasm.compute_dhash(true);
         if (!this.isDuplicate(dhash)) {
           this.savedHashes.push(dhash);
@@ -835,8 +745,8 @@ export class SlideExtractor {
   // ===================== Helpers =====================
 
   // Comparison canvas: small for fast WASM processing
-  private static readonly CMP_W = 424;
-  private static readonly CMP_H = 240;
+  private static readonly CMP_W = 854;
+  private static readonly CMP_H = 480;
 
   /**
    * Copy VideoFrame pixels into the WASM RGBA buffer.
@@ -861,17 +771,7 @@ export class SlideExtractor {
     this.wasm.copy_rgba_to_gray(true);
   }
 
-  /**
-   * Get effective blockThreshold, adjusted for video noise level.
-   * After calibration (10 samples), if the median noise per-frame exceeds
-   * the configured threshold / 3, the threshold is raised.
-   * For clean videos (noise ~1), returns the configured blockThreshold unchanged.
-   */
-  private getEffectiveBlockThreshold(): number {
-    if (!this.isCalibrated) return this.options.blockThreshold;
-    // Raise threshold if noise is high, never lower it
-    return Math.max(this.options.blockThreshold, this.noiseFloor * 3);
-  }
+
 
   private copyBufferBToA() {
     const size = SlideExtractor.CMP_W * SlideExtractor.CMP_H;

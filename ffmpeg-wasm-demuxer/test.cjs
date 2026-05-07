@@ -33,9 +33,6 @@ async function runTest() {
 
     console.log(`Size: ${(fileSize / 1024 / 1024).toFixed(1)} MB\n`);
 
-    // ── Get shared seek result buffer pointer ──
-    const seekResultPtr = Module.ccall('wasm_get_seek_result_ptr', 'number', [], []);
-
     // ── Read Callback ──
     const jsReadCallback = (bufPtr, size) => {
         try {
@@ -50,33 +47,29 @@ async function runTest() {
         }
     };
 
-    // ── Seek Callback (fixed for >2GB files) ──
-    const jsSeekCallback = (offsetHi, offsetLo, whence) => {
+    // ── Seek Callback (Native BigInt) ──
+    const jsSeekCallback = (offset, whence) => {
         const AVSEEK_SIZE = 0x10000;
-        const seekOffset = (offsetHi * 0x100000000) + (offsetLo >>> 0);
         let newPos;
 
         if (whence === AVSEEK_SIZE) {
             newPos = fileSize;
         } else {
+            const offsetNum = Number(offset);
             switch (whence) {
-                case 0: newPos = seekOffset; break;        // SEEK_SET
-                case 1: newPos = offset + seekOffset; break; // SEEK_CUR
-                case 2: newPos = fileSize + seekOffset; break; // SEEK_END
-                default: return -1;
+                case 0: newPos = offsetNum; break;        // SEEK_SET
+                case 1: newPos = offset + offsetNum; break; // SEEK_CUR
+                case 2: newPos = fileSize + offsetNum; break; // SEEK_END
+                default: return -1n;
             }
             offset = newPos;
         }
 
-        // Write the full 64-bit result into the shared buffer as [lo, hi]
-        const h = new Int32Array(Module.wasmMemory.buffer);
-        h[seekResultPtr / 4]     = newPos & 0xFFFFFFFF;           // lo
-        h[seekResultPtr / 4 + 1] = Math.floor(newPos / 0x100000000); // hi
-        return 0; // success
+        return BigInt(newPos);
     };
 
     const readPtr = Module.addFunction(jsReadCallback, 'iii');
-    const seekPtr = Module.addFunction(jsSeekCallback, 'iiii');
+    const seekPtr = Module.addFunction(jsSeekCallback, 'jji');
 
     try {
         // ═══════════════════════════════════════
@@ -213,14 +206,12 @@ async function runTest() {
         // ═══════════════════════════════════════
         if (duration > 10 && videoIdx >= 0) {
             const seekSec = Math.min(60, Math.floor(duration / 2));
-            const seekTs = seekSec * videoTbDen;
-            const seekHi = Math.floor(seekTs / 0x100000000);
-            const seekLo = seekTs & 0xFFFFFFFF;
+            const seekTs = BigInt(seekSec * videoTbDen);
 
             console.log(`\n┌─ SEEK TEST → ~${seekSec}s ─────────────────────────────────────┐`);
             const seekRes = Module.ccall('wasm_demuxer_seek', 'number',
-                ['number', 'number', 'number', 'number'],
-                [demuxerPtr, videoIdx, seekHi, seekLo]);
+                ['number', 'number', 'number'],
+                [demuxerPtr, videoIdx, seekTs]);
             console.log(`│  Result: ${seekRes === 0 ? '✓ success' : '✗ failed (' + seekRes + ')'}`);
 
             for (let i = 0; i < 5; i++) {
