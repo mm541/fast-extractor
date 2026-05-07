@@ -639,9 +639,13 @@ export class SlideExtractor {
         // like handwriting videos where driftBlocks never drops to zero.
         // 15s (not 5s) to avoid short-circuiting turbo mode where keyframes
         // are 5-10s apart — the stability gate needs 2-3 keyframes to settle.
-        this.emitSlideFromFrame(frame, this.pendingCandidate.timestamp);
-        this.copyBufferBToA(); // Current frame is the new Baseline
-        this.lastSlideTime = this.pendingCandidate.timestamp;
+        const dhash = this.wasm.compute_dhash(true); // Buffer B = current settled frame
+        if (!this.isDuplicate(dhash)) {
+          this.savedHashes.push(dhash);
+          this.emitSlideFromFrame(frame, this.pendingCandidate.timestamp);
+          this.copyBufferBToA(); // Current frame is the new Baseline
+          this.lastSlideTime = this.pendingCandidate.timestamp;
+        }
         
         this.pendingCandidate.frame.close();
         this.pendingCandidate = null;
