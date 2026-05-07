@@ -274,15 +274,6 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                         />
                     </div>
                     <div className="setting-item">
-                        <label>Partial Ratio: <strong>{config.partialThresholdRatio}</strong></label>
-                        <input 
-                            type="range" min="0.1" max="1" step="0.1" 
-                            value={config.partialThresholdRatio} onChange={e => setConfig({...config, partialThresholdRatio: Number(e.target.value)})} 
-                            disabled={isExtracting}
-                            aria-label="Partial threshold ratio"
-                        />
-                    </div>
-                    <div className="setting-item">
                         <label>Noise Reset: <strong>{config.noiseResetSeconds}s</strong></label>
                         <input 
                             type="range" min="10" max="120" step="5" 

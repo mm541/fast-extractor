@@ -170,21 +170,15 @@ export interface FastExtractorOptions {
   /** 64-bit bitmask: bit (row*8 + col) = 1 skips that 8×8 grid block. Default: 0n (no masking). */
   ignoreMask?: bigint;
 
-  // ─── Advanced Drift & Shake Detection ───
+  // ─── Advanced Drift Detection ───
   /** Cumulative drift must reach blockThreshold * this multiplier to emit a slow-transition slide. Default: 2 */
   cumulativeDriftMultiplier?: number;
-  /** Seconds of stability required before emitting on drift or partial match. Default: 2 */
+  /** Seconds of stability required before emitting on drift. Default: 2 */
   cumulativeSettledSeconds?: number;
-  /** Fraction of blockThreshold for partial match (0.0 - 1.0). Default: 0.5 */
-  partialThresholdRatio?: number;
   /** Reset drift accumulator after this many seconds if no trigger. Default: 30 */
   noiseResetSeconds?: number;
   /** Reset drift only if mainChanges < blockThreshold * this ratio. Default: 0.25 */
   noiseMainRatio?: number;
-  /** max(|ΔR|,|ΔG|,|ΔB|) to trigger color-only slide (0 = disabled). Default: 25 */
-  colorChangeThreshold?: number;
-  /** Density multiplier for camera shake confirmation (0 = disabled). Default: 3 */
-  shakeFilterStrictMultiplier?: number;
 
   // ─── Output selection ───
   /** Extract audio from the video. Default: true */

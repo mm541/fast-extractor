@@ -89,7 +89,6 @@ const App: React.FC = () => {
         // Drift detection
         cumulativeDriftMultiplier: 2,
         cumulativeSettledSeconds: 2,
-        partialThresholdRatio: 0.5,
         noiseResetSeconds: 30,
         noiseMainRatio: 0.25,
         imageQuality: 0.8,

@@ -31,7 +31,6 @@ export interface ExtractionConfig {
     useDeferredEmit: boolean;
     cumulativeDriftMultiplier: number;
     cumulativeSettledSeconds: number;
-    partialThresholdRatio: number;
     noiseResetSeconds: number;
     noiseMainRatio: number;
     imageQuality: number;
