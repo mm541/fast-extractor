@@ -61,8 +61,8 @@
  *
  * WASM BUFFER LAYOUT:
  *   init_arena() allocates four buffers in WASM linear memory:
- *     [buffer_a: 424×240 gray] [buffer_b: 424×240 gray]
- *     [buffer_prev: 424×240 gray] [rgba_buffer: 424×240×4 RGBA]
+ *     [buffer_a: 854×480 gray] [buffer_b: 854×480 gray]
+ *     [buffer_prev: 854×480 gray] [rgba_buffer: 854×480×4 RGBA]
  *
  *   All WASM functions operate on these fixed buffers — zero JS↔WASM copies.
  *   The RGBA buffer is a staging area: copy RGBA in, call copy_rgba_to_gray()
@@ -81,7 +81,7 @@
  *   and GPU memory fragmentation leading to OOM on mobile.
  *
  * ⚠️ CRITICAL: RESOLUTION
- *   Comparison always happens at 424×240 (CMP_W × CMP_H) regardless of
+ *   Comparison always happens at 854×480 (CMP_W × CMP_H) regardless of
  *   the input video resolution. This is intentional — higher resolution
  *   doesn't improve slide detection accuracy but massively increases cost.
  *   maxFrameWidth only affects the ORIGINAL file decoding, not comparison.
@@ -745,8 +745,8 @@ export class SlideExtractor {
   // ===================== Helpers =====================
 
   // Comparison canvas: small for fast WASM processing
-  private static readonly CMP_W = 424;
-  private static readonly CMP_H = 240;
+  private static readonly CMP_W = 854;
+  private static readonly CMP_H = 480;
 
   /**
    * Copy VideoFrame pixels into the WASM RGBA buffer.

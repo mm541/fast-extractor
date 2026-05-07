@@ -152,7 +152,7 @@ export interface FastExtractorOptions {
   // ─── Detection tuning ───
   /** Edge detection sensitivity (10-100). Default: 30 */
   edgeThreshold?: number;
-  /** Minimum changed blocks to trigger slide (1-64). Default: 12 */
+  /** Minimum weighted score of changed blocks to trigger slide (0.01 - 64.0). Default: 12 */
   blockThreshold?: number;
   /** Minimum seconds between slides. Default: 3 */
   minSlideDuration?: number;
