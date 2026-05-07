@@ -171,9 +171,9 @@ new FastExtractor({
   // Detection tuning
   sampleFps: 1,              // Sequential only: frames per second to analyze
   edgeThreshold: 30,         // Sobel sensitivity (10-100)
-  blockThreshold: 8,         // Changed 8×8 blocks to trigger (1-64)
+  blockThreshold: 12,        // Changed 8×8 blocks to trigger (1-64)
   minSlideDuration: 3,       // Seconds between captures
-  densityThresholdPct: 4,    // Min edge % change per block (1-50)
+  densityThresholdPct: 5,    // Min edge % change per block (1-50)
   dhashDuplicateThreshold: 4, // Perceptual hash hamming distance (0-20)
   useDeferredEmit: true,     // Wait for transitions to settle before emitting
 

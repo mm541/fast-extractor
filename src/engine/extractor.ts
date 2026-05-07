@@ -207,7 +207,7 @@ export interface ExtractionMetrics {
 
 export const DEFAULT_OPTIONS: SlideExtractorOptions = {
   mode: 'turbo', sampleFps: 1,
-  edgeThreshold: 30, blockThreshold: 8, densityThresholdPct: 4,
+  edgeThreshold: 30, blockThreshold: 12, densityThresholdPct: 5,
   minSlideDuration: 3, dhashDuplicateThreshold: 4,
   // Three-pointer defaults
   cumulativeDriftMultiplier: 2,
