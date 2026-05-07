@@ -249,7 +249,10 @@ fn compare_grid_density(edges_a: &[u8], edges_b: &[u8], width: usize, height: us
             }
             let diff = (sum_a as i32 - sum_b as i32).unsigned_abs();
             if diff * den > num * block_size { 
-                changed += (diff as f32) / (block_size as f32); 
+                // Normalize so that exactly hitting the density threshold (num) contributes 1.0.
+                // A block changing by 2x the threshold contributes 2.0.
+                let weight = (diff as f32 * den as f32) / (block_size as f32 * num as f32);
+                changed += weight;
             }
         }
     }
