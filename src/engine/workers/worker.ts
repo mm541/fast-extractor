@@ -38,14 +38,14 @@ self.onerror = (event: string | Event, source?: string, lineno?: number, colno?:
 };
 
 
-import init, { compare_frames, compare_prev_current, compute_dhash, get_avg_brightness, init_arena, get_buffer_a_ptr, get_buffer_b_ptr, get_buffer_prev_ptr, get_rgba_buffer_ptr, shift_current_to_prev, copy_rgba_to_gray } from './wasm/wasm_extractor';
-import wasmUrl from './wasm/wasm_extractor_bg.wasm?url';
-import { SlideExtractor } from './extractor';
-import type { SlideExtractorOptions } from './extractor';
-import { AudioRemuxer } from './audio-remuxer';
+import init, { compare_frames, compare_prev_current, compute_dhash, get_avg_brightness, init_arena, get_buffer_a_ptr, get_buffer_b_ptr, get_buffer_prev_ptr, get_rgba_buffer_ptr, shift_current_to_prev, copy_rgba_to_gray } from '../wasm/wasm_extractor';
+import wasmUrl from '../wasm/wasm_extractor_bg.wasm?url';
+import { SlideExtractor } from '../video/extractor';
+import type { SlideExtractorOptions } from '../video/extractor';
+import { AudioRemuxer } from '../audio/audio-remuxer';
 
 // FFmpeg WASM Demuxer — lazy-loaded to avoid blocking worker startup on mobile
-import type { FFmpegDemuxer as FFmpegDemuxerType, ModuleFactory } from '../../ffmpeg-wasm-demuxer/src/index';
+import type { FFmpegDemuxer as FFmpegDemuxerType, ModuleFactory } from '../../../ffmpeg-wasm-demuxer/src/index';
 
 // ─── WORKER STATE ───
 let shouldExtractAudio = true;               // Controlled via CONFIG
@@ -122,7 +122,7 @@ self.onmessage = async (e: MessageEvent) => {
             let drainResolve: (() => void) | null = null;
 
             // Lazy-load the FFmpeg demuxer wrapper
-            const { FFmpegDemuxer, createSyncHandleSource } = await import('../../ffmpeg-wasm-demuxer/src/index');
+            const { FFmpegDemuxer, createSyncHandleSource } = await import('../../../ffmpeg-wasm-demuxer/src/index');
 
             try {
                 self.postMessage({ type: 'STATUS', status: 'Initializing Demuxer...' });
@@ -132,7 +132,7 @@ self.onmessage = async (e: MessageEvent) => {
 
                 // Load the FFmpeg WASM demuxer module
                 // @ts-ignore
-                const { default: createDemuxerModule } = await import('../../ffmpeg-wasm-demuxer/pkg/ffmpeg_demuxer.js');
+                const { default: createDemuxerModule } = await import('../../../ffmpeg-wasm-demuxer/pkg/ffmpeg_demuxer.js');
                 demuxer = await FFmpegDemuxer.create(createDemuxerModule as ModuleFactory);
 
                 const ioSource = createSyncHandleSource(syncHandle, fileSize);

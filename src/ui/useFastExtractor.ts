@@ -18,13 +18,13 @@
  */
 
 import { useState, useCallback, useRef } from 'react';
-import { FastExtractor } from '../engine/FastExtractor';
+import { FastExtractor } from '../engine';
 import type {
   FastExtractorOptions,
   ProgressEvent,
   AudioManifest,
   IngestedFile
-} from '../engine/types';
+} from '../engine/types/types';
 
 // ─── Hook State Types ───
 
