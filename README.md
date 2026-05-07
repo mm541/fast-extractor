@@ -41,7 +41,7 @@ Extract presentation slides and audio from video files entirely in the browser �
 ![Architecture](docs/architecture.png)
 
 **Key design decisions:**
-- **Zero GC pressure** — 894KB preallocated static WASM memory arena, no per-frame allocations.
+- **Zero GC pressure** — 3.6MB preallocated static WASM memory arena, no per-frame allocations.
 - **Hardware decode** — WebCodecs delegates to the GPU, entirely bypassing software decoding bottlenecks.
 - **Zero-copy transfers** — `ArrayBuffer` instances are transferred (not cloned) between the Worker and main thread.
 - **Self-Initializing WASM** — Worker handles dynamic fetching of the Vite `?url` WASM binary inline, completely eliminating race conditions.
@@ -171,7 +171,7 @@ new FastExtractor({
   // Detection tuning
   sampleFps: 1,              // Sequential only: frames per second to analyze
   edgeThreshold: 30,         // Sobel sensitivity (10-100)
-  blockThreshold: 12,        // Changed 8×8 blocks to trigger (1-64)
+  blockThreshold: 12,        // Minimum weighted score of changed blocks to trigger (0.01-64.0)
   minSlideDuration: 3,       // Seconds between captures
   densityThresholdPct: 5,    // Min edge % change per block (1-50)
   dhashDuplicateThreshold: 4, // Perceptual hash hamming distance (0-20)
@@ -293,7 +293,7 @@ fast-extractor/
 │   └── src/index.ts             #   Zero-copy TS bridging
 └── wasm-extractor/              # Slide Detection Arena
     └── src/lib.rs               # Rust/WASM module
-        • 894KB static memory arena (zero GC)
+        • 3.6MB static memory arena (zero GC)
         • RGBA→grayscale (BT.601, SIMD Auto-Vectorized)
         • Branchless 3x3 Sobel edge detection (L1-Norm)
         • 64-bit dHash perceptual hashing
@@ -306,7 +306,7 @@ fast-extractor/
 
 | Invariant | Enforced By |
 |---|---|
-| Zero per-frame allocations | `FrameArena` (894KB preallocated `UnsafeCell`) |
+| Zero per-frame allocations | `FrameArena` (3.6MB preallocated `UnsafeCell`) |
 | No data races | `UnsafeCell` interior mutability (prevents LLVM `noalias` UB) |
 | Hardware leak prevention | Explicit `decoder.destroy()` in worker `finally` block |
 | OPFS lock timeout | `createSyncAccessHandleWithTimeout(5000ms)` |
