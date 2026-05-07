@@ -631,12 +631,14 @@ export class SlideExtractor {
       const allowedDrift = Math.floor(blockThreshold * 0.3);
       const candidateAge = timestamp - this.pendingCandidate.timestamp;
       
-      if (driftBlocks <= allowedDrift || candidateAge >= 5) {
-        // SETTLED (or timed out after 5s of continuous movement).
+      if (driftBlocks <= allowedDrift || candidateAge >= 15) {
+        // SETTLED (or timed out after 15s of continuous movement).
         // Emit the CURRENT frame (clean/settled) with the timestamp from
         // when the transition was first detected.
         // Timeout prevents infinite starvation for "always-moving" content
         // like handwriting videos where driftBlocks never drops to zero.
+        // 15s (not 5s) to avoid short-circuiting turbo mode where keyframes
+        // are 5-10s apart — the stability gate needs 2-3 keyframes to settle.
         this.emitSlideFromFrame(frame, this.pendingCandidate.timestamp);
         this.copyBufferBToA(); // Current frame is the new Baseline
         this.lastSlideTime = this.pendingCandidate.timestamp;
