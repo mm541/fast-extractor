@@ -629,11 +629,14 @@ export class SlideExtractor {
     let candidateConfirmedThisFrame = false;
     if (this.options.useDeferredEmit && this.pendingCandidate) {
       const allowedDrift = Math.floor(blockThreshold * 0.3);
+      const candidateAge = timestamp - this.pendingCandidate.timestamp;
       
-      if (driftBlocks <= allowedDrift) {
-        // SETTLED! The slide has stopped moving.
+      if (driftBlocks <= allowedDrift || candidateAge >= 5) {
+        // SETTLED (or timed out after 5s of continuous movement).
         // Emit the CURRENT frame (clean/settled) with the timestamp from
         // when the transition was first detected.
+        // Timeout prevents infinite starvation for "always-moving" content
+        // like handwriting videos where driftBlocks never drops to zero.
         this.emitSlideFromFrame(frame, this.pendingCandidate.timestamp);
         this.copyBufferBToA(); // Current frame is the new Baseline
         this.lastSlideTime = this.pendingCandidate.timestamp;
