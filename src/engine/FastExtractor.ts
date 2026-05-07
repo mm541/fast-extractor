@@ -53,18 +53,18 @@
 // Vite handles worker bundling and asset URL resolution via these imports.
 // ?worker → creates a bundled Worker constructor
 // ?url    → returns a hashed asset URL (e.g. /assets/wasm-abc123.wasm)
-import MediaWorker from '../workers/worker?worker';
+import MediaWorker from './worker?worker';
 
 // ─── Internal Imports ───
-import { ExtractorError } from '../types/errors';
-import type { ExtractorErrorCode } from '../types/errors';
+import { ExtractorError } from './errors';
+import type { ExtractorErrorCode } from './errors';
 import type {
   ExtractorEvent,
   ExtractorCallbacks,
   FastExtractorOptions,
   BrowserSupport,
   IngestedFile,
-} from '../types/types';
+} from './types';
 import { ingestFile, extractMedia, cleanupTempFile } from './pipeline';
 
 // ─── Main Class ───

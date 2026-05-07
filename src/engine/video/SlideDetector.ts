@@ -44,7 +44,7 @@
  *   unexplained gaps in the timeline.
  */
 
-import type { SlideExtractorOptions, ExtractionMetrics } from './types';
+import type { SlideExtractorOptions, ExtractionMetrics } from '../types';
 import type { WasmBridge } from './WasmBridge';
 import type { ImageRenderer } from './ImageRenderer';
 

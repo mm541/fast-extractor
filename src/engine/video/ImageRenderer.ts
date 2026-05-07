@@ -23,7 +23,7 @@
  *   convertToBlob is still pending, silently dropping the last slide.
  */
 
-import type { SlideExtractorOptions, ExtractionMetrics } from './types';
+import type { SlideExtractorOptions, ExtractionMetrics } from '../types';
 
 export class ImageRenderer {
   private options: SlideExtractorOptions;

@@ -20,7 +20,7 @@
  *   doesn't improve slide detection accuracy but massively increases cost.
  */
 
-import type { WasmModule } from './types';
+import type { WasmModule } from '../types';
 
 /** Comparison resolution — must match ARENA_WIDTH/ARENA_HEIGHT in lib.rs */
 export const CMP_W = 854;

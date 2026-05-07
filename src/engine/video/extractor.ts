@@ -60,17 +60,15 @@
  *     Ignored in turbo mode (turbo always decodes every keyframe).
  */
 
-import {
-  WasmBridge, CMP_W, CMP_H,
-  ImageRenderer,
-  SlideDetector,
-  DEFAULT_OPTIONS,
-} from './core';
+import { WasmBridge, CMP_W, CMP_H } from './WasmBridge';
+import { ImageRenderer } from './ImageRenderer';
+import { SlideDetector } from './SlideDetector';
+import { DEFAULT_OPTIONS } from '../types';
 import type {
   SlideExtractorOptions,
   ExtractionMetrics,
   WasmModule,
-} from './core';
+} from '../types';
 
 // Re-export everything consumers need
 export { DEFAULT_OPTIONS, CMP_W, CMP_H };

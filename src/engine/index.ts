@@ -11,11 +11,11 @@
  */
 
 // ─── Core Class ───
-export { FastExtractor, default } from './api/FastExtractor';
+export { FastExtractor, default } from './FastExtractor';
 
 // ─── Error System ───
-export { ExtractorError } from './types/errors';
-export type { ExtractorErrorCode } from './types/errors';
+export { ExtractorError } from './errors';
+export type { ExtractorErrorCode } from './errors';
 
 // ─── Event Types ───
 export type {
@@ -25,13 +25,13 @@ export type {
   AudioManifest,
   SlideEvent,
   ProgressEvent,
-} from './types/types';
+} from './types';
 
 // ─── Configuration & Browser Support ───
 export type {
   FastExtractorOptions,
   BrowserSupport,
-} from './types/types';
+} from './types';
 
 // ─── Callback API Types ───
-export type { ExtractorCallbacks } from './types/types';
+export type { ExtractorCallbacks } from './types';
