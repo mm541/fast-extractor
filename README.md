@@ -38,34 +38,7 @@ Extract presentation slides and audio from video files entirely in the browser �
 
 ## Architecture
 
-```mermaid
-flowchart TB
-    UI[User Interface / Client App] -->|Extract File| API[FastExtractor API]
-    API -->|Stream Chunks| OPFS[(OPFS Temporary Storage)]
-    
-    API -.->|Spawn| Worker[worker.ts]
-    
-    subgraph Worker Thread [Stateless Worker Thread]
-        Demux[FFmpeg C-WASM Demuxer] -.->|Sync Access Read| OPFS
-        
-        subgraph Audio Extraction
-            Demux -->|Raw Audio Packets| Remux[audio-remuxer.ts]
-            Remux -->|Stream ArrayBuffer| API
-        end
-        
-        subgraph Video Extraction
-            Demux -->|Video Packets| VDec[WebCodecs VideoDecoder]
-            VDec -->|VideoFrame GPU Texture| Extractor[extractor.ts Orchestrator]
-            Extractor --> SD[SlideDetector.ts]
-            Extractor --> IR[ImageRenderer.ts]
-            Extractor --> WB[WasmBridge.ts]
-            WB <-->|Zero-Copy I/O| Rust[(Rust WASM Engine)]
-        end
-    end
-    
-    SD -->|Decision| IR
-    IR -->|SlideEvent Blob| API
-```
+![Architecture](docs/architecture.png)
 
 **Key design decisions:**
 - **Zero GC pressure** — 3.6MB preallocated static WASM memory arena, no per-frame allocations.
@@ -75,33 +48,7 @@ flowchart TB
 
 ### Per-Frame Detection Pipeline
 
-```mermaid
-flowchart TD
-    Frame[VideoFrame] --> Canvas[OffscreenCanvas]
-    Canvas -->|getImageData| Bridge[WasmBridge.ts]
-    
-    Bridge -->|Copy RGBA| Arena[(3.6MB WASM Arena)]
-    
-    subgraph Rust WASM Core [10KB WebAssembly Core]
-        Arena --> Gray[Grayscale Conversion]
-        Gray --> Sobel[3x3 Sobel Operator]
-        Sobel --> Edge[Edge Frame]
-        Edge --> Grid[8x8 Grid Comparison vs Previous]
-        Grid --> Metric[Changed Blocks Score]
-        Gray --> DHash[64-bit Perceptual Hash]
-    end
-    
-    Metric --> Gate{Stability Gate}
-    
-    Gate -->|Score < Threshold| Skip[Drop Frame]
-    Gate -->|Score ≥ Threshold| Drift[Three-Pointer Drift Engine]
-    
-    Drift -->|Motion Detected| Buffer[Buffer Candidate Frame]
-    Drift -->|Motion Settled| Emit[ImageRenderer.ts]
-    
-    Emit --> WebP[WebP / JPEG Encoder]
-    WebP --> Main[PostMessage to Main Thread]
-```
+![Detection Pipeline](docs/detection-pipeline.png)
 
 ---
 
@@ -332,13 +279,19 @@ await FastExtractor.cleanupStorage();
 fast-extractor/
 ├── src/
 │   ├── engine/                  # Core extraction library (framework-agnostic)
+│   │   ├── index.ts             #   Barrel export for public API
 │   │   ├── FastExtractor.ts     #   Public API — Stream + Callback + Error system
-│   │   ├── extractor.ts         #   Slide detection (three-pointer drift engine)
 │   │   ├── pipeline.ts          #   Decode orchestration + backpressure
 │   │   ├── worker.ts            #   Web Worker — OPFS + audio + video pipeline
-│   │   ├── audio-remuxer.ts     #   Zero-alloc TS audio chunk framer (AAC/MP3/Opus)
 │   │   ├── errors.ts            #   Typed ExtractorError codes
 │   │   ├── types.ts             #   All public type definitions
+│   │   ├── audio/
+│   │   │   └── audio-remuxer.ts #   Zero-alloc TS audio chunk framer (AAC/MP3/Opus)
+│   │   ├── video/
+│   │   │   ├── extractor.ts     #   SlideExtractor orchestrator
+│   │   │   ├── SlideDetector.ts #   Three-pointer drift detection logic
+│   │   │   ├── ImageRenderer.ts #   OffscreenCanvas capture and image encoding
+│   │   │   └── WasmBridge.ts    #   Memory bridging to Rust WASM
 │   │   └── wasm/                #   Pre-built WASM binaries
 │   └── ui/                      # Reference demo app (React)
 ├── ffmpeg-wasm-demuxer/         # Custom C Demuxer
