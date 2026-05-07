@@ -65,7 +65,7 @@ import type {
   BrowserSupport,
   IngestedFile,
 } from '../types/types';
-import { ingestFile, extractMedia, cleanupTempFile } from '../workers/pipeline';
+import { ingestFile, extractMedia, cleanupTempFile } from './pipeline';
 
 // ─── Main Class ───
 
