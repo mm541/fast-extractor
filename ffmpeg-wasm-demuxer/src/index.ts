@@ -464,8 +464,14 @@ export class FFmpegDemuxer {
     if (pktPtr === 0) {
       // Check if it's a real error or just EOF
       const err = this._getLastError();
-      if (err) throw new Error(`Demuxer read error: ${err}`);
-      return null; // EOF
+      if (err) {
+        // Non-fatal: treat as EOF with a warning. FFmpeg can hit transient
+        // I/O errors mid-stream (corrupt packets, container quirks) that
+        // don't invalidate the data already extracted. Throwing here would
+        // kill the entire extraction over a non-fatal read hiccup.
+        console.warn(`[Demuxer] Read stopped: ${err}`);
+      }
+      return null; // EOF (or graceful stop on read error)
     }
 
     return this._wrapPacket(pktPtr);
