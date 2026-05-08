@@ -232,8 +232,7 @@ fn compare_grid_density(edges_a: &[u8], edges_b: &[u8], width: usize, height: us
             let x0 = c * block_w;
             let x1 = if c == GRID_COLS - 1 { width } else { (c + 1) * block_w };
             
-            let mut sum_a = 0u32;
-            let mut sum_b = 0u32;
+            let mut diff = 0u32;
             
             let block_size = ((y1 - y0) * (x1 - x0)) as u32;
             
@@ -243,11 +242,9 @@ fn compare_grid_density(edges_a: &[u8], edges_b: &[u8], width: usize, height: us
                 
                 // Idiomatic SIMD-friendly zip loop (0 bounds checks)
                 for (a, b) in edges_a[start..end].iter().zip(&edges_b[start..end]) {
-                    sum_a += *a as u32;
-                    sum_b += *b as u32;
+                    diff += (*a ^ *b) as u32;
                 }
             }
-            let diff = (sum_a as i32 - sum_b as i32).unsigned_abs();
             if diff * den > num * block_size { changed += 1; }
         }
     }
