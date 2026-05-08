@@ -12,7 +12,7 @@
  * FastExtractor.ts internally.
  */
 
-import type { FastExtractorOptions } from '../types/types';
+import type { FastExtractorOptions } from './types';
 
 // ─── File Ingestion ───
 
