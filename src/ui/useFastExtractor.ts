@@ -24,7 +24,7 @@ import type {
   ProgressEvent,
   AudioManifest,
   IngestedFile
-} from '../engine/types/types';
+} from '../engine/types';
 
 // ─── Hook State Types ───
 

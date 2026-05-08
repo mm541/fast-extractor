@@ -49,7 +49,7 @@
  */
 import React, { useState, useRef, useEffect } from 'react';
 import { FastExtractor } from '../engine';
-import type { IngestedFile } from '../engine/types/types';
+import type { IngestedFile } from '../engine/types';
 import { downloadZip } from 'client-zip';
 import CapabilityBanner from './components/CapabilityBanner';
 import MetricsDashboard from './components/MetricsDashboard';
