@@ -10,7 +10,7 @@ export function compare_frames(edge_threshold: number, density_num: number, mask
 /**
  * Consecutive frame drift: edge-density comparison of Prev vs B.
  * Same algorithm as compare_frames but uses raw_prev instead of raw_a.
- * Returns a weighted float score of changed blocks (0.0 - 64.0).
+ * Returns count of grid blocks that changed (0-64).
  * Reuses B's cached edge map from compare_frames if available.
  */
 export function compare_prev_current(edge_threshold: number, density_num: number, mask: bigint): number;

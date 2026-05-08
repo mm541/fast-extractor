@@ -171,7 +171,7 @@ new FastExtractor({
   // Detection tuning
   sampleFps: 1,              // Sequential only: frames per second to analyze
   edgeThreshold: 30,         // Sobel sensitivity (10-100)
-  blockThreshold: 12,        // Minimum weighted score of changed blocks to trigger (0.01-64.0)
+  blockThreshold: 12,        // Number of changed grid blocks to trigger (1-64)
   minSlideDuration: 3,       // Seconds between captures
   densityThresholdPct: 5,    // Min edge % change per block (1-50)
   dhashDuplicateThreshold: 4, // Perceptual hash hamming distance (0-20)
@@ -279,13 +279,19 @@ await FastExtractor.cleanupStorage();
 fast-extractor/
 ├── src/
 │   ├── engine/                  # Core extraction library (framework-agnostic)
+│   │   ├── index.ts             #   Barrel export for public API
 │   │   ├── FastExtractor.ts     #   Public API — Stream + Callback + Error system
-│   │   ├── extractor.ts         #   Slide detection (three-pointer drift engine)
 │   │   ├── pipeline.ts          #   Decode orchestration + backpressure
 │   │   ├── worker.ts            #   Web Worker — OPFS + audio + video pipeline
-│   │   ├── audio-remuxer.ts     #   Zero-alloc TS audio chunk framer (AAC/MP3/Opus)
 │   │   ├── errors.ts            #   Typed ExtractorError codes
 │   │   ├── types.ts             #   All public type definitions
+│   │   ├── audio/
+│   │   │   └── audio-remuxer.ts #   Zero-alloc TS audio chunk framer (AAC/MP3/Opus)
+│   │   ├── video/
+│   │   │   ├── extractor.ts     #   SlideExtractor orchestrator
+│   │   │   ├── SlideDetector.ts #   Three-pointer drift detection logic
+│   │   │   ├── ImageRenderer.ts #   OffscreenCanvas capture and image encoding
+│   │   │   └── WasmBridge.ts    #   Memory bridging to Rust WASM
 │   │   └── wasm/                #   Pre-built WASM binaries
 │   └── ui/                      # Reference demo app (React)
 ├── ffmpeg-wasm-demuxer/         # Custom C Demuxer

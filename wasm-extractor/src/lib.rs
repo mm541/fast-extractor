@@ -208,11 +208,11 @@ fn compute_edge_map_into(pixels: &[u8], width: usize, height: usize, edge_thresh
 }
 
 /// Divides the screen into an 8×8 grid of macro-regions (8 rows, 8 columns = 64 blocks total).
-/// Compares the edge density of each block. Returns a weighted float score (0.0 to 64.0),
-/// where 1.0 represents the equivalent of one block completely changing edge density.
+/// Compares the edge density of each block. Returns the count of blocks that changed (0-64).
+/// A block is "changed" if its edge density difference exceeds the density threshold.
 /// `mask`: a 64-bit bitmask where bit (row*8 + col) = 1 means SKIP that block.
 /// Pass mask=0 to compare all blocks (default behavior).
-fn compare_grid_density(edges_a: &[u8], edges_b: &[u8], width: usize, height: usize, num: u32, den: u32, mask: u64) -> f32 {
+fn compare_grid_density(edges_a: &[u8], edges_b: &[u8], width: usize, height: usize, num: u32, den: u32, mask: u64) -> u32 {
     // Assert slice bounds once so LLVM drops all bounds checks inside the loops
     let len = width * height;
     let edges_a = &edges_a[..len];
@@ -220,7 +220,7 @@ fn compare_grid_density(edges_a: &[u8], edges_b: &[u8], width: usize, height: us
 
     let block_h = height / GRID_ROWS;
     let block_w = width / GRID_COLS;
-    let mut changed: f32 = 0.0;
+    let mut changed: u32 = 0;
 
     for r in 0..GRID_ROWS {
         let y0 = r * block_h;
@@ -248,12 +248,7 @@ fn compare_grid_density(edges_a: &[u8], edges_b: &[u8], width: usize, height: us
                 }
             }
             let diff = (sum_a as i32 - sum_b as i32).unsigned_abs();
-            if diff * den > num * block_size { 
-                // Normalize so that exactly hitting the density threshold (num) contributes 1.0.
-                // A block changing by 2x the threshold contributes 2.0.
-                let weight = (diff as f32 * den as f32) / (block_size as f32 * num as f32);
-                changed += weight;
-            }
+            if diff * den > num * block_size { changed += 1; }
         }
     }
     changed
@@ -262,7 +257,7 @@ fn compare_grid_density(edges_a: &[u8], edges_b: &[u8], width: usize, height: us
 /// Compare Baseline (A) vs Current (B). mask=0 to compare all blocks.
 /// Caches B's edge map — subsequent calls with the same B skip recomputation.
 #[wasm_bindgen]
-pub fn compare_frames(edge_threshold: i16, density_num: u32, mask: u64) -> f32 {
+pub fn compare_frames(edge_threshold: i16, density_num: u32, mask: u64) -> u32 {
     let a = arena();
     compute_edge_map_into(&a.raw_a, ARENA_WIDTH, ARENA_HEIGHT, edge_threshold, &mut a.edge_a);
     if !a.edge_b_valid {
@@ -315,10 +310,10 @@ pub fn compute_dhash(is_buffer_b: bool) -> u64 {
 
 /// Consecutive frame drift: edge-density comparison of Prev vs B.
 /// Same algorithm as compare_frames but uses raw_prev instead of raw_a.
-/// Returns a weighted float score of changed blocks (0.0 - 64.0).
+/// Returns count of grid blocks that changed (0-64).
 /// Reuses B's cached edge map from compare_frames if available.
 #[wasm_bindgen]
-pub fn compare_prev_current(edge_threshold: i16, density_num: u32, mask: u64) -> f32 {
+pub fn compare_prev_current(edge_threshold: i16, density_num: u32, mask: u64) -> u32 {
     let a = arena();
     // edge_a is scratch — overwrite with Prev's edge map
     compute_edge_map_into(&a.raw_prev, ARENA_WIDTH, ARENA_HEIGHT, edge_threshold, &mut a.edge_a);

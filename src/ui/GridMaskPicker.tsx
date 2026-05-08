@@ -12,6 +12,12 @@
  *   - Time scrubber lets user seek to any point in the video
  *   - Exposes bitmask via onMaskChange callback
  *
+ * MOBILE:
+ *   - Uses touch-action: none on grid to prevent scroll/zoom hijacking
+ *   - Uses pointerdown/pointermove (NOT pointerenter) for drag painting on touch
+ *   - Manually resolves grid cell from clientX/clientY via getBoundingClientRect
+ *   - All inline styles moved to index.css for proper cascade and maintainability
+ *
  * MEMORY:
  *   - <video> element buffers ~2-5MB regardless of file size (browser streams from disk)
  *   - Blob URL is revoked on unmount
@@ -41,18 +47,19 @@ const PREVIEW_HEIGHT = 240;
 const GridMaskPicker: React.FC<GridMaskPickerProps> = ({ file, onMaskChange, mask, disabled = false }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
-  const [isDragging, setIsDragging] = useState(false);
-  const [dragValue, setDragValue] = useState<boolean>(true); // true = mask, false = unmask
+  const isDraggingRef = useRef(false);
+  const dragValueRef = useRef(true);
 
   // Create blob URL on mount, revoke on unmount
   useEffect(() => {
     const url = URL.createObjectURL(file);
     setBlobUrl(url);
     if (videoRef.current) {
-      videoRef.current.load(); // Force mobile browsers to parse the Blob URL metadata
+      videoRef.current.load();
     }
     return () => URL.revokeObjectURL(url);
   }, [file]);
@@ -67,78 +74,85 @@ const GridMaskPicker: React.FC<GridMaskPickerProps> = ({ file, onMaskChange, mas
     ctx.drawImage(video, 0, 0, PREVIEW_WIDTH, PREVIEW_HEIGHT);
   }, []);
 
-  // Handle video metadata loaded
   const onLoadedMetadata = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
     setDuration(video.duration);
-    // Seek to 1 second to skip potential black intro frames
     video.currentTime = Math.min(1, video.duration);
   }, []);
 
-  // Handle seek complete — draw frame to canvas
-  const onSeeked = useCallback(() => {
-    drawFrame();
-  }, [drawFrame]);
+  const onSeeked = useCallback(() => { drawFrame(); }, [drawFrame]);
+  const onLoadedData = useCallback(() => { drawFrame(); }, [drawFrame]);
 
-  // Fallback: on mobile, some browsers fire 'loadeddata' but not 'seeked' on first load.
-  // This ensures the canvas gets painted even if the seek to 1s resolves without a seeked event.
-  const onLoadedData = useCallback(() => {
-    drawFrame();
-  }, [drawFrame]);
-
-  // Update UI immediately while dragging
   const onTimeChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     setCurrentTime(parseFloat(e.target.value));
   }, []);
 
-  // Only tell the browser's heavy video decoder to seek when the user STOPS dragging
   const onSeekCommit = useCallback((e: React.SyntheticEvent<HTMLInputElement>) => {
     if (videoRef.current) {
       videoRef.current.currentTime = parseFloat(e.currentTarget.value);
     }
   }, []);
 
-  // Toggle a grid cell
-  const toggleCell = useCallback((row: number, col: number, forceValue?: boolean) => {
-    if (disabled) return;
-    const bit = BigInt(row * 8 + col);
-    const isSet = (mask >> bit & 1n) === 1n;
-    const shouldSet = forceValue !== undefined ? forceValue : !isSet;
-
-    let newMask: bigint;
-    if (shouldSet) {
-      newMask = mask | (1n << bit);
-    } else {
-      newMask = mask & ~(1n << bit);
-    }
-    onMaskChange(newMask);
-  }, [mask, onMaskChange, disabled]);
-
-  // Pointer handlers (work for both mouse AND touch natively)
-  const onCellPointerDown = useCallback((row: number, col: number) => {
-    if (disabled) return;
-    const bit = BigInt(row * 8 + col);
-    const isCurrentlySet = (mask >> bit & 1n) === 1n;
-    setDragValue(!isCurrentlySet);
-    setIsDragging(true);
-    toggleCell(row, col, !isCurrentlySet);
-  }, [mask, toggleCell, disabled]);
-
-  const onCellPointerEnter = useCallback((row: number, col: number) => {
-    if (!isDragging || disabled) return;
-    toggleCell(row, col, dragValue);
-  }, [isDragging, dragValue, toggleCell, disabled]);
-
-  const onPointerUp = useCallback(() => {
-    setIsDragging(false);
+  // Resolve a pointer's clientX/clientY to a grid (row, col) — works on both mouse and touch
+  const resolveCell = useCallback((clientX: number, clientY: number): { row: number; col: number } | null => {
+    const grid = gridRef.current;
+    if (!grid) return null;
+    const rect = grid.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+    if (x < 0 || y < 0 || x >= rect.width || y >= rect.height) return null;
+    const col = Math.floor((x / rect.width) * GRID_COLS);
+    const row = Math.floor((y / rect.height) * GRID_ROWS);
+    return { row: Math.min(row, GRID_ROWS - 1), col: Math.min(col, GRID_COLS - 1) };
   }, []);
 
-  // Global pointerup listener (catches release outside the grid)
+  // Apply mask toggle for a given cell
+  const applyCell = useCallback((row: number, col: number, value: boolean, currentMask: bigint) => {
+    const bit = BigInt(row * 8 + col);
+    const newMask = value
+      ? currentMask | (1n << bit)
+      : currentMask & ~(1n << bit);
+    onMaskChange(newMask);
+  }, [onMaskChange]);
+
+  // Pointer down — start drag, toggle first cell
+  const onGridPointerDown = useCallback((e: React.PointerEvent) => {
+    if (disabled) return;
+    e.preventDefault();
+    const cell = resolveCell(e.clientX, e.clientY);
+    if (!cell) return;
+
+    const bit = BigInt(cell.row * 8 + cell.col);
+    const isSet = (mask >> bit & 1n) === 1n;
+    dragValueRef.current = !isSet;
+    isDraggingRef.current = true;
+    applyCell(cell.row, cell.col, !isSet, mask);
+
+    // Capture pointer so pointermove fires even outside the grid
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+  }, [mask, resolveCell, applyCell, disabled]);
+
+  // Pointer move — paint cells while dragging (works on touch via capture)
+  const onGridPointerMove = useCallback((e: React.PointerEvent) => {
+    if (!isDraggingRef.current || disabled) return;
+    e.preventDefault();
+    const cell = resolveCell(e.clientX, e.clientY);
+    if (!cell) return;
+    applyCell(cell.row, cell.col, dragValueRef.current, mask);
+  }, [mask, resolveCell, applyCell, disabled]);
+
+  // Pointer up — stop drag
+  const onGridPointerUp = useCallback(() => {
+    isDraggingRef.current = false;
+  }, []);
+
+  // Global pointerup fallback
   useEffect(() => {
-    window.addEventListener('pointerup', onPointerUp);
-    return () => window.removeEventListener('pointerup', onPointerUp);
-  }, [onPointerUp]);
+    const handler = () => { isDraggingRef.current = false; };
+    window.addEventListener('pointerup', handler);
+    return () => window.removeEventListener('pointerup', handler);
+  }, []);
 
   // Count masked cells
   const maskedCount = (() => {
@@ -151,7 +165,6 @@ const GridMaskPicker: React.FC<GridMaskPickerProps> = ({ file, onMaskChange, mas
     return count;
   })();
 
-  // Format time as MM:SS
   const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
@@ -159,47 +172,35 @@ const GridMaskPicker: React.FC<GridMaskPickerProps> = ({ file, onMaskChange, mas
   };
 
   return (
-    <div className="grid-mask-picker" style={{ opacity: disabled ? 0.5 : 1, pointerEvents: disabled ? 'none' : 'auto', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-      <div className="grid-mask-preview" style={{ position: 'relative', width: '100%', maxWidth: PREVIEW_WIDTH, aspectRatio: `${PREVIEW_WIDTH}/${PREVIEW_HEIGHT}` }}>
+    <div className={`grid-mask-picker ${disabled ? 'grid-mask-disabled' : ''}`}>
+      <div className="grid-mask-preview">
         {/* Hidden video element for frame extraction */}
-        {/* ⚠️ MOBILE VIDEO PREVIEW: preload MUST be 'auto', NOT 'metadata'.
-            Mobile browsers (Android Chrome, iOS Safari) with preload='metadata'
-            only download the file header — they never decode actual pixel data.
-            This means readyState never reaches HAVE_CURRENT_DATA (2), and
-            canvas.drawImage() paints a blank black rectangle.
-            preload='auto' forces the browser to buffer enough data to render frames. */}
         <video
           ref={videoRef}
           src={blobUrl || undefined}
           onLoadedMetadata={onLoadedMetadata}
           onSeeked={onSeeked}
           onLoadedData={onLoadedData}
-          style={{ position: 'absolute', opacity: 0, width: '1px', height: '1px', pointerEvents: 'none' }}
+          className="grid-mask-video"
           muted
           playsInline
           preload="auto"
         />
 
-        {/* Canvas showing the current video frame */}
         <canvas
           ref={canvasRef}
           width={PREVIEW_WIDTH}
           height={PREVIEW_HEIGHT}
-          style={{ width: '100%', height: '100%', borderRadius: '8px', display: 'block' }}
+          className="grid-mask-canvas"
         />
 
-        {/* 8×8 grid overlay */}
+        {/* 8×8 grid overlay — pointer events resolved via coordinates, not per-cell handlers */}
         <div
+          ref={gridRef}
           className="grid-overlay"
-          style={{
-            position: 'absolute', top: 0, left: 0,
-            width: '100%', height: '100%',
-            display: 'grid',
-            gridTemplateRows: `repeat(${GRID_ROWS}, 1fr)`,
-            gridTemplateColumns: `repeat(${GRID_COLS}, 1fr)`,
-            userSelect: 'none',
-            touchAction: 'none', // Prevent mobile browser scroll/zoom hijacking
-          }}
+          onPointerDown={onGridPointerDown}
+          onPointerMove={onGridPointerMove}
+          onPointerUp={onGridPointerUp}
         >
           {Array.from({ length: GRID_ROWS * GRID_COLS }, (_, i) => {
             const row = Math.floor(i / GRID_COLS);
@@ -210,16 +211,7 @@ const GridMaskPicker: React.FC<GridMaskPickerProps> = ({ file, onMaskChange, mas
             return (
               <div
                 key={i}
-                className={`grid-cell ${isMasked ? 'masked' : ''}`}
-                onPointerDown={() => onCellPointerDown(row, col)}
-                onPointerEnter={() => onCellPointerEnter(row, col)}
-                style={{
-                  border: '1px solid rgba(255,255,255,0.2)',
-                  background: isMasked ? 'rgba(255, 60, 60, 0.45)' : 'transparent',
-                  cursor: disabled ? 'not-allowed' : 'pointer',
-                  transition: 'background 0.15s ease',
-                  touchAction: 'none',
-                }}
+                className={`grid-cell ${isMasked ? 'grid-cell-masked' : ''}`}
               />
             );
           })}
@@ -227,9 +219,9 @@ const GridMaskPicker: React.FC<GridMaskPickerProps> = ({ file, onMaskChange, mas
       </div>
 
       {/* Time scrubber */}
-      <div className="grid-mask-controls" style={{ marginTop: '8px', width: '100%', maxWidth: PREVIEW_WIDTH }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '12px', opacity: 0.7, minWidth: '40px' }}>{formatTime(currentTime)}</span>
+      <div className="grid-mask-controls">
+        <div className="grid-mask-scrubber">
+          <span className="grid-mask-time">{formatTime(currentTime)}</span>
           <input
             type="range"
             min={0}
@@ -240,23 +232,20 @@ const GridMaskPicker: React.FC<GridMaskPickerProps> = ({ file, onMaskChange, mas
             onPointerUp={onSeekCommit}
             onTouchEnd={onSeekCommit}
             onKeyUp={onSeekCommit}
-            style={{ flex: 1 }}
+            className="grid-mask-slider"
             disabled={disabled || duration === 0}
             aria-label="Seek to timestamp for mask preview"
           />
-          <span style={{ fontSize: '12px', opacity: 0.7, minWidth: '40px' }}>{formatTime(duration)}</span>
+          <span className="grid-mask-time">{formatTime(duration)}</span>
         </div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4px' }}>
-          <span style={{ fontSize: '12px', opacity: 0.6 }}>
+        <div className="grid-mask-status">
+          <span className="grid-mask-count">
             {maskedCount > 0 ? `🎭 ${maskedCount}/64 blocks masked` : 'Click cells to mask regions'}
           </span>
           {maskedCount > 0 && (
             <button
+              className="grid-mask-clear"
               onClick={() => onMaskChange(0n)}
-              style={{
-                background: 'none', border: 'none', color: '#ff6b6b',
-                cursor: 'pointer', fontSize: '12px', padding: 0,
-              }}
             >
               Clear All
             </button>
