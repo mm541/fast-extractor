@@ -175,7 +175,7 @@ export class SlideDetector {
     }
 
     // Track cumulative drift
-    const staticDriftLimit = Math.max(1, Math.floor(blockThreshold * 0.1));
+    const staticDriftLimit = Math.max(2, Math.floor(blockThreshold * 0.15));
     if (driftBlocks > staticDriftLimit) {
       if (this.cumulativeDrift === 0) {
         this.driftStartTime = timestamp;
@@ -207,9 +207,12 @@ export class SlideDetector {
       }
 
       // Condition 2: Cumulative drift — small changes piled up AND content settled
+      // To prevent bypassing the user's threshold setting via infinite drift accumulation,
+      // we mandate that the final baseline difference (mainChanges) MUST be at least 50% of the threshold.
       if (
         !shouldEmit &&
         this.cumulativeDrift >= blockThreshold * this.options.cumulativeDriftMultiplier &&
+        mainChanges >= Math.max(1, Math.floor(blockThreshold * 0.5)) &&
         this.settledSinceTime >= 0 && (timestamp - this.settledSinceTime) >= this.options.cumulativeSettledSeconds
       ) {
         shouldEmit = true;
