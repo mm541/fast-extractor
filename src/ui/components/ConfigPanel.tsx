@@ -176,7 +176,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({
                 <div className="setting-item">
                     <label>Block Threshold: <strong>{config.blockThreshold}</strong></label>
                     <input 
-                        type="range" min="1" max="64" step="0.5" 
+                        type="range" min="1" max="64" step="1" 
                         value={config.blockThreshold} onChange={e => setConfig({...config, blockThreshold: Number(e.target.value)})} 
                         disabled={isExtracting}
                         aria-label="Number of changed blocks required"

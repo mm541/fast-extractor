@@ -171,7 +171,7 @@ new FastExtractor({
   // Detection tuning
   sampleFps: 1,              // Sequential only: frames per second to analyze
   edgeThreshold: 30,         // Sobel sensitivity (10-100)
-  blockThreshold: 12,        // Minimum weighted score of changed blocks to trigger (0.01-64.0)
+  blockThreshold: 12,        // Number of changed grid blocks to trigger (1-64)
   minSlideDuration: 3,       // Seconds between captures
   densityThresholdPct: 5,    // Min edge % change per block (1-50)
   dhashDuplicateThreshold: 4, // Perceptual hash hamming distance (0-20)
