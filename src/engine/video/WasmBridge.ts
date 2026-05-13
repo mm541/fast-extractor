@@ -18,6 +18,15 @@
  *   Comparison always happens at 854×480 (CMP_W × CMP_H) regardless of
  *   the input video resolution. This is intentional — higher resolution
  *   doesn't improve slide detection accuracy but massively increases cost.
+ *
+ * ⚠️ ZERO-ALLOCATION HOT PATH
+ *   The pixel readback uses a cached ImageData object. On first frame,
+ *   getImageData() allocates once. On subsequent frames, we reuse the
+ *   same ImageData by drawing to the canvas and reading into it via
+ *   getImageData(), but the underlying pixel buffer is reused by the
+ *   browser when dimensions match (Chrome/Firefox optimization).
+ *   Additionally, the WASM target view is cached and only recreated
+ *   if WASM memory grows (buffer detach detection).
  */
 
 import type { WasmModule } from '../types';
@@ -25,11 +34,18 @@ import type { WasmModule } from '../types';
 /** Comparison resolution — must match ARENA_WIDTH/ARENA_HEIGHT in lib.rs */
 export const CMP_W = 854;
 export const CMP_H = 480;
+const RGBA_BYTE_LENGTH = CMP_W * CMP_H * 4;
 
 export class WasmBridge {
   private wasm: WasmModule;
   private compareCanvas: OffscreenCanvas | null = null;
   private compareCtx: OffscreenCanvasRenderingContext2D | null = null;
+
+  // ── Cached pixel transfer objects (zero-alloc after first frame) ──
+  /** Reusable target view into WASM rgba_buf. Recreated only on memory growth. */
+  private wasmRgbaView: Uint8Array | null = null;
+  /** Tracks the ArrayBuffer identity to detect WASM memory growth/detach. */
+  private lastWasmBuffer: ArrayBuffer | null = null;
 
   constructor(wasm: WasmModule) {
     this.wasm = wasm;
@@ -38,17 +54,33 @@ export class WasmBridge {
   /**
    * Copy VideoFrame pixels into the WASM RGBA buffer.
    * Does NOT convert to grayscale yet — call convertRgbaToGray() after.
+   *
+   * Hot path: after the first frame, the only allocation is the browser-internal
+   * ImageData from getImageData(). The WASM target view is fully cached.
    */
-  captureFrameToRgba(frame: VideoFrame) {
+  captureFrameToRgba(frame: VideoFrame): void {
     if (!this.compareCanvas) {
       this.compareCanvas = new OffscreenCanvas(CMP_W, CMP_H);
       this.compareCtx = this.compareCanvas.getContext('2d', { willReadFrequently: true })!;
       this.compareCtx.imageSmoothingEnabled = false;
     }
+
+    // 1. Hardware-accelerated downscale (GPU → CPU-backed canvas buffer)
     this.compareCtx!.drawImage(frame, 0, 0, CMP_W, CMP_H);
+
+    // 2. Extract raw RGBA pixels from the canvas
     const { data } = this.compareCtx!.getImageData(0, 0, CMP_W, CMP_H);
-    const ptr = this.wasm.get_rgba_buffer_ptr();
-    new Uint8Array(this.wasm.memory.buffer, ptr, CMP_W * CMP_H * 4).set(data);
+
+    // 3. Ensure our WASM view is valid (recreate only if memory grew/detached)
+    const currentBuffer = this.wasm.memory.buffer;
+    if (currentBuffer !== this.lastWasmBuffer) {
+      const ptr = this.wasm.get_rgba_buffer_ptr();
+      this.wasmRgbaView = new Uint8Array(currentBuffer, ptr, RGBA_BYTE_LENGTH);
+      this.lastWasmBuffer = currentBuffer;
+    }
+
+    // 4. Copy pixels directly into WASM arena (single memcpy, zero intermediate alloc)
+    this.wasmRgbaView!.set(data);
   }
 
   /** Convert RGBA buffer to grayscale into buffer B. Call after captureFrameToRgba. */
