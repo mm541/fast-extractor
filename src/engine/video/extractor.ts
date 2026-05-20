@@ -163,6 +163,13 @@ export class SlideExtractor {
   }
 
   /**
+   * Get the number of slide images currently being encoded or queued.
+   */
+  public getPendingEncodesCount(): number {
+    return this.renderer.getPendingEncodes();
+  }
+
+  /**
    * Feed one encoded video chunk into the decoder pipeline.
    * Handles backpressure internally — will block if decode queue is full.
    */
@@ -180,12 +187,28 @@ export class SlideExtractor {
       this.lastKeyframeTs = tsSec;
     }
 
-    // Backpressure: prevent memory blowout
-    const maxQueue = 12;
-    while (this.decoder.state !== 'closed' && this.decoder.decodeQueueSize >= maxQueue) {
+    // ── Unified Backpressure ──
+    // Two pressures converge here:
+    //   1. Decoder queue: too many encoded chunks waiting to be decoded.
+    //   2. Encode queue: too many uncompressed ImageBitmaps waiting for
+    //      convertToBlob(). Each bitmap pins ~8MB of GPU/CPU memory.
+    //
+    // Because the decoder's output callback is synchronous (can't await),
+    // we can't block inside it. Instead we throttle the INPUT: if the
+    // encode queue is backed up, we stop feeding new packets entirely.
+    // The decoder queue drains on its own, but since we also cap it at 3,
+    // the overshoot is bounded to at most ~3 extra frames.
+    const MAX_PENDING_ENCODES = 2;
+    const MAX_DECODE_QUEUE = 3;
+    while (
+      this.decoder.state !== 'closed' && (
+        this.renderer.getPendingEncodes() >= MAX_PENDING_ENCODES ||
+        this.decoder.decodeQueueSize >= MAX_DECODE_QUEUE
+      )
+    ) {
       await Promise.race([
         new Promise<void>(r => { this.pendingBackpressureResolve = r; }),
-        new Promise<void>(r => setTimeout(r, 15))
+        new Promise<void>(r => setTimeout(r, 16))
       ]);
     }
 

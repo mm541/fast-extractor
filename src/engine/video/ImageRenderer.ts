@@ -35,6 +35,7 @@ export class ImageRenderer {
   private blobCtx: OffscreenCanvasRenderingContext2D | null = null;
 
   private lastEmitPromise: Promise<void> = Promise.resolve();
+  private pendingEncodesCount = 0;
 
   // Video dimensions — set via setVideoDimensions() during configure()
   private videoWidth = 1920;
@@ -58,6 +59,12 @@ export class ImageRenderer {
   /** Reset the encode chain (called on configure reset). */
   resetEmitChain() {
     this.lastEmitPromise = Promise.resolve();
+    this.pendingEncodesCount = 0;
+  }
+
+  /** Get the number of slide images currently being encoded or queued for encoding. */
+  public getPendingEncodes(): number {
+    return this.pendingEncodesCount;
   }
 
   /** Capture a VideoFrame at export resolution, emit as blob via onSlide. */
@@ -100,6 +107,7 @@ export class ImageRenderer {
     // Chain encodes sequentially to prevent concurrent access to the shared
     // OffscreenCanvas, ensuring strict timestamp ordering and preventing
     // OOM spikes from massive concurrent convertToBlob calls.
+    this.pendingEncodesCount++;
     this.lastEmitPromise = this.lastEmitPromise.then(async () => {
       try {
         const blob = await this.renderBitmapToBlob(bitmap);
@@ -107,6 +115,8 @@ export class ImageRenderer {
         this.metrics.totalSlides++;
       } catch (e) {
         console.warn('emitBitmap: image encode failed (skipping slide):', e);
+      } finally {
+        this.pendingEncodesCount--;
       }
     });
   }
