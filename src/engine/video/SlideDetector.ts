@@ -145,7 +145,7 @@ export class SlideDetector {
     // --- Transition Filter (Deferred Emit) ---
     let candidateConfirmedThisFrame = false;
     if (this.options.useDeferredEmit && this.pendingCandidate) {
-      const allowedDrift = Math.floor(blockThreshold * 0.3);
+      const allowedDrift = Math.max(1, Math.floor(blockThreshold * 0.3));
       const candidateAge = timestamp - this.pendingCandidate.timestamp;
       
       if (driftBlocks <= allowedDrift || candidateAge >= 15) {
@@ -160,9 +160,11 @@ export class SlideDetector {
         if (!this.isDuplicate(dhash)) {
           this.savedHashes.push(dhash);
           this.renderer.emitSlideFromFrame(frame, this.pendingCandidate.timestamp);
-          this.bridge.copyBufferBToA(); // Current frame is the new Baseline
-          this.lastSlideTime = this.pendingCandidate.timestamp;
         }
+        // Always advance baseline and timing, even on duplicate.
+        // Without this, a duplicate hash freezes the baseline permanently.
+        this.bridge.copyBufferBToA();
+        this.lastSlideTime = timestamp;
         
         this.pendingCandidate.frame.close();
         this.pendingCandidate = null;
@@ -187,12 +189,23 @@ export class SlideDetector {
       if (this.settledSinceTime < 0) this.settledSinceTime = timestamp;
     }
 
+    // Reset drift if too long without trigger (prevents webcam noise buildup).
+    // Runs BEFORE cooldown so drift doesn't accumulate unchecked during cooldown.
+    if (
+      !candidateConfirmedThisFrame &&
+      this.cumulativeDrift > 0 &&
+      (timestamp - this.driftStartTime) > this.options.noiseResetSeconds &&
+      mainChanges < Math.floor(blockThreshold * this.options.noiseMainRatio)
+    ) {
+      this.cumulativeDrift = 0;
+      this.settledSinceTime = -1;
+    }
+
     // === EMIT CONDITIONS ===
     const timeSinceLastSlide = timestamp - this.lastSlideTime;
     const minTime = this.options.minSlideDuration;
 
     if (timeSinceLastSlide < minTime) {
-      // If we are still cooling down, do not trigger new slides.
       return;
     }
 
@@ -207,8 +220,6 @@ export class SlideDetector {
       }
 
       // Condition 2: Cumulative drift — small changes piled up AND content settled
-      // To prevent bypassing the user's threshold setting via infinite drift accumulation,
-      // we mandate that the final baseline difference (mainChanges) MUST be at least 50% of the threshold.
       if (
         !shouldEmit &&
         this.cumulativeDrift >= blockThreshold * this.options.cumulativeDriftMultiplier &&
@@ -219,40 +230,29 @@ export class SlideDetector {
         emitInstantly = true;
         emitTimestamp = this.driftStartTime;
       }
-    } // End of !candidateConfirmedThisFrame
+    }
 
     if (shouldEmit) {
       if (this.options.useDeferredEmit && !emitInstantly) {
-        // Buffer the frame as a candidate instead of emitting instantly
         if (this.pendingCandidate) {
-          this.pendingCandidate.frame.close(); // Clean up old candidate
+          this.pendingCandidate.frame.close();
         }
         this.pendingCandidate = {
           frame: frame.clone(),
           timestamp: emitTimestamp,
         };
       } else {
-        // Instant Emit Mode (Cumulative Drift)
         const dhash = this.bridge.computeDhash();
         if (!this.isDuplicate(dhash)) {
           this.savedHashes.push(dhash);
           this.renderer.emitSlideFromFrame(frame, emitTimestamp);
-          this.bridge.copyBufferBToA();
-          this.lastSlideTime = emitTimestamp;
         }
+        // Always advance baseline, even on duplicate (prevents baseline freeze)
+        this.bridge.copyBufferBToA();
+        this.lastSlideTime = emitTimestamp;
         this.cumulativeDrift = 0;
         this.settledSinceTime = -1;
       }
-    }
-    // Reset drift if too long without trigger (prevents webcam noise buildup)
-    else if (
-      !candidateConfirmedThisFrame &&
-      this.cumulativeDrift > 0 &&
-      (timestamp - this.driftStartTime) > this.options.noiseResetSeconds &&
-      mainChanges < Math.floor(blockThreshold * this.options.noiseMainRatio)
-    ) {
-      this.cumulativeDrift = 0;
-      this.settledSinceTime = -1;
     }
 
     } finally {

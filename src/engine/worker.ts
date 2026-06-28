@@ -288,7 +288,7 @@ self.onmessage = async (e: MessageEvent) => {
                     if (pendingSlideEncodes > 0) {
                         await Promise.race([
                             new Promise<void>(r => { drainResolve = r; }),
-                            new Promise<void>(r => setTimeout(r, 3000))
+                            new Promise<void>(r => setTimeout(r, 10000))
                         ]);
                     }
 

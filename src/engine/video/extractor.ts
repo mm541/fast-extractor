@@ -300,7 +300,6 @@ export class SlideExtractor {
           }
         } catch (e) {
           console.warn(`${this.options.mode}: processFrame threw (skipping frame):`, e);
-          try { frame.close(); } catch {}
         }
 
         // Advance the capture gate for sequential mode

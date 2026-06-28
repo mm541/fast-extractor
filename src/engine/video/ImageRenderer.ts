@@ -8,19 +8,13 @@
  *   - Converting ImageBitmaps to WebP/JPEG Blobs
  *   - Sequential encode chaining to prevent concurrent canvas access
  *
- * 💡 CONSIDERATION: DUAL-EMIT MODEL (emitBitmap + emitBitmapAsync)
- *   Hot-loop emissions use fire-and-forget emitBitmap() — it calls
- *   renderBitmapToBlob().then() without awaiting. This is safe because:
- *   (1) the ImageBitmap is .close()'d synchronously inside renderBitmapToBlob,
- *   so GPU memory is freed immediately, and (2) minSlideDuration (default 3s)
- *   guarantees a minimum gap between emissions, so WebP encodes (50-200ms)
- *   never overlap. If you ever reduce minSlideDuration to 0, this assumption
- *   breaks and you'd need to serialize the encode calls.
+ * 💡 CONSIDERATION: ENCODE SERIALIZATION
+ *   Slide emissions are chained via lastEmitPromise.then() to guarantee
+ *   strictly one encode runs at a time. This prevents concurrent canvas
+ *   access and OOM from parallel convertToBlob calls.
  *
- *   The FINAL candidate uses drainPending() — an awaitable drain that
- *   ensures all blobs are fully encoded before extract() returns. Without this,
- *   worker.terminate() (triggered by ALL_DONE) would kill the worker while
- *   convertToBlob is still pending, silently dropping the last slide.
+ *   drainPending() awaits the full chain before the worker shuts down,
+ *   ensuring the final slide is never dropped by worker.terminate().
  */
 
 import type { SlideExtractorOptions, ExtractionMetrics } from '../types';

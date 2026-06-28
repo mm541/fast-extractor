@@ -19,14 +19,11 @@
  *   the input video resolution. This is intentional — higher resolution
  *   doesn't improve slide detection accuracy but massively increases cost.
  *
- * ⚠️ ZERO-ALLOCATION HOT PATH
- *   The pixel readback uses a cached ImageData object. On first frame,
- *   getImageData() allocates once. On subsequent frames, we reuse the
- *   same ImageData by drawing to the canvas and reading into it via
- *   getImageData(), but the underlying pixel buffer is reused by the
- *   browser when dimensions match (Chrome/Firefox optimization).
- *   Additionally, the WASM target view is cached and only recreated
- *   if WASM memory grows (buffer detach detection).
+ * ⚠️ ALLOCATION NOTE
+ *   getImageData() allocates a new ~1.6MB ImageData object per frame.
+ *   This is a platform limitation of the Canvas 2D API — there is no
+ *   method to read pixels into an existing buffer. The WASM target view
+ *   is cached and only recreated if WASM memory grows (buffer detach).
  */
 
 import type { WasmModule } from '../types';
