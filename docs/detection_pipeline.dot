@@ -1,0 +1,76 @@
+digraph DetectionPipeline {
+    // Style settings for premium aesthetics
+    bgcolor="#0F172A"
+    pad="0.5"
+    rankdir=TB
+    nodesep=0.5
+    ranksep=0.6
+
+    node [
+        fontname="Helvetica,Arial,sans-serif"
+        fontsize=12
+        fontcolor="#F8FAFC"
+        style="filled,rounded"
+        shape=box
+        margin="0.15,0.1"
+        height=0.5
+    ]
+
+    edge [
+        fontname="Helvetica,Arial,sans-serif"
+        fontsize=10
+        fontcolor="#94A3B8"
+        color="#334155"
+        arrowsize=0.8
+        penwidth=1.5
+    ]
+
+    // Nodes
+    frame [label="Input Video Frame\n(RGBA Buffer)", fillcolor="#0284C7", color="#38BDF8"]
+    gray [label="copy_rgba_to_gray()\n(Grayscale conversion, SIMD auto-vectorized)", fillcolor="#BE185D", color="#F472B6"]
+    
+    subgraph cluster_buffers {
+        label = "Three-Pointer Grayscale Buffers"
+        fontcolor = "#E2E8F0"
+        color = "#1E293B"
+        style = "filled"
+        fillcolor = "#1E293B"
+        
+        buf_a [label="Buffer A\n(Baseline slide)", fillcolor="#334155", color="#64748B"]
+        buf_prev [label="Buffer Prev\n(Previous frame T-1)", fillcolor="#334155", color="#64748B"]
+        buf_b [label="Buffer B\n(Current frame T)", fillcolor="#334155", color="#64748B"]
+    }
+
+    sobel [label="compute_edge_map_into()\n(3x3 Sobel Operator, Branchless)", fillcolor="#BE185D", color="#F472B6"]
+    
+    edge_a [label="Edge A\n(Baseline edge map)", fillcolor="#475569", color="#94A3B8"]
+    edge_b [label="Edge B\n(Current edge map)", fillcolor="#475569", color="#94A3B8"]
+    
+    grid [label="compare_grid_density()\n(8x8 Grid block comparison)", fillcolor="#BE185D", color="#F472B6"]
+    
+    decision [label="mainChanges >= blockThreshold\nAND driftBlocks <= allowedDrift?", fillcolor="#047857", color="#34D399", shape=diamond]
+    
+    emit [label="Emit Slide\n(WebP/JPEG)", fillcolor="#065F46", color="#10B981"]
+    discard [label="Discard Frame\n(Shift Current -> Prev)", fillcolor="#9F1239", color="#F43F5E"]
+
+    // Flow
+    frame -> gray
+    gray -> buf_b
+    
+    buf_b -> buf_prev [label=" Shift (T -> T-1)", style=dashed]
+    
+    buf_a -> sobel [color="#EC4899"]
+    buf_b -> sobel [color="#EC4899"]
+    buf_prev -> sobel [color="#EC4899", style=dashed]
+    
+    sobel -> edge_a [label=" Baseline Edge Map"]
+    sobel -> edge_b [label=" Current Edge Map"]
+    
+    edge_a -> grid
+    edge_b -> grid
+    
+    grid -> decision
+    
+    decision -> emit [label="Yes (Settled)", color="#10B981"]
+    decision -> discard [label="No (Moving/No change)", color="#F43F5E"]
+}

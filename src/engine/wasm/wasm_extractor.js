@@ -29,18 +29,6 @@ export function compare_prev_current(edge_threshold, density_num, mask) {
 }
 
 /**
- * Compute average color signature from the RGBA buffer.
- * Returns packed u64: [avgR: u16 | avgG: u16 | avgB: u16 | unused: u16]
- * Samples every 64th pixel (~1590 samples from 424×240) — fast and representative.
- * Must be called AFTER pixel ingestion but BEFORE copy_rgba_to_gray().
- * @returns {bigint}
- */
-export function compute_color_signature() {
-    const ret = wasm.compute_color_signature();
-    return BigInt.asUintN(64, ret);
-}
-
-/**
  * @param {boolean} is_buffer_b
  * @returns {bigint}
  */
@@ -57,15 +45,6 @@ export function compute_dhash(is_buffer_b) {
  */
 export function copy_rgba_to_gray(is_target_b) {
     wasm.copy_rgba_to_gray(is_target_b);
-}
-
-/**
- * Average brightness of buffer B (0-255). Detects blank/black frames.
- * @returns {number}
- */
-export function get_avg_brightness() {
-    const ret = wasm.get_avg_brightness();
-    return ret >>> 0;
 }
 
 /**

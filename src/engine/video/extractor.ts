@@ -37,9 +37,9 @@
  *     Per-pixel luminance difference required to count as "changed".
  *     Lower = more sensitive to subtle changes. Higher = more noise-tolerant.
  *
- *   blockThreshold (0.01-64.0, default 12)
- *     Weighted score of 8×8 grid blocks that must change to trigger a new slide.
- *     Continuous: a block that changes by 2× the density threshold contributes 2.0.
+ *   blockThreshold (0-64, default 12)
+ *     Number of 8×8 grid blocks that must change to trigger a new slide.
+ *     Each qualifying block contributes exactly 1. Integer range: 0-64.
  *
  *   densityThresholdPct (1-50, default 5)
  *     Percentage of pixels within a single block that must differ.
@@ -163,6 +163,13 @@ export class SlideExtractor {
   }
 
   /**
+   * Get the number of slide images currently being encoded or queued.
+   */
+  public getPendingEncodesCount(): number {
+    return this.renderer.getPendingEncodes();
+  }
+
+  /**
    * Feed one encoded video chunk into the decoder pipeline.
    * Handles backpressure internally — will block if decode queue is full.
    */
@@ -180,12 +187,28 @@ export class SlideExtractor {
       this.lastKeyframeTs = tsSec;
     }
 
-    // Backpressure: prevent memory blowout
-    const maxQueue = 12;
-    while (this.decoder.state !== 'closed' && this.decoder.decodeQueueSize >= maxQueue) {
+    // ── Unified Backpressure ──
+    // Two pressures converge here:
+    //   1. Decoder queue: too many encoded chunks waiting to be decoded.
+    //   2. Encode queue: too many uncompressed ImageBitmaps waiting for
+    //      convertToBlob(). Each bitmap pins ~8MB of GPU/CPU memory.
+    //
+    // Because the decoder's output callback is synchronous (can't await),
+    // we can't block inside it. Instead we throttle the INPUT: if the
+    // encode queue is backed up, we stop feeding new packets entirely.
+    // The decoder queue drains on its own, but since we also cap it at 3,
+    // the overshoot is bounded to at most ~3 extra frames.
+    const MAX_PENDING_ENCODES = 2;
+    const MAX_DECODE_QUEUE = 3;
+    while (
+      this.decoder.state !== 'closed' && (
+        this.renderer.getPendingEncodes() >= MAX_PENDING_ENCODES ||
+        this.decoder.decodeQueueSize >= MAX_DECODE_QUEUE
+      )
+    ) {
       await Promise.race([
         new Promise<void>(r => { this.pendingBackpressureResolve = r; }),
-        new Promise<void>(r => setTimeout(r, 15))
+        new Promise<void>(r => setTimeout(r, 16))
       ]);
     }
 

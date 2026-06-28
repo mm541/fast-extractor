@@ -1,0 +1,53 @@
+digraph WasmBridgeDataflow {
+    // Style settings for premium aesthetics
+    bgcolor="#0F172A"
+    pad="0.5"
+    rankdir=LR
+    nodesep=0.5
+    ranksep=0.6
+
+    node [
+        fontname="Helvetica,Arial,sans-serif"
+        fontsize=12
+        fontcolor="#F8FAFC"
+        style="filled,rounded"
+        shape=box
+        margin="0.15,0.1"
+        height=0.5
+    ]
+
+    edge [
+        fontname="Helvetica,Arial,sans-serif"
+        fontsize=10
+        fontcolor="#94A3B8"
+        color="#334155"
+        arrowsize=0.8
+        penwidth=1.5
+    ]
+
+    // Nodes
+    canvas [label="OffscreenCanvas\n(Video Frame Draw)", fillcolor="#0284C7", color="#38BDF8"]
+    bridge [label="WasmBridge.ts\n(TypeScript Mapped View)", fillcolor="#0EA5E9", color="#0284C7"]
+    
+    subgraph cluster_wasm_memory {
+        label = "WASM Heap Memory ArrayBuffer"
+        fontcolor = "#E2E8F0"
+        color = "#1E293B"
+        style = "filled"
+        fillcolor = "#1E293B"
+        
+        rgba_buf [label="rgba_buf\n(RGBA pixels)", fillcolor="#BE185D", color="#F472B6"]
+        raw_b [label="raw_b\n(Grayscale target)", fillcolor="#475569", color="#94A3B8"]
+    }
+
+    rust_gray [label="copy_rgba_to_gray(is_target_b=true)\n(Rust WASM)", fillcolor="#BE185D", color="#F472B6"]
+    rust_sobel [label="compare_frames()\n(Sobel + Grid comparison)", fillcolor="#BE185D", color="#F472B6"]
+
+    // Flow
+    canvas -> bridge [label=" getImageData()"]
+    bridge -> rgba_buf [label=" Direct write to memory\nvia Uint8ClampedArray view", color="#38BDF8"]
+    
+    rgba_buf -> rust_gray [label=" Read RGBA", color="#F472B6"]
+    rust_gray -> raw_b [label=" Write grayscale", color="#F472B6"]
+    raw_b -> rust_sobel [label=" Process edges", color="#94A3B8"]
+}

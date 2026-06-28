@@ -38,7 +38,7 @@ self.onerror = (event: string | Event, source?: string, lineno?: number, colno?:
 };
 
 
-import init, { compare_frames, compare_prev_current, compute_dhash, get_avg_brightness, init_arena, get_buffer_a_ptr, get_buffer_b_ptr, get_buffer_prev_ptr, get_rgba_buffer_ptr, shift_current_to_prev, copy_rgba_to_gray } from './wasm/wasm_extractor';
+import init, { compare_frames, compare_prev_current, compute_dhash, init_arena, get_buffer_a_ptr, get_buffer_b_ptr, get_buffer_prev_ptr, get_rgba_buffer_ptr, shift_current_to_prev, copy_rgba_to_gray } from './wasm/wasm_extractor';
 import wasmUrl from './wasm/wasm_extractor_bg.wasm?url';
 import { SlideExtractor } from './video/extractor';
 import type { SlideExtractorOptions } from './video/extractor';
@@ -256,7 +256,6 @@ self.onmessage = async (e: MessageEvent) => {
                             compare_prev_current,
                             compute_dhash, 
 
-                            get_avg_brightness,
                             memory: wasmModule.memory
                         } as any,
                         finalOptions

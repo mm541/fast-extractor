@@ -212,7 +212,7 @@ fn compute_edge_map_into(pixels: &[u8], width: usize, height: usize, edge_thresh
 /// A block is "changed" if its edge density difference exceeds the density threshold.
 /// `mask`: a 64-bit bitmask where bit (row*8 + col) = 1 means SKIP that block.
 /// Pass mask=0 to compare all blocks (default behavior).
-fn compare_grid_density(edges_a: &[u8], edges_b: &[u8], width: usize, height: usize, num: u32, den: u32, mask: u64) -> u32 {
+fn compare_grid_density(edges_a: &[u8], edges_b: &[u8], width: usize, height: usize, num: u32, den: u32, mask: u64, use_xor: bool) -> u32 {
     // Assert slice bounds once so LLVM drops all bounds checks inside the loops
     let len = width * height;
     let edges_a = &edges_a[..len];
@@ -233,18 +233,33 @@ fn compare_grid_density(edges_a: &[u8], edges_b: &[u8], width: usize, height: us
             let x1 = if c == GRID_COLS - 1 { width } else { (c + 1) * block_w };
             
             let mut diff = 0u32;
-            
             let block_size = ((y1 - y0) * (x1 - x0)) as u32;
             
-            for y in y0..y1 {
-                let start = y * width + x0;
-                let end = y * width + x1;
-                
-                // Idiomatic SIMD-friendly zip loop (0 bounds checks)
-                for (a, b) in edges_a[start..end].iter().zip(&edges_b[start..end]) {
-                    diff += (*a ^ *b) as u32;
+            if use_xor {
+                for y in y0..y1 {
+                    let start = y * width + x0;
+                    let end = y * width + x1;
+                    
+                    // Idiomatic SIMD-friendly zip loop (0 bounds checks)
+                    for (a, b) in edges_a[start..end].iter().zip(&edges_b[start..end]) {
+                        diff += (*a ^ *b) as u32;
+                    }
                 }
+            } else {
+                let mut sum_a = 0u32;
+                let mut sum_b = 0u32;
+                for y in y0..y1 {
+                    let start = y * width + x0;
+                    let end = y * width + x1;
+                    
+                    for (a, b) in edges_a[start..end].iter().zip(&edges_b[start..end]) {
+                        sum_a += *a as u32;
+                        sum_b += *b as u32;
+                    }
+                }
+                diff = (sum_a as i32 - sum_b as i32).unsigned_abs();
             }
+            
             if diff * den > num * block_size { changed += 1; }
         }
     }
@@ -261,7 +276,7 @@ pub fn compare_frames(edge_threshold: i16, density_num: u32, mask: u64) -> u32 {
         compute_edge_map_into(&a.raw_b, ARENA_WIDTH, ARENA_HEIGHT, edge_threshold, &mut a.edge_b);
         a.edge_b_valid = true;
     }
-    compare_grid_density(&a.edge_a, &a.edge_b, ARENA_WIDTH, ARENA_HEIGHT, density_num, 100, mask)
+    compare_grid_density(&a.edge_a, &a.edge_b, ARENA_WIDTH, ARENA_HEIGHT, density_num, 100, mask, true)
 }
 
 #[wasm_bindgen]
@@ -297,9 +312,9 @@ pub fn compute_dhash(is_buffer_b: bool) -> u64 {
     }
     let mut hash: u64 = 0;
     for y in 0..8 {
-        for x in 0..8 {
+        for sx in 0..8 {
             hash <<= 1;
-            if small[y * dw + x] > small[y * dw + x + 1] { hash |= 1; }
+            if small[y * dw + sx] > small[y * dw + sx + 1] { hash |= 1; }
         }
     }
     hash
@@ -319,47 +334,7 @@ pub fn compare_prev_current(edge_threshold: i16, density_num: u32, mask: u64) ->
         compute_edge_map_into(&a.raw_b, ARENA_WIDTH, ARENA_HEIGHT, edge_threshold, &mut a.edge_b);
         a.edge_b_valid = true;
     }
-    compare_grid_density(&a.edge_a, &a.edge_b, ARENA_WIDTH, ARENA_HEIGHT, density_num, 100, mask)
+    compare_grid_density(&a.edge_a, &a.edge_b, ARENA_WIDTH, ARENA_HEIGHT, density_num, 100, mask, false)
 }
 
-/// Average brightness of buffer B (0-255). Detects blank/black frames.
-#[wasm_bindgen]
-pub fn get_avg_brightness() -> u32 {
-    let a = arena();
-    let sum: u64 = a.raw_b[..ARENA_SIZE].iter().map(|&p| p as u64).sum();
-    (sum / ARENA_SIZE as u64) as u32
-}
-
-/// Compute average color signature from the RGBA buffer.
-/// Returns packed u64: [avgR: u16 | avgG: u16 | avgB: u16 | unused: u16]
-/// Samples every 64th pixel (~1590 samples from 424×240) — fast and representative.
-/// Must be called AFTER pixel ingestion but BEFORE copy_rgba_to_gray().
-#[wasm_bindgen]
-pub fn compute_color_signature() -> u64 {
-    let a = arena();
-    let rgba = &a.rgba_buf[..RGBA_SIZE];
-    let mut sum_r: u64 = 0;
-    let mut sum_g: u64 = 0;
-    let mut sum_b: u64 = 0;
-    
-    // chunks_exact(256) guarantees every chunk is exactly 256 bytes long.
-    // This allows LLVM to mathematically prove chunk[0], chunk[1], chunk[2] are safe,
-    // completely eliminating bounds checks from the inner loop.
-    let chunks = rgba.chunks_exact(256);
-    let count = chunks.len() as u64;
-    
-    for chunk in chunks {
-        sum_r += chunk[0] as u64;
-        sum_g += chunk[1] as u64;
-        sum_b += chunk[2] as u64;
-    }
-    
-    if count == 0 { return 0; }
-    
-    let avg_r = sum_r / count;
-    let avg_g = sum_g / count;
-    let avg_b = sum_b / count;
-    
-    (avg_r << 48) | (avg_g << 32) | (avg_b << 16)
-}
 
