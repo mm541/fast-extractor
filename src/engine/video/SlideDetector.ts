@@ -268,22 +268,21 @@ export class SlideDetector {
    */
   flushFinalSlide() {
     if (this.pendingCandidate) {
-      this.renderer.emitSlideFromFrame(this.pendingCandidate.frame, this.pendingCandidate.timestamp);
+      const frameToEmit = this.lastProcessedFrame || this.pendingCandidate.frame;
+      this.renderer.emitSlideFromFrame(frameToEmit, this.pendingCandidate.timestamp);
       this.pendingCandidate.frame.close();
       this.pendingCandidate = null;
     } else if (this.metrics.lastFrameTimestamp !== undefined && this.lastProcessedFrame) {
       // If the video ended in the middle of a slow drawing transition, it never reached the 
       // staticCount required to trigger Condition 2 or 3.
-      // We check if the final frame (Buffer B) is meaningfully different from the last emitted slide (Buffer A).
+      // We check if the final frame (Buffer B) has any changes compared to the last emitted slide (Buffer A).
       const mainChanges = this.bridge.compareFrames(
         this.options.edgeThreshold, 
         this.options.densityThresholdPct, 
         this.options.ignoreMask
       );
       
-      const partialThreshold = Math.floor(this.options.blockThreshold * 0.5);
-      
-      if (mainChanges >= partialThreshold) {
+      if (mainChanges > 0) {
         // Emit the final state of the video
         const emitTs = this.cumulativeDrift > 0 ? this.driftStartTime : this.metrics.lastFrameTimestamp;
         this.renderer.emitSlideFromFrame(this.lastProcessedFrame, emitTs);

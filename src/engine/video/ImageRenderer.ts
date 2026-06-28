@@ -111,7 +111,7 @@ export class ImageRenderer {
     this.lastEmitPromise = this.lastEmitPromise.then(async () => {
       try {
         const blob = await this.renderBitmapToBlob(bitmap);
-        this.options.onSlide(blob, timestamp);
+        await this.options.onSlide(blob, timestamp);
         this.metrics.totalSlides++;
       } catch (e) {
         console.warn('emitBitmap: image encode failed (skipping slide):', e);
