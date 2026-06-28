@@ -1,0 +1,88 @@
+digraph FastExtractor {
+    // Style settings for premium aesthetics
+    bgcolor="#0F172A" // Dark slate background
+    pad="0.5"
+    rankdir=LR
+    splines=ortho
+    nodesep=0.6
+    ranksep=0.8
+
+    // Node defaults
+    node [
+        fontname="Helvetica,Arial,sans-serif"
+        fontsize=12
+        fontcolor="#F8FAFC"
+        style="filled,rounded"
+        shape=box
+        margin="0.15,0.1"
+        height=0.6
+    ]
+
+    // Edge defaults
+    edge [
+        fontname="Helvetica,Arial,sans-serif"
+        fontsize=10
+        fontcolor="#94A3B8"
+        color="#334155"
+        arrowsize=0.8
+        penwidth=1.5
+    ]
+
+    // Layers (Subgraphs)
+    subgraph cluster_main {
+        label = "Main Thread (UI)"
+        fontname = "Helvetica,Arial,sans-serif"
+        fontsize = 14
+        fontcolor = "#38BDF8"
+        color = "#1E293B"
+        style = "filled"
+        fillcolor = "#1E293B"
+        
+        ui [label="App.tsx\n(React UI)", fillcolor="#0284C7", color="#38BDF8"]
+        hook [label="useFastExtractor\n(React Hook)", fillcolor="#0369A1", color="#0EA5E9"]
+        api [label="FastExtractor\n(API Wrapper)", fillcolor="#075985", color="#0284C7"]
+    }
+
+    subgraph cluster_worker {
+        label = "Web Worker Thread"
+        fontname = "Helvetica,Arial,sans-serif"
+        fontsize = 14
+        fontcolor = "#34D399"
+        color = "#1E293B"
+        style = "filled"
+        fillcolor = "#1E293B"
+        
+        worker [label="worker.ts\n(Orchestrator)", fillcolor="#047857", color="#34D399"]
+        opfs [label="OPFS Storage\n(SyncAccessHandle)", fillcolor="#065F46", color="#10B981", shape=cylinder]
+        demuxer [label="FFmpegDemuxer\n(C / WASM)", fillcolor="#0F766E", color="#14B8A6"]
+        extractor [label="SlideExtractor\n(TypeScript)", fillcolor="#0369A1", color="#38BDF8"]
+        remuxer [label="AudioRemuxer\n(TypeScript)", fillcolor="#6D28D9", color="#8B5CF6"]
+    }
+
+    subgraph cluster_wasm_core {
+        label = "WASM Memory Core"
+        fontname = "Helvetica,Arial,sans-serif"
+        fontsize = 14
+        fontcolor = "#F472B6"
+        color = "#1E293B"
+        style = "filled"
+        fillcolor = "#1E293B"
+        
+        wasm_lib [label="wasm-extractor\n(Rust)", fillcolor="#BE185D", color="#F472B6"]
+        arena [label="FrameArena\n(3.6MB Static Memory)", fillcolor="#9D174D", color="#EC4899", shape=note]
+    }
+
+    // Connectors
+    ui -> hook [color="#38BDF8"]
+    hook -> api [color="#0EA5E9"]
+    api -> worker [label="postMessage\n(Transferables)", color="#64748B"]
+    worker -> opfs [label="Seek / Read\n(Sync)", color="#10B981"]
+    worker -> demuxer [label="Ingest Chunks", color="#14B8A6"]
+    demuxer -> worker [label="Demuxed Packets\n(Zero-Copy)", color="#14B8A6"]
+    
+    worker -> extractor [label="Video Packets", color="#0284C7"]
+    worker -> remuxer [label="Audio Packets", color="#8B5CF6"]
+    
+    extractor -> wasm_lib [label="Shared Heap\nPointer (RGBA)", color="#EC4899"]
+    wasm_lib -> arena [label="Direct Access\n(SIMD / Sobel)", color="#F472B6"]
+}

@@ -37,9 +37,9 @@
  *     Per-pixel luminance difference required to count as "changed".
  *     Lower = more sensitive to subtle changes. Higher = more noise-tolerant.
  *
- *   blockThreshold (0.01-64.0, default 12)
- *     Weighted score of 8×8 grid blocks that must change to trigger a new slide.
- *     Continuous: a block that changes by 2× the density threshold contributes 2.0.
+ *   blockThreshold (0-64, default 12)
+ *     Number of 8×8 grid blocks that must change to trigger a new slide.
+ *     Each qualifying block contributes exactly 1. Integer range: 0-64.
  *
  *   densityThresholdPct (1-50, default 5)
  *     Percentage of pixels within a single block that must differ.

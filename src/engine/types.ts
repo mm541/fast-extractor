@@ -291,6 +291,5 @@ export interface WasmModule {
   compare_frames: (edge: number, density: number, mask: bigint) => number;
   compare_prev_current: (edge: number, density: number, mask: bigint) => number;
   compute_dhash: (is_buffer_b: boolean) => bigint;
-  get_avg_brightness: () => number;
   memory: WebAssembly.Memory;
 }
