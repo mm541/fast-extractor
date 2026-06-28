@@ -320,15 +320,6 @@ self.onmessage = async (e: MessageEvent) => {
             return;
         }
 
-        if (type === 'VIDEO_DONE') {
-            // Handle the "skipped slides" case from FastExtractor
-            const { skipped } = e.data;
-            if (skipped) {
-                postMessage({ type: 'ALL_DONE', metrics: {} });
-            }
-            return;
-        }
-
     } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         self.postMessage({ type: 'ERROR', code: 'ERR_WORKER_GENERIC', error: message });

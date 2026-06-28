@@ -60,7 +60,7 @@ export class SlideDetector {
   private lastSlideTime = -10;
 
   // Deferred emit (Stability Gate)
-  private pendingCandidate: { frame: VideoFrame; timestamp: number } | null = null;
+  private pendingCandidate: { frame: VideoFrame; timestamp: number; dhash: bigint } | null = null;
   
   // Reference to last processed frame for flush() end-of-video logic
   lastProcessedFrame: VideoFrame | null = null;
@@ -125,7 +125,8 @@ export class SlideDetector {
 
     if (!this.hasBaseline) {
       this.bridge.copyBufferBToA();
-      this.savedHashes.push(this.bridge.computeDhash());
+      const dhash = this.bridge.computeDhash();
+      this.savedHashes.push(dhash);
       this.renderer.emitSlideFromFrame(frame, timestamp);
       this.hasBaseline = true;
       this.lastSlideTime = timestamp;
@@ -142,34 +143,34 @@ export class SlideDetector {
     // Pointer 2→3: Previous (Prev) vs Current (B) — consecutive drift
     const driftBlocks = this.bridge.comparePrevCurrent(edgeThreshold, densityThresholdPct, mask);
 
+    // Override deferred emit for turbo mode where consecutive frames (keyframes)
+    // are already static snapshots far apart, so there's no mid-transition blur.
+    const useDeferred = this.options.useDeferredEmit && this.options.mode !== 'turbo';
+
     // --- Transition Filter (Deferred Emit) ---
     let candidateConfirmedThisFrame = false;
-    if (this.options.useDeferredEmit && this.pendingCandidate) {
+    if (useDeferred && this.pendingCandidate) {
       const allowedDrift = Math.max(1, Math.floor(blockThreshold * 0.3));
       const candidateAge = timestamp - this.pendingCandidate.timestamp;
       
-      if (driftBlocks <= allowedDrift || candidateAge >= 15) {
-        // SETTLED (or timed out after 15s of continuous movement).
-        // Emit the CURRENT frame (clean/settled) with the timestamp from
-        // when the transition was first detected.
-        // Timeout prevents infinite starvation for "always-moving" content
-        // like handwriting videos where driftBlocks never drops to zero.
-        // 15s (not 5s) to avoid short-circuiting turbo mode where keyframes
-        // are 5-10s apart — the stability gate needs 2-3 keyframes to settle.
+      // Prevent indefinite starvation by capping candidate age (timeout).
+      // Max age is based on minSlideDuration (typically 3s).
+      const maxAge = Math.max(2, this.options.minSlideDuration);
+      
+      if (driftBlocks <= allowedDrift || candidateAge >= maxAge) {
+        // SETTLED or TIMED OUT. Emit the current settled frame (or candidate if age timed out).
         const dhash = this.bridge.computeDhash();
         if (!this.isDuplicate(dhash)) {
           this.savedHashes.push(dhash);
           this.renderer.emitSlideFromFrame(frame, this.pendingCandidate.timestamp);
         }
-        // Always advance baseline and timing, even on duplicate.
-        // Without this, a duplicate hash freezes the baseline permanently.
+        // Always advance baseline and timing, even on duplicate, to avoid freeze.
         this.bridge.copyBufferBToA();
         this.lastSlideTime = timestamp;
         
         this.pendingCandidate.frame.close();
         this.pendingCandidate = null;
         
-        // Reset drift metrics because a transition just finished
         this.cumulativeDrift = 0;
         this.settledSinceTime = -1;
         candidateConfirmedThisFrame = true;
@@ -233,13 +234,14 @@ export class SlideDetector {
     }
 
     if (shouldEmit) {
-      if (this.options.useDeferredEmit && !emitInstantly) {
+      if (useDeferred && !emitInstantly) {
         if (this.pendingCandidate) {
           this.pendingCandidate.frame.close();
         }
         this.pendingCandidate = {
           frame: frame.clone(),
           timestamp: emitTimestamp,
+          dhash: this.bridge.computeDhash(),
         };
       } else {
         const dhash = this.bridge.computeDhash();
@@ -256,9 +258,17 @@ export class SlideDetector {
     }
 
     } finally {
-      if (this.lastProcessedFrame) this.lastProcessedFrame.close();
-      this.lastProcessedFrame = frame.clone();
-      frame.close();
+      if (this.lastProcessedFrame) {
+        try { this.lastProcessedFrame.close(); } catch {}
+      }
+      try {
+        this.lastProcessedFrame = frame.clone();
+      } catch (e) {
+        this.lastProcessedFrame = null;
+      }
+      try {
+        frame.close();
+      } catch {}
     }
   }
 
@@ -268,7 +278,10 @@ export class SlideDetector {
    */
   flushFinalSlide() {
     if (this.pendingCandidate) {
-      this.renderer.emitSlideFromFrame(this.pendingCandidate.frame, this.pendingCandidate.timestamp);
+      // Only emit if it's not a duplicate of the last slide
+      if (!this.isDuplicate(this.pendingCandidate.dhash)) {
+        this.renderer.emitSlideFromFrame(this.pendingCandidate.frame, this.pendingCandidate.timestamp);
+      }
       this.pendingCandidate.frame.close();
       this.pendingCandidate = null;
     } else if (this.metrics.lastFrameTimestamp !== undefined && this.lastProcessedFrame) {
@@ -282,8 +295,9 @@ export class SlideDetector {
       );
       
       const partialThreshold = Math.floor(this.options.blockThreshold * 0.5);
+      const dhash = this.bridge.computeDhash();
       
-      if (mainChanges >= partialThreshold) {
+      if (mainChanges >= partialThreshold && !this.isDuplicate(dhash)) {
         // Emit the final state of the video
         const emitTs = this.cumulativeDrift > 0 ? this.driftStartTime : this.metrics.lastFrameTimestamp;
         this.renderer.emitSlideFromFrame(this.lastProcessedFrame, emitTs);
